@@ -1,0 +1,12 @@
+
+/target
+**/*.rs.bk
+.DS_Store
+
+# Data files produced locally
+/data/journal/
+/data/backlog/
+/data/tasks/
+/data/milestones/
+/data/projects/
+/data/programs/
