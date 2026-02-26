@@ -14,6 +14,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 thiserror = "1.0"
 directories = "5.0"
+comrak = "0.24"
 
 [profile.release]
 lto = true

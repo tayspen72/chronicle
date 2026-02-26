@@ -1,8 +1,9 @@
+use crate::storage::WorkspaceStorage;
 use crate::tui::{App, ViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -28,12 +29,15 @@ pub fn render(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(command_bar, chunks[0]);
 
+    // Calculate dynamic sidebar width based on content
+    let sidebar_width = calculate_sidebar_width(app);
+
     // Main content area with sidebar
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(20), // Sidebar
-            Constraint::Min(0),     // Content
+            Constraint::Length(sidebar_width), // Sidebar - dynamic width
+            Constraint::Min(0),                // Content
         ])
         .split(chunks[1]);
 
@@ -52,34 +56,211 @@ pub fn render(f: &mut Frame, app: &App) {
     render_status_bar(f, app, chunks[2]);
 }
 
+fn calculate_sidebar_width(app: &App) -> u16 {
+    let depth = app.tree_state.path.len();
+    let mut max_len = 0usize;
+
+    // Add current level name
+    let level_name = match depth {
+        0 => "Programs",
+        1 => "Projects",
+        2 => "Milestones",
+        3 => "Tasks",
+        _ => "Items",
+    };
+    max_len = max_len.max(level_name.len());
+
+    // Add all visible item names
+    for prog in &app.programs {
+        max_len = max_len.max(prog.name.len());
+    }
+    if depth >= 1 {
+        for proj in &app.projects {
+            max_len = max_len.max(proj.name.len() + 4); // +4 for tree indentation
+        }
+    }
+    if depth >= 2 {
+        for mile in &app.milestones {
+            max_len = max_len.max(mile.name.len() + 8);
+        }
+    }
+    if depth >= 3 {
+        for task in &app.tasks {
+            max_len = max_len.max(task.name.len() + 12);
+        }
+    }
+
+    // Add padding for borders
+    (max_len + 4).min(60).max(15) as u16
+}
+
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = vec![
-        ("Programs", ViewType::ProgramsList),
-        ("Projects", ViewType::ProjectsList),
-        ("Milestones", ViewType::MilestonesList),
-        ("Tasks", ViewType::TasksList),
-        ("Journal", ViewType::Journal),
-        ("Backlog", ViewType::Backlog),
-    ]
-    .iter()
-    .map(|(label, view)| {
-        let style = if app.current_view == *view {
-            Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(ratatui::style::Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
+    let depth = app.tree_state.path.len();
+    let idx = app.selected_entry_index;
+
+    let prog_count = app.programs.len();
+    let proj_count = app.projects.len();
+    let mile_count = app.milestones.len();
+    let task_count = app.tasks.len();
+
+    let mut all_items: Vec<(usize, String, bool, bool)> = Vec::new();
+
+    let add_tree_line =
+        |all_items: &mut Vec<_>, indent: usize, name: &str, is_last: bool, is_selected: bool| {
+            let prefix = if indent == 0 {
+                name.to_string()
+            } else if is_last {
+                format!("└── {}", name)
+            } else {
+                format!("├── {}", name)
+            };
+            all_items.push((indent, prefix, is_selected, is_last));
         };
-        ListItem::new(*label).style(style)
-    })
-    .collect();
+
+    if depth == 0 {
+        for (i, entry) in app.programs.iter().enumerate() {
+            let is_last = i == prog_count.saturating_sub(1);
+            add_tree_line(&mut all_items, 0, &entry.name, is_last, i == idx);
+        }
+    } else if depth == 1 {
+        let selected_program = &app.tree_state.path[0];
+        for (i, entry) in app.programs.iter().enumerate() {
+            let is_current = entry.name == *selected_program;
+            let is_last_prog = i == prog_count.saturating_sub(1);
+            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, false);
+            if is_current {
+                for (j, proj) in app.projects.iter().enumerate() {
+                    let is_last = j == proj_count.saturating_sub(1);
+                    let selected_proj_idx = idx.saturating_sub(prog_count);
+                    add_tree_line(
+                        &mut all_items,
+                        1,
+                        &proj.name,
+                        is_last,
+                        j == selected_proj_idx,
+                    );
+                }
+            }
+        }
+    } else if depth == 2 {
+        let selected_program = &app.tree_state.path[0];
+        let selected_project = &app.tree_state.path[1];
+
+        for (i, entry) in app.programs.iter().enumerate() {
+            let is_current_prog = entry.name == *selected_program;
+            let is_last_prog = i == prog_count.saturating_sub(1);
+            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, false);
+
+            if is_current_prog {
+                for (j, proj) in app.projects.iter().enumerate() {
+                    let is_current_proj = proj.name == *selected_project;
+                    let is_last_proj = j == proj_count.saturating_sub(1);
+                    add_tree_line(&mut all_items, 1, &proj.name, is_last_proj, false);
+
+                    if is_current_proj {
+                        for (k, mile) in app.milestones.iter().enumerate() {
+                            let is_last = k == mile_count.saturating_sub(1);
+                            let selected_mile_idx = idx.saturating_sub(prog_count + proj_count);
+                            add_tree_line(
+                                &mut all_items,
+                                2,
+                                &mile.name,
+                                is_last,
+                                k == selected_mile_idx,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    } else if depth >= 3 {
+        let selected_program = &app.tree_state.path[0];
+        let selected_project = &app.tree_state.path[1];
+        let selected_milestone = &app.tree_state.path[2];
+
+        for (i, entry) in app.programs.iter().enumerate() {
+            let is_current_prog = entry.name == *selected_program;
+            let is_last_prog = i == prog_count.saturating_sub(1);
+            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, i == idx);
+
+            if is_current_prog {
+                for (j, proj) in app.projects.iter().enumerate() {
+                    let is_current_proj = proj.name == *selected_project;
+                    let is_last_proj = j == proj_count.saturating_sub(1);
+                    let proj_offset = prog_count;
+                    add_tree_line(
+                        &mut all_items,
+                        1,
+                        &proj.name,
+                        is_last_proj,
+                        j + proj_offset == idx,
+                    );
+
+                    if is_current_proj {
+                        for (k, mile) in app.milestones.iter().enumerate() {
+                            let is_current_mile = mile.name == *selected_milestone;
+                            let is_last_mile = k == mile_count.saturating_sub(1);
+                            let mile_offset = prog_count + proj_count;
+                            add_tree_line(
+                                &mut all_items,
+                                2,
+                                &mile.name,
+                                is_last_mile,
+                                k + mile_offset == idx,
+                            );
+
+                            if is_current_mile {
+                                for (t, task) in app.tasks.iter().enumerate() {
+                                    let is_last_task = t == task_count.saturating_sub(1);
+                                    let task_offset = prog_count + proj_count + mile_count;
+                                    add_tree_line(
+                                        &mut all_items,
+                                        3,
+                                        &task.name,
+                                        is_last_task,
+                                        t + task_offset == idx,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let items: Vec<ListItem> = all_items
+        .iter()
+        .map(|(indent, prefix, is_selected, _is_last)| {
+            let indent_str = "    ".repeat(*indent);
+            let full_label = format!("{}{}", indent_str, prefix);
+            let style = if *is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightBlue)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(full_label).style(style)
+        })
+        .collect();
+
+    let tier_name = match app.tree_state.path.len() {
+        0 => "Programs",
+        1 => "Projects",
+        2 => "Milestones",
+        3 => "Tasks",
+        _ => "Items",
+    };
+    let title = tier_name.to_string();
 
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title("Navigation"),
+                .title(title),
         )
         .style(Style::default().fg(Color::White));
 
@@ -88,16 +269,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_content(f: &mut Frame, app: &App, area: Rect) {
     match app.current_view {
-        ViewType::ProgramsList => render_programs_list(f, app, area),
-        ViewType::ProjectsList => render_projects_list(f, app, area),
-        ViewType::MilestonesList => render_milestones_list(f, app, area),
-        ViewType::TasksList => render_tasks_list(f, app, area),
+        ViewType::TreeView => render_tree_view(f, app, area),
         ViewType::Journal => render_journal_welcome(f, app, area),
         ViewType::JournalArchiveList => render_archive_list(f, app, area),
         ViewType::Backlog => render_placeholder(f, area, "Backlog", "No backlog items"),
-        ViewType::SelectProgram => render_programs_list(f, app, area),
-        ViewType::SelectProject => render_projects_list(f, app, area),
-        ViewType::SelectMilestone => render_milestones_list(f, app, area),
+        ViewType::ViewingContent => render_content_viewer(f, app, area),
         ViewType::InputProgram => render_input(f, app, area, "Enter program name:"),
         ViewType::InputProject => render_input(f, app, area, "Enter project name:"),
         ViewType::InputMilestone => render_input(f, app, area, "Enter milestone name:"),
@@ -115,6 +291,108 @@ fn render_placeholder(f: &mut Frame, area: Rect, title: &str, message: &str) {
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title(title),
         );
+    f.render_widget(paragraph, area);
+}
+
+fn render_tree_view(f: &mut Frame, app: &App, area: Rect) {
+    let depth = app.tree_state.path.len();
+    let idx = app.selected_entry_index;
+
+    let selected_entry: Option<&crate::storage::DirectoryEntry>;
+    let content_to_show: String;
+
+    if depth == 0 {
+        selected_entry = app.programs.get(idx);
+    } else if depth == 1 {
+        let prog_count = app.programs.len();
+        if idx < prog_count {
+            selected_entry = app.programs.get(idx);
+        } else {
+            selected_entry = app.projects.get(idx - prog_count);
+        }
+    } else if depth == 2 {
+        let prog_count = app.programs.len();
+        let proj_count = app.projects.len();
+        if idx < prog_count {
+            selected_entry = app.programs.get(idx);
+        } else if idx < prog_count + proj_count {
+            selected_entry = app.projects.get(idx - prog_count);
+        } else {
+            selected_entry = app.milestones.get(idx - prog_count - proj_count);
+        }
+    } else {
+        let prog_count = app.programs.len();
+        let proj_count = app.projects.len();
+        let mile_count = app.milestones.len();
+        if idx < prog_count {
+            selected_entry = app.programs.get(idx);
+        } else if idx < prog_count + proj_count {
+            selected_entry = app.projects.get(idx - prog_count);
+        } else if idx < prog_count + proj_count + mile_count {
+            selected_entry = app.milestones.get(idx - prog_count - proj_count);
+        } else {
+            selected_entry = app.tasks.get(idx - prog_count - proj_count - mile_count);
+        }
+    }
+
+    if let Some(entry) = selected_entry {
+        content_to_show = app
+            .config
+            .data_path
+            .read_md_file(&entry.path)
+            .unwrap_or_else(|_| format!("# {}\n\n(No content or file not found)", entry.name));
+    } else {
+        content_to_show = "No item selected".to_string();
+    }
+
+    let level_name = match depth {
+        0 => "Programs",
+        1 => "Projects",
+        2 => "Milestones",
+        3 => "Tasks",
+        _ => "Items",
+    };
+
+    let title = if let Some(entry) = selected_entry {
+        entry.name.clone()
+    } else {
+        "Empty".to_string()
+    };
+
+    let paragraph = Paragraph::new(content_to_show)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(title),
+        );
+
+    f.render_widget(paragraph, area);
+}
+
+fn render_content_viewer(f: &mut Frame, app: &App, area: Rect) {
+    let title = app
+        .selected_content
+        .as_ref()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| "Content".to_string());
+
+    let content = app
+        .current_content_text
+        .as_ref()
+        .map(|t| t.clone())
+        .unwrap_or_else(|| "No content".to_string());
+
+    let paragraph = Paragraph::new(content)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(title),
+        );
+
     f.render_widget(paragraph, area);
 }
 
@@ -138,10 +416,7 @@ fn render_journal_welcome(f: &mut Frame, _app: &App, area: Rect) {
 }
 
 fn render_programs_list(f: &mut Frame, app: &App, area: Rect) {
-    let title = match app.current_view {
-        ViewType::SelectProgram => "Select Program (for new project)",
-        _ => "Programs",
-    };
+    let title = "Programs";
 
     if app.programs.is_empty() {
         render_input(f, app, area, "No programs yet. Type to create one:");
@@ -182,11 +457,6 @@ fn render_projects_list(f: &mut Frame, app: &App, area: Rect) {
         format!("Projects - {}", program)
     } else {
         "Projects".to_string()
-    };
-
-    let title = match app.current_view {
-        ViewType::SelectProject => "Select Project (for new milestone)".to_string(),
-        _ => title,
     };
 
     if app.projects.is_empty() {
@@ -242,11 +512,6 @@ fn render_milestones_list(f: &mut Frame, app: &App, area: Rect) {
         format!("Milestones - {}/{}", program, project)
     } else {
         "Milestones".to_string()
-    };
-
-    let title = match app.current_view {
-        ViewType::SelectMilestone => "Select Milestone (for new task)".to_string(),
-        _ => title,
     };
 
     if app.milestones.is_empty() {
@@ -420,9 +685,12 @@ fn render_command_palette(f: &mut Frame, app: &App) {
         .margin(10)
         .split(area);
 
+    // Clear the background behind the popup
+    f.render_widget(Clear, area);
+
     // Command input
     let input = Paragraph::new(format!("/{}", app.command_input))
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Color::White).bg(Color::Black))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -444,7 +712,7 @@ fn render_command_palette(f: &mut Frame, app: &App) {
                     .bg(Color::LightBlue)
                     .add_modifier(ratatui::style::Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::White).bg(Color::Black)
             };
             ListItem::new(cmd.label.as_str()).style(style)
         })
@@ -456,34 +724,60 @@ fn render_command_palette(f: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(Color::White).bg(Color::Black));
 
     f.render_widget(list, popup[1]);
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let context = if let (Some(p), Some(pr), Some(m)) = (
-        &app.current_program,
-        &app.current_project,
-        &app.current_milestone,
-    ) {
-        format!("{}/{}/{}", p, pr, m)
-    } else if let (Some(p), Some(pr)) = (&app.current_program, &app.current_project) {
-        format!("{}/{}", p, pr)
-    } else if let Some(p) = &app.current_program {
-        p.clone()
+    let depth = app.tree_state.path.len();
+    let idx = app.selected_entry_index;
+
+    let selected_path = if depth == 0 {
+        app.programs.get(idx).map(|e| e.path.clone())
+    } else if depth == 1 {
+        let prog_count = app.programs.len();
+        if idx < prog_count {
+            app.programs.get(idx).map(|e| e.path.clone())
+        } else {
+            app.projects.get(idx - prog_count).map(|e| e.path.clone())
+        }
+    } else if depth == 2 {
+        let prog_count = app.programs.len();
+        let proj_count = app.projects.len();
+        if idx < prog_count {
+            app.programs.get(idx).map(|e| e.path.clone())
+        } else if idx < prog_count + proj_count {
+            app.projects.get(idx - prog_count).map(|e| e.path.clone())
+        } else {
+            app.milestones
+                .get(idx - prog_count - proj_count)
+                .map(|e| e.path.clone())
+        }
     } else {
-        "No selection".to_string()
+        let prog_count = app.programs.len();
+        let proj_count = app.projects.len();
+        let mile_count = app.milestones.len();
+        if idx < prog_count {
+            app.programs.get(idx).map(|e| e.path.clone())
+        } else if idx < prog_count + proj_count {
+            app.projects.get(idx - prog_count).map(|e| e.path.clone())
+        } else if idx < prog_count + proj_count + mile_count {
+            app.milestones
+                .get(idx - prog_count - proj_count)
+                .map(|e| e.path.clone())
+        } else {
+            app.tasks
+                .get(idx - prog_count - proj_count - mile_count)
+                .map(|e| e.path.clone())
+        }
     };
 
-    let status = format!(
-        "Context: {} | Data: {} | Editor: {}",
-        context,
-        app.config.data_path.display(),
-        app.config.editor
-    );
+    let path_str = selected_path
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "No selection".to_string());
 
-    let paragraph = Paragraph::new(status)
+    let paragraph = Paragraph::new(path_str)
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::NONE));
 

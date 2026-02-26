@@ -1,21 +1,18 @@
 
-#title: {{TITLE}}
-#assignee:
-#assigned-to:
+#title: {{TASK_NAME}}
 #status: todo
 #priority:
 #due:
 #tags: #task
 
 ## Details
-(Describe the task, context, acceptance criteria.)
+(Context, acceptance criteria, requirements.)
 
 ## Subtasks
 - [ ] (Optional) Subtask 1
 - [ ] (Optional) Subtask 2
 
 ## Links
-- (e.g., specs, PRs, tickets)
+- (Related specs, PRs, tickets)
 
-## Journal
-- (Notes specific to this task)
+## Notes

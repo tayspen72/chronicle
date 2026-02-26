@@ -74,7 +74,11 @@ pub fn parse_task(content: &str) -> Result<Task> {
         .trim_end_matches('\n')
         .to_string();
 
-    task.details = if details.is_empty() { None } else { Some(details) };
+    task.details = if details.is_empty() {
+        None
+    } else {
+        Some(details)
+    };
 
     Ok(task)
 }

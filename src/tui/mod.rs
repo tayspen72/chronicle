@@ -19,20 +19,21 @@ use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStor
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewType {
-    ProgramsList,
-    ProjectsList,
-    MilestonesList,
-    TasksList,
+    TreeView,
     Journal,
     JournalArchiveList,
     Backlog,
-    SelectProgram,
-    SelectProject,
-    SelectMilestone,
+    ViewingContent,
     InputProgram,
     InputProject,
     InputMilestone,
     InputTask,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TreeState {
+    pub path: Vec<String>,
+    pub expanded: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +63,7 @@ pub struct CommandMatch {
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
+    pub tree_state: TreeState,
     pub command_palette_open: bool,
     pub command_input: String,
     pub command_matches: Vec<CommandMatch>,
@@ -78,15 +80,18 @@ pub struct App {
     pub milestones: Vec<DirectoryEntry>,
     pub tasks: Vec<DirectoryEntry>,
     pub input_buffer: String,
+    pub selected_content: Option<DirectoryEntry>,
+    pub current_content_text: Option<String>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let command_matches = get_command_list();
 
-        App {
+        let mut app = App {
             config,
-            current_view: ViewType::Journal,
+            current_view: ViewType::TreeView,
+            tree_state: TreeState::default(),
             command_palette_open: false,
             command_input: String::new(),
             command_matches,
@@ -103,7 +108,12 @@ impl App {
             milestones: Vec::new(),
             tasks: Vec::new(),
             input_buffer: String::new(),
-        }
+            selected_content: None,
+            current_content_text: None,
+        };
+
+        app.load_tree_view_data();
+        app
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -175,6 +185,12 @@ impl App {
                     self.return_from_view();
                 }
             }
+            KeyCode::Right => {
+                self.navigate_right();
+            }
+            KeyCode::Left => {
+                self.navigate_left();
+            }
             KeyCode::Up => {
                 self.navigate_up();
             }
@@ -194,34 +210,100 @@ impl App {
         }
     }
 
+    fn navigate_right(&mut self) {
+        match self.current_view {
+            ViewType::TreeView => {
+                self.open_tree_item();
+            }
+            _ => {}
+        }
+    }
+
+    fn navigate_left(&mut self) {
+        match self.current_view {
+            ViewType::TreeView => {
+                if !self.tree_state.path.is_empty() {
+                    self.tree_state.path.pop();
+                    let new_depth = self.tree_state.path.len();
+                    match new_depth {
+                        0 => {
+                            self.current_program = None;
+                            self.current_project = None;
+                            self.current_milestone = None;
+                        }
+                        1 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = None;
+                            self.current_milestone = None;
+                        }
+                        2 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = Some(self.tree_state.path[1].clone());
+                            self.current_milestone = None;
+                        }
+                        3 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = Some(self.tree_state.path[1].clone());
+                            self.current_milestone = Some(self.tree_state.path[2].clone());
+                        }
+                        _ => {}
+                    }
+                    self.selected_entry_index = 0;
+                    self.load_tree_view_data();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn return_from_view(&mut self) {
         match self.current_view {
             ViewType::JournalArchiveList => {
                 self.current_view = ViewType::Journal;
             }
-            ViewType::ProgramsList => {
-                self.current_view = ViewType::Journal;
+            ViewType::ViewingContent => {
+                self.current_view = ViewType::TreeView;
+                self.selected_content = None;
+                self.current_content_text = None;
             }
-            ViewType::ProjectsList => {
-                self.current_program = None;
-                self.current_view = ViewType::ProgramsList;
-            }
-            ViewType::MilestonesList => {
-                self.current_project = None;
-                self.current_view = ViewType::ProjectsList;
-            }
-            ViewType::TasksList => {
-                self.current_milestone = None;
-                self.current_view = ViewType::MilestonesList;
-            }
-            ViewType::SelectProgram | ViewType::SelectProject | ViewType::SelectMilestone => {
-                self.current_view = ViewType::Journal;
+            ViewType::TreeView => {
+                if !self.tree_state.path.is_empty() {
+                    self.tree_state.path.pop();
+                    let new_depth = self.tree_state.path.len();
+                    match new_depth {
+                        0 => {
+                            self.current_program = None;
+                            self.current_project = None;
+                            self.current_milestone = None;
+                        }
+                        1 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = None;
+                            self.current_milestone = None;
+                        }
+                        2 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = Some(self.tree_state.path[1].clone());
+                            self.current_milestone = None;
+                        }
+                        3 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = Some(self.tree_state.path[1].clone());
+                            self.current_milestone = Some(self.tree_state.path[2].clone());
+                        }
+                        _ => {}
+                    }
+                    self.selected_entry_index = 0;
+                    self.load_tree_view_data();
+                } else {
+                    self.current_view = ViewType::Journal;
+                }
             }
             ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
             | ViewType::InputTask => {
-                self.current_view = ViewType::Journal;
+                self.current_view = ViewType::TreeView;
             }
             _ => {}
         }
@@ -229,65 +311,30 @@ impl App {
 
     fn navigate_up(&mut self) {
         match &self.current_view {
-            ViewType::JournalArchiveList => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            ViewType::ProgramsList | ViewType::SelectProgram => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            ViewType::ProjectsList | ViewType::SelectProject => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            ViewType::MilestonesList | ViewType::SelectMilestone => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            ViewType::TasksList => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            ViewType::InputProgram
+            ViewType::TreeView
+            | ViewType::JournalArchiveList
+            | ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
             | ViewType::InputTask => {
-                // No navigation in input mode
+                if self.selected_entry_index > 0 {
+                    self.selected_entry_index -= 1;
+                }
             }
             _ => {}
         }
     }
 
     fn navigate_down(&mut self) {
+        let item_count = self.get_visible_item_count();
         match &self.current_view {
-            ViewType::JournalArchiveList => {
-                if self.selected_entry_index < self.journal_entries.len().saturating_sub(1) {
-                    self.selected_entry_index += 1;
-                }
-            }
-            ViewType::ProgramsList | ViewType::SelectProgram => {
-                if self.selected_entry_index < self.programs.len().saturating_sub(1) {
-                    self.selected_entry_index += 1;
-                }
-            }
-            ViewType::ProjectsList | ViewType::SelectProject => {
-                if self.selected_entry_index < self.projects.len().saturating_sub(1) {
-                    self.selected_entry_index += 1;
-                }
-            }
-            ViewType::MilestonesList | ViewType::SelectMilestone => {
-                if self.selected_entry_index < self.milestones.len().saturating_sub(1) {
-                    self.selected_entry_index += 1;
-                }
-            }
-            ViewType::TasksList => {
-                if self.selected_entry_index < self.tasks.len().saturating_sub(1) {
+            ViewType::TreeView
+            | ViewType::JournalArchiveList
+            | ViewType::InputProgram
+            | ViewType::InputProject
+            | ViewType::InputMilestone
+            | ViewType::InputTask => {
+                if self.selected_entry_index < item_count.saturating_sub(1) {
                     self.selected_entry_index += 1;
                 }
             }
@@ -295,31 +342,171 @@ impl App {
         }
     }
 
+    fn get_visible_item_count(&self) -> usize {
+        match &self.current_view {
+            ViewType::TreeView => {
+                let depth = self.tree_state.path.len();
+                let mut count = 0;
+
+                count += self.programs.len();
+
+                if depth >= 1 && !self.projects.is_empty() {
+                    count += self.projects.len();
+                }
+
+                if depth >= 2 && !self.milestones.is_empty() {
+                    count += self.milestones.len();
+                }
+
+                if depth >= 3 && !self.tasks.is_empty() {
+                    count += self.tasks.len();
+                }
+
+                count
+            }
+            ViewType::JournalArchiveList => self.journal_entries.len(),
+            _ => 0,
+        }
+    }
+
+    fn open_tree_item(&mut self) {
+        let depth = self.tree_state.path.len();
+        let idx = self.selected_entry_index;
+
+        let entry_to_open: Option<DirectoryEntry>;
+
+        if depth == 0 {
+            if idx < self.programs.len() {
+                entry_to_open = self.programs.get(idx).cloned();
+            } else {
+                entry_to_open = None;
+            }
+        } else if depth == 1 {
+            let prog_count = self.programs.len();
+            if idx < prog_count {
+                entry_to_open = None;
+            } else {
+                let proj_idx = idx - prog_count;
+                entry_to_open = self.projects.get(proj_idx).cloned();
+            }
+        } else if depth == 2 {
+            let prog_count = self.programs.len();
+            let proj_count = self.projects.len();
+            if idx < prog_count {
+                entry_to_open = None;
+            } else if idx < prog_count + proj_count {
+                entry_to_open = None;
+            } else {
+                let mile_idx = idx - prog_count - proj_count;
+                entry_to_open = self.milestones.get(mile_idx).cloned();
+            }
+        } else if depth >= 3 {
+            let prog_count = self.programs.len();
+            let proj_count = self.projects.len();
+            let mile_count = self.milestones.len();
+            if idx < prog_count {
+                entry_to_open = None;
+            } else if idx < prog_count + proj_count {
+                entry_to_open = None;
+            } else if idx < prog_count + proj_count + mile_count {
+                entry_to_open = None;
+            } else {
+                let task_idx = idx - prog_count - proj_count - mile_count;
+                entry_to_open = self.tasks.get(task_idx).cloned();
+            }
+        } else {
+            entry_to_open = None;
+        }
+
+        if let Some(entry) = entry_to_open {
+            if entry.is_dir {
+                self.tree_state.path.push(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            } else {
+                self.open_content(&entry);
+            }
+        }
+    }
+
+    fn get_current_tree_items(&self) -> &Vec<DirectoryEntry> {
+        match self.tree_state.path.len() {
+            0 => &self.programs,
+            1 => &self.projects,
+            2 => &self.milestones,
+            3 => &self.tasks,
+            _ => &self.programs,
+        }
+    }
+
+    fn open_content(&mut self, entry: &DirectoryEntry) {
+        if let Ok(content) = self.config.data_path.read_md_file(&entry.path) {
+            self.current_content_text = Some(content);
+            self.current_view = ViewType::ViewingContent;
+            self.selected_content = Some(entry.clone());
+        }
+    }
+
+    fn load_tree_view_data(&mut self) {
+        match self.tree_state.path.len() {
+            0 => {
+                match self.config.data_path.list_programs() {
+                    Ok(entries) => self.programs = entries,
+                    Err(_) => self.programs.clear(),
+                }
+                self.current_program = None;
+                self.current_project = None;
+                self.current_milestone = None;
+            }
+            1 => {
+                let program = &self.tree_state.path[0];
+                self.current_program = Some(program.clone());
+                match self.config.data_path.list_projects(program) {
+                    Ok(entries) => self.projects = entries,
+                    Err(_) => self.projects.clear(),
+                }
+                self.current_project = None;
+                self.current_milestone = None;
+            }
+            2 => {
+                let program = &self.tree_state.path[0];
+                let project = &self.tree_state.path[1];
+                self.current_program = Some(program.clone());
+                self.current_project = Some(project.clone());
+                match self.config.data_path.list_milestones(program, project) {
+                    Ok(entries) => self.milestones = entries,
+                    Err(_) => self.milestones.clear(),
+                }
+                self.current_milestone = None;
+            }
+            3 => {
+                let program = &self.tree_state.path[0];
+                let project = &self.tree_state.path[1];
+                let milestone = &self.tree_state.path[2];
+                self.current_program = Some(program.clone());
+                self.current_project = Some(project.clone());
+                self.current_milestone = Some(milestone.clone());
+                match self
+                    .config
+                    .data_path
+                    .list_tasks(program, project, milestone)
+                {
+                    Ok(entries) => self.tasks = entries,
+                    Err(_) => self.tasks.clear(),
+                }
+            }
+            _ => {}
+        }
+        self.selected_entry_index = 0;
+    }
+
     fn handle_enter(&mut self) {
         match &self.current_view {
+            ViewType::TreeView => {
+                self.open_tree_item();
+            }
             ViewType::JournalArchiveList => {
                 self.open_selected_archive_entry();
-            }
-            ViewType::ProgramsList => {
-                self.select_program();
-            }
-            ViewType::ProjectsList => {
-                self.select_project();
-            }
-            ViewType::MilestonesList => {
-                self.select_milestone();
-            }
-            ViewType::TasksList => {
-                self.open_selected_task();
-            }
-            ViewType::SelectProgram => {
-                self.select_program_for_new_project();
-            }
-            ViewType::SelectProject => {
-                self.select_project_for_new_milestone();
-            }
-            ViewType::SelectMilestone => {
-                self.select_milestone_for_new_task();
             }
             ViewType::InputProgram => {
                 self.confirm_create_program();
@@ -539,76 +726,41 @@ impl App {
     // Workspace functions: Programs, Projects, Milestones, Tasks
 
     fn show_programs_list(&mut self) {
-        let data_path = &self.config.data_path;
-        match data_path.list_programs() {
-            Ok(entries) => {
-                self.programs = entries;
-                self.selected_entry_index = 0;
-                self.current_view = ViewType::ProgramsList;
-            }
-            Err(e) => {
-                eprintln!("Error loading programs: {}", e);
-            }
-        }
+        self.tree_state.path.clear();
+        self.load_tree_view_data();
+        self.current_view = ViewType::TreeView;
     }
 
     fn show_projects_list(&mut self) {
-        if let Some(ref program) = self.current_program {
-            let data_path = &self.config.data_path;
-            match data_path.list_projects(program) {
-                Ok(entries) => {
-                    self.projects = entries;
-                    self.selected_entry_index = 0;
-                    self.current_view = ViewType::ProjectsList;
-                }
-                Err(e) => {
-                    eprintln!("Error loading projects: {}", e);
-                }
-            }
+        if !self.tree_state.path.is_empty() {
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         } else {
-            eprintln!("No program selected. Use /programs first.");
+            self.tree_state.path.clear();
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         }
     }
 
     fn show_milestones_list(&mut self) {
-        if let (Some(ref program), Some(ref project)) =
-            (&self.current_program, &self.current_project)
-        {
-            let data_path = &self.config.data_path;
-            match data_path.list_milestones(program, project) {
-                Ok(entries) => {
-                    self.milestones = entries;
-                    self.selected_entry_index = 0;
-                    self.current_view = ViewType::MilestonesList;
-                }
-                Err(e) => {
-                    eprintln!("Error loading milestones: {}", e);
-                }
-            }
+        if self.tree_state.path.len() >= 2 {
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         } else {
-            eprintln!("No project selected. Use /programs then /projects first.");
+            self.tree_state.path.clear();
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         }
     }
 
     fn show_tasks_list(&mut self) {
-        if let (Some(ref program), Some(ref project), Some(ref milestone)) = (
-            &self.current_program,
-            &self.current_project,
-            &self.current_milestone,
-        ) {
-            let data_path = &self.config.data_path;
-            match data_path.list_tasks(program, project, milestone) {
-                Ok(entries) => {
-                    self.tasks = entries;
-                    self.selected_entry_index = 0;
-                    self.current_view = ViewType::TasksList;
-                }
-                Err(e) => {
-                    eprintln!("Error loading tasks: {}", e);
-                }
-            }
+        if self.tree_state.path.len() >= 3 {
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         } else {
-            eprintln!("No milestone selected. Use /programs, /projects, /milestones first.");
+            self.tree_state.path.clear();
+            self.load_tree_view_data();
+            self.current_view = ViewType::TreeView;
         }
     }
 
@@ -618,75 +770,60 @@ impl App {
     }
 
     fn start_new_project(&mut self) {
+        // If at depth 0 (programs level), navigate into selected program first
+        if self.tree_state.path.is_empty() {
+            if let Some(entry) = self.programs.get(self.selected_entry_index) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_program = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
+        // Now start the input for new project
         self.input_buffer.clear();
-        self.show_programs_selection();
+        self.current_view = ViewType::InputProject;
     }
 
     fn start_new_milestone(&mut self) {
+        // If at depth 0, navigate into selected program first
+        if self.tree_state.path.is_empty() {
+            if let Some(entry) = self.programs.get(self.selected_entry_index) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_program = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
+        // If at depth 1, navigate into selected project first
+        if self.tree_state.path.len() == 1 {
+            if let Some(entry) = self.projects.get(
+                self.selected_entry_index
+                    .saturating_sub(self.programs.len()),
+            ) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_project = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
         self.input_buffer.clear();
-        self.show_projects_selection();
+        self.current_view = ViewType::InputMilestone;
     }
 
     fn start_new_task(&mut self) {
         self.input_buffer.clear();
-        self.show_milestones_selection();
-    }
-
-    fn show_programs_selection(&mut self) {
-        let data_path = &self.config.data_path;
-        match data_path.list_programs() {
-            Ok(entries) => {
-                self.programs = entries;
-                self.selected_entry_index = 0;
-                self.current_view = ViewType::SelectProgram;
-            }
-            Err(e) => {
-                eprintln!("Error loading programs: {}", e);
-            }
-        }
-    }
-
-    fn show_projects_selection(&mut self) {
-        if let Some(ref program) = self.current_program {
-            let data_path = &self.config.data_path;
-            match data_path.list_projects(program) {
-                Ok(entries) => {
-                    self.projects = entries;
-                    self.selected_entry_index = 0;
-                    self.current_view = ViewType::SelectProject;
-                }
-                Err(e) => {
-                    eprintln!("Error loading projects: {}", e);
-                }
-            }
-        }
-    }
-
-    fn show_milestones_selection(&mut self) {
-        if let (Some(ref program), Some(ref project)) =
-            (&self.current_program, &self.current_project)
-        {
-            let data_path = &self.config.data_path;
-            match data_path.list_milestones(program, project) {
-                Ok(entries) => {
-                    self.milestones = entries;
-                    self.selected_entry_index = 0;
-                    self.current_view = ViewType::SelectMilestone;
-                }
-                Err(e) => {
-                    eprintln!("Error loading milestones: {}", e);
-                }
-            }
-        }
+        self.current_view = ViewType::InputTask;
     }
 
     fn confirm_create_program(&mut self) {
         if !self.input_buffer.is_empty() {
-            let data_path = &self.config.data_path;
-            match data_path.create_program(&self.input_buffer) {
+            match self.config.data_path.create_program(&self.input_buffer) {
                 Ok(_) => {
                     self.current_program = Some(self.input_buffer.clone());
-                    self.show_programs_list();
+                    self.tree_state.path.push(self.input_buffer.clone());
+                    self.selected_entry_index = 0;
+                    self.load_tree_view_data();
+                    self.current_view = ViewType::TreeView;
                 }
                 Err(e) => {
                     eprintln!("Error creating program: {}", e);
@@ -694,7 +831,7 @@ impl App {
                 }
             }
         } else {
-            self.current_view = ViewType::Journal;
+            self.current_view = ViewType::TreeView;
         }
         self.input_buffer.clear();
     }
@@ -702,11 +839,18 @@ impl App {
     fn confirm_create_project(&mut self) {
         if !self.input_buffer.is_empty() {
             if let Some(ref program) = self.current_program {
-                let data_path = &self.config.data_path;
-                match data_path.create_project(program, &self.input_buffer) {
+                match self
+                    .config
+                    .data_path
+                    .create_project(program, &self.input_buffer)
+                {
                     Ok(_) => {
                         self.current_project = Some(self.input_buffer.clone());
-                        self.show_projects_list();
+                        self.tree_state.path.push(self.input_buffer.clone());
+                        self.load_tree_view_data();
+                        // Set index to first project (after all programs)
+                        self.selected_entry_index = self.programs.len();
+                        self.current_view = ViewType::TreeView;
                     }
                     Err(e) => {
                         eprintln!("Error creating project: {}", e);
@@ -715,7 +859,7 @@ impl App {
                 }
             }
         } else {
-            self.current_view = ViewType::Journal;
+            self.current_view = ViewType::TreeView;
         }
         self.input_buffer.clear();
     }
@@ -725,11 +869,18 @@ impl App {
             if let (Some(ref program), Some(ref project)) =
                 (&self.current_program, &self.current_project)
             {
-                let data_path = &self.config.data_path;
-                match data_path.create_milestone(program, project, &self.input_buffer) {
+                match self
+                    .config
+                    .data_path
+                    .create_milestone(program, project, &self.input_buffer)
+                {
                     Ok(_) => {
                         self.current_milestone = Some(self.input_buffer.clone());
-                        self.show_milestones_list();
+                        self.tree_state.path.push(self.input_buffer.clone());
+                        self.load_tree_view_data();
+                        // Set index to first milestone (after programs + projects)
+                        self.selected_entry_index = self.programs.len() + self.projects.len();
+                        self.current_view = ViewType::TreeView;
                     }
                     Err(e) => {
                         eprintln!("Error creating milestone: {}", e);
@@ -738,7 +889,7 @@ impl App {
                 }
             }
         } else {
-            self.current_view = ViewType::Journal;
+            self.current_view = ViewType::TreeView;
         }
         self.input_buffer.clear();
     }
@@ -750,11 +901,18 @@ impl App {
                 &self.current_project,
                 &self.current_milestone,
             ) {
-                let data_path = &self.config.data_path;
-                match data_path.create_task(program, project, milestone, &self.input_buffer) {
+                match self.config.data_path.create_task(
+                    program,
+                    project,
+                    milestone,
+                    &self.input_buffer,
+                ) {
                     Ok(path) => {
+                        self.load_tree_view_data();
+                        // Set index to first task (after programs + projects + milestones)
+                        self.selected_entry_index =
+                            self.programs.len() + self.projects.len() + self.milestones.len();
                         self.launch_editor(&path);
-                        self.show_tasks_list();
                     }
                     Err(e) => {
                         eprintln!("Error creating task: {}", e);
@@ -801,6 +959,7 @@ impl App {
 
     fn filter_commands(&mut self) {
         let input = self.command_input.to_lowercase();
+        let depth = self.tree_state.path.len();
 
         if input.starts_with("journal") || input.starts_with("/journal") {
             let remainder = input
@@ -843,9 +1002,69 @@ impl App {
                 .collect();
             }
         } else {
-            self.command_matches = get_command_list()
+            let all_commands = get_command_list();
+            self.command_matches = all_commands
                 .into_iter()
-                .filter(|cmd| cmd.label.to_lowercase().contains(&input))
+                .filter(|cmd| {
+                    let matches_input = cmd.label.to_lowercase().contains(&input);
+
+                    if depth == 0 {
+                        matches_input
+                            && matches!(
+                                cmd.label.as_str(),
+                                "New Program"
+                                    | "New Project"
+                                    | "Programs"
+                                    | "Journal"
+                                    | "Backlog"
+                                    | "Open Today's Journal"
+                                    | "Read Archived Journal Entries"
+                                    | "Exit"
+                            )
+                    } else if depth == 1 {
+                        matches_input
+                            && matches!(
+                                cmd.label.as_str(),
+                                "New Project"
+                                    | "Programs"
+                                    | "Projects"
+                                    | "Journal"
+                                    | "Backlog"
+                                    | "Open Today's Journal"
+                                    | "Read Archived Journal Entries"
+                                    | "Exit"
+                            )
+                    } else if depth == 2 {
+                        matches_input
+                            && matches!(
+                                cmd.label.as_str(),
+                                "New Milestone"
+                                    | "Programs"
+                                    | "Projects"
+                                    | "Milestones"
+                                    | "Journal"
+                                    | "Backlog"
+                                    | "Open Today's Journal"
+                                    | "Read Archived Journal Entries"
+                                    | "Exit"
+                            )
+                    } else {
+                        matches_input
+                            && matches!(
+                                cmd.label.as_str(),
+                                "New Task"
+                                    | "Programs"
+                                    | "Projects"
+                                    | "Milestones"
+                                    | "Tasks"
+                                    | "Journal"
+                                    | "Backlog"
+                                    | "Open Today's Journal"
+                                    | "Read Archived Journal Entries"
+                                    | "Exit"
+                            )
+                    }
+                })
                 .collect();
         }
 
@@ -861,25 +1080,25 @@ fn get_command_list() -> Vec<CommandMatch> {
     vec![
         CommandMatch {
             label: "Programs".to_string(),
-            view: ViewType::ProgramsList,
+            view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::ShowProgramsList),
         },
         CommandMatch {
             label: "Projects".to_string(),
-            view: ViewType::ProjectsList,
+            view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::ShowProjectsList),
         },
         CommandMatch {
             label: "Milestones".to_string(),
-            view: ViewType::MilestonesList,
+            view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::ShowMilestonesList),
         },
         CommandMatch {
             label: "Tasks".to_string(),
-            view: ViewType::TasksList,
+            view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::ShowTasksList),
         },
@@ -903,19 +1122,19 @@ fn get_command_list() -> Vec<CommandMatch> {
         },
         CommandMatch {
             label: "New Project".to_string(),
-            view: ViewType::SelectProgram,
+            view: ViewType::InputProject,
             exit: false,
             action: Some(CommandAction::NewProject),
         },
         CommandMatch {
             label: "New Milestone".to_string(),
-            view: ViewType::SelectProject,
+            view: ViewType::InputMilestone,
             exit: false,
             action: Some(CommandAction::NewMilestone),
         },
         CommandMatch {
             label: "New Task".to_string(),
-            view: ViewType::SelectMilestone,
+            view: ViewType::InputTask,
             exit: false,
             action: Some(CommandAction::NewTask),
         },

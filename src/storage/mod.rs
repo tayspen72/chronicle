@@ -11,6 +11,7 @@ pub struct JournalEntry {
     pub path: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
@@ -29,10 +30,17 @@ pub trait JournalStorage {
 pub trait WorkspaceStorage {
     fn programs_dir(&self) -> PathBuf;
     fn list_programs(&self) -> Result<Vec<DirectoryEntry>>;
+    fn read_program(&self, name: &str) -> Result<String>;
+    fn save_program(&self, name: &str, content: &str) -> Result<()>;
     fn create_program(&self, name: &str) -> Result<PathBuf>;
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
+    fn read_project(&self, program: &str, name: &str) -> Result<String>;
+    fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()>;
     fn create_project(&self, program: &str, name: &str) -> Result<PathBuf>;
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
+    fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String>;
+    fn save_milestone(&self, program: &str, project: &str, name: &str, content: &str)
+        -> Result<()>;
     fn create_milestone(&self, program: &str, project: &str, name: &str) -> Result<PathBuf>;
     fn list_tasks(
         &self,
@@ -40,6 +48,21 @@ pub trait WorkspaceStorage {
         project: &str,
         milestone: &str,
     ) -> Result<Vec<DirectoryEntry>>;
+    fn read_task(
+        &self,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+    ) -> Result<String>;
+    fn save_task(
+        &self,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<()>;
     fn create_task(
         &self,
         program: &str,
@@ -48,6 +71,7 @@ pub trait WorkspaceStorage {
         name: &str,
     ) -> Result<PathBuf>;
     fn get_task_path(&self, program: &str, project: &str, milestone: &str, task: &str) -> PathBuf;
+    fn read_md_file(&self, path: &Path) -> Result<String>;
 }
 
 impl JournalStorage for PathBuf {
@@ -127,12 +151,14 @@ impl WorkspaceStorage for PathBuf {
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name()?.to_str()?.to_string();
+                let name = path.file_name()?.to_str()?.to_string();
+                let is_md = name.ends_with(".md");
+
+                if is_md {
                     Some(DirectoryEntry {
-                        name,
+                        name: name.trim_end_matches(".md").to_string(),
                         path,
-                        is_dir: true,
+                        is_dir: false,
                     })
                 } else {
                     None
@@ -142,31 +168,48 @@ impl WorkspaceStorage for PathBuf {
 
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
+    }
+
+    fn read_program(&self, name: &str) -> Result<String> {
+        let path = self.programs_dir().join(format!("{}.md", name));
+        Ok(fs::read_to_string(path)?)
+    }
+
+    fn save_program(&self, name: &str, content: &str) -> Result<()> {
+        let path = self.programs_dir().join(format!("{}.md", name));
+        fs::write(path, content)?;
+        Ok(())
     }
 
     fn create_program(&self, name: &str) -> Result<PathBuf> {
+        let program_md = self.programs_dir().join(format!("{}.md", name));
         let program_dir = self.programs_dir().join(name);
         fs::create_dir_all(&program_dir)?;
-        Ok(program_dir)
+        let template = include_str!("../../templates/program.md");
+        let content = template.replace("{{PROGRAM_NAME}}", name);
+        fs::write(&program_md, content)?;
+        Ok(program_md)
     }
 
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>> {
-        let projects_dir = self.programs_dir().join(program);
+        let program_dir = self.programs_dir().join(program);
 
-        if !projects_dir.exists() {
+        if !program_dir.exists() {
             return Ok(vec![]);
         }
 
-        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&projects_dir)?
+        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&program_dir)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name()?.to_str()?.to_string();
+                let name = path.file_name()?.to_str()?.to_string();
+                let is_md = name.ends_with(".md");
+
+                if is_md {
                     Some(DirectoryEntry {
-                        name,
+                        name: name.trim_end_matches(".md").to_string(),
                         path,
-                        is_dir: true,
+                        is_dir: false,
                     })
                 } else {
                     None
@@ -176,31 +219,57 @@ impl WorkspaceStorage for PathBuf {
 
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
+    }
+
+    fn read_project(&self, program: &str, name: &str) -> Result<String> {
+        let path = self
+            .programs_dir()
+            .join(program)
+            .join(format!("{}.md", name));
+        Ok(fs::read_to_string(path)?)
+    }
+
+    fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()> {
+        let path = self
+            .programs_dir()
+            .join(program)
+            .join(format!("{}.md", name));
+        fs::write(path, content)?;
+        Ok(())
     }
 
     fn create_project(&self, program: &str, name: &str) -> Result<PathBuf> {
+        let project_md = self
+            .programs_dir()
+            .join(program)
+            .join(format!("{}.md", name));
         let project_dir = self.programs_dir().join(program).join(name);
         fs::create_dir_all(&project_dir)?;
-        Ok(project_dir)
+        let template = include_str!("../../templates/project.md");
+        let content = template.replace("{{PROJECT_NAME}}", name);
+        fs::write(&project_md, content)?;
+        Ok(project_md)
     }
 
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>> {
-        let milestones_dir = self.programs_dir().join(program).join(project);
+        let project_dir = self.programs_dir().join(program).join(project);
 
-        if !milestones_dir.exists() {
+        if !project_dir.exists() {
             return Ok(vec![]);
         }
 
-        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&milestones_dir)?
+        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&project_dir)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name()?.to_str()?.to_string();
+                let name = path.file_name()?.to_str()?.to_string();
+                let is_md = name.ends_with(".md");
+
+                if is_md {
                     Some(DirectoryEntry {
-                        name,
+                        name: name.trim_end_matches(".md").to_string(),
                         path,
-                        is_dir: true,
+                        is_dir: false,
                     })
                 } else {
                     None
@@ -212,10 +281,43 @@ impl WorkspaceStorage for PathBuf {
         Ok(entries)
     }
 
+    fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String> {
+        let path = self
+            .programs_dir()
+            .join(program)
+            .join(project)
+            .join(format!("{}.md", name));
+        Ok(fs::read_to_string(path)?)
+    }
+
+    fn save_milestone(
+        &self,
+        program: &str,
+        project: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<()> {
+        let path = self
+            .programs_dir()
+            .join(program)
+            .join(project)
+            .join(format!("{}.md", name));
+        fs::write(path, content)?;
+        Ok(())
+    }
+
     fn create_milestone(&self, program: &str, project: &str, name: &str) -> Result<PathBuf> {
+        let milestone_md = self
+            .programs_dir()
+            .join(program)
+            .join(project)
+            .join(format!("{}.md", name));
         let milestone_dir = self.programs_dir().join(program).join(project).join(name);
         fs::create_dir_all(&milestone_dir)?;
-        Ok(milestone_dir)
+        let template = include_str!("../../templates/milestone.md");
+        let content = template.replace("{{MILESTONE_NAME}}", name);
+        fs::write(&milestone_md, content)?;
+        Ok(milestone_md)
     }
 
     fn list_tasks(
@@ -261,6 +363,30 @@ impl WorkspaceStorage for PathBuf {
         Ok(entries)
     }
 
+    fn read_task(
+        &self,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+    ) -> Result<String> {
+        let path = self.get_task_path(program, project, milestone, name);
+        Ok(fs::read_to_string(path)?)
+    }
+
+    fn save_task(
+        &self,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<()> {
+        let path = self.get_task_path(program, project, milestone, name);
+        fs::write(path, content)?;
+        Ok(())
+    }
+
     fn create_task(
         &self,
         program: &str,
@@ -272,7 +398,13 @@ impl WorkspaceStorage for PathBuf {
         if let Some(parent) = task_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&task_path, "")?;
+        fs::write(
+            &task_path,
+            format!(
+                "#title: {}\n#assignee:\n#assigned-to:\n#status: todo\n#priority:\n#due:\n#tags:\n\n## Details\n\n## Subtasks\n\n## Links\n\n## Journal\n",
+                name
+            ),
+        )?;
         Ok(task_path)
     }
 
@@ -282,5 +414,9 @@ impl WorkspaceStorage for PathBuf {
             .join(project)
             .join(milestone)
             .join(format!("{}.md", task))
+    }
+
+    fn read_md_file(&self, path: &Path) -> Result<String> {
+        Ok(fs::read_to_string(path)?)
     }
 }
