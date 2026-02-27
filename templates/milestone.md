@@ -1,16 +1,11 @@
+# Details
+#Title: {{NAME}}
+#Status: {{DEFAULT_STATUS}}
+#Creation Date: {{TODAY}}
+#Created By: {{OWNER}}
+#Assigned To: {{ASSIGNED_TO}}
+#Due Date: {{DUE_DATE}}
 
-#title: {{MILESTONE_NAME}}
-#status: todo
-#tags: #milestone
+# Description
+#Description! {{DESCRIPTION}}
 
-## Objective
-(What needs to be achieved by this milestone?)
-
-## Criteria
-- (Success criterion 1)
-- (Success criterion 2)
-
-## Tasks
-- (Key tasks to complete)
-
-## Notes

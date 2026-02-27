@@ -1,7 +1,8 @@
-# Date YYYY-MM-DD
+#Date {{TODAY}}
 
-## Tasks
+# Daily ToDo
+#TODO: update this list
 
-## Notes
-
+# Notes
+This is where my notes go
 

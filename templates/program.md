@@ -1,16 +1,8 @@
+# Details
+#Title: {{NAME}}
+#Status: {{DEFAULT_STATUS}}
+#Creation Date: {{TODAY}}
 
-#title: {{PROGRAM_NAME}}
-#status: active
-#tags: #program
+# Description
+#Description! {{DESCRIPTION}}
 
-## Purpose
-(Describe the program's goal and what it aims to achieve.)
-
-## Scope
-(What is included in this program? What's explicitly out of scope?)
-
-## Objectives
-* (OBJ1)
-* (OBJ2)
-
-## Notes

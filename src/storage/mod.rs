@@ -1,5 +1,6 @@
 pub mod md;
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -32,16 +33,22 @@ pub trait WorkspaceStorage {
     fn list_programs(&self) -> Result<Vec<DirectoryEntry>>;
     fn read_program(&self, name: &str) -> Result<String>;
     fn save_program(&self, name: &str, content: &str) -> Result<()>;
-    fn create_program(&self, name: &str) -> Result<PathBuf>;
+    fn create_program(&self, name: &str, description: &str) -> Result<PathBuf>;
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
     fn read_project(&self, program: &str, name: &str) -> Result<String>;
     fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()>;
-    fn create_project(&self, program: &str, name: &str) -> Result<PathBuf>;
+    fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf>;
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String>;
     fn save_milestone(&self, program: &str, project: &str, name: &str, content: &str)
         -> Result<()>;
-    fn create_milestone(&self, program: &str, project: &str, name: &str) -> Result<PathBuf>;
+    fn create_milestone(
+        &self,
+        program: &str,
+        project: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<PathBuf>;
     fn list_tasks(
         &self,
         program: &str,
@@ -69,9 +76,17 @@ pub trait WorkspaceStorage {
         project: &str,
         milestone: &str,
         name: &str,
+        description: &str,
     ) -> Result<PathBuf>;
     fn get_task_path(&self, program: &str, project: &str, milestone: &str, task: &str) -> PathBuf;
     fn read_md_file(&self, path: &Path) -> Result<String>;
+    fn create_from_template(
+        &self,
+        template_name: &str,
+        target_path: &Path,
+        values: &HashMap<String, String>,
+        strip_labels: &HashSet<String>,
+    ) -> Result<PathBuf>;
 }
 
 impl JournalStorage for PathBuf {
@@ -94,7 +109,9 @@ impl JournalStorage for PathBuf {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let content = String::new();
+            let template = include_str!("../../templates/journal.md");
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let content = template.replace("YYYY-MM-DD", &today);
             fs::write(&path, &content)?;
             Ok((path, content))
         }
@@ -181,12 +198,19 @@ impl WorkspaceStorage for PathBuf {
         Ok(())
     }
 
-    fn create_program(&self, name: &str) -> Result<PathBuf> {
+    fn create_program(&self, name: &str, description: &str) -> Result<PathBuf> {
         let program_md = self.programs_dir().join(format!("{}.md", name));
         let program_dir = self.programs_dir().join(name);
         fs::create_dir_all(&program_dir)?;
         let template = include_str!("../../templates/program.md");
-        let content = template.replace("{{PROGRAM_NAME}}", name);
+        let truncated_desc = if description.len() > 1024 {
+            &description[..1024]
+        } else {
+            description
+        };
+        let content = template
+            .replace("{{PROGRAM_NAME}}", name)
+            .replace("{{DESCRIPTION}}", truncated_desc);
         fs::write(&program_md, content)?;
         Ok(program_md)
     }
@@ -238,7 +262,7 @@ impl WorkspaceStorage for PathBuf {
         Ok(())
     }
 
-    fn create_project(&self, program: &str, name: &str) -> Result<PathBuf> {
+    fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf> {
         let project_md = self
             .programs_dir()
             .join(program)
@@ -246,7 +270,14 @@ impl WorkspaceStorage for PathBuf {
         let project_dir = self.programs_dir().join(program).join(name);
         fs::create_dir_all(&project_dir)?;
         let template = include_str!("../../templates/project.md");
-        let content = template.replace("{{PROJECT_NAME}}", name);
+        let truncated_desc = if description.len() > 1024 {
+            &description[..1024]
+        } else {
+            description
+        };
+        let content = template
+            .replace("{{PROJECT_NAME}}", name)
+            .replace("{{DESCRIPTION}}", truncated_desc);
         fs::write(&project_md, content)?;
         Ok(project_md)
     }
@@ -306,7 +337,13 @@ impl WorkspaceStorage for PathBuf {
         Ok(())
     }
 
-    fn create_milestone(&self, program: &str, project: &str, name: &str) -> Result<PathBuf> {
+    fn create_milestone(
+        &self,
+        program: &str,
+        project: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<PathBuf> {
         let milestone_md = self
             .programs_dir()
             .join(program)
@@ -315,7 +352,14 @@ impl WorkspaceStorage for PathBuf {
         let milestone_dir = self.programs_dir().join(program).join(project).join(name);
         fs::create_dir_all(&milestone_dir)?;
         let template = include_str!("../../templates/milestone.md");
-        let content = template.replace("{{MILESTONE_NAME}}", name);
+        let truncated_desc = if description.len() > 1024 {
+            &description[..1024]
+        } else {
+            description
+        };
+        let content = template
+            .replace("{{MILESTONE_NAME}}", name)
+            .replace("{{DESCRIPTION}}", truncated_desc);
         fs::write(&milestone_md, content)?;
         Ok(milestone_md)
     }
@@ -393,18 +437,22 @@ impl WorkspaceStorage for PathBuf {
         project: &str,
         milestone: &str,
         name: &str,
+        description: &str,
     ) -> Result<PathBuf> {
         let task_path = self.get_task_path(program, project, milestone, name);
         if let Some(parent) = task_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(
-            &task_path,
-            format!(
-                "#title: {}\n#assignee:\n#assigned-to:\n#status: todo\n#priority:\n#due:\n#tags:\n\n## Details\n\n## Subtasks\n\n## Links\n\n## Journal\n",
-                name
-            ),
-        )?;
+        let template = include_str!("../../templates/task.md");
+        let truncated_desc = if description.len() > 1024 {
+            &description[..1024]
+        } else {
+            description
+        };
+        let content = template
+            .replace("{{TASK_NAME}}", name)
+            .replace("{{DESCRIPTION}}", truncated_desc);
+        fs::write(&task_path, content)?;
         Ok(task_path)
     }
 
@@ -419,4 +467,98 @@ impl WorkspaceStorage for PathBuf {
     fn read_md_file(&self, path: &Path) -> Result<String> {
         Ok(fs::read_to_string(path)?)
     }
+
+    fn create_from_template(
+        &self,
+        template_name: &str,
+        target_path: &Path,
+        values: &HashMap<String, String>,
+        strip_labels: &HashSet<String>,
+    ) -> Result<PathBuf> {
+        let template = match template_name {
+            "program" => include_str!("../../templates/program.md"),
+            "project" => include_str!("../../templates/project.md"),
+            "milestone" => include_str!("../../templates/milestone.md"),
+            "task" => include_str!("../../templates/task.md"),
+            "subtask" => include_str!("../../templates/subtask.md"),
+            _ => return Err(anyhow::anyhow!("Unknown template: {}", template_name)),
+        };
+
+        let content = resolve_template(template, values, strip_labels);
+
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(target_path, content)?;
+        Ok(target_path.to_path_buf())
+    }
+}
+
+pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
+    let mut fields = Vec::new();
+
+    let re_labeled = regex::Regex::new(r"#([^:!]+)![:]?\s*\{\{(\w+)\}\}").unwrap();
+    for cap in re_labeled.captures_iter(template) {
+        let field_label = cap
+            .get(1)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let placeholder = cap
+            .get(2)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+
+        if !field_label.is_empty() && !placeholder.is_empty() {
+            let should_strip = field_label.contains('!');
+            let clean_label = field_label.replace('!', "");
+            fields.push((clean_label, placeholder, should_strip));
+        }
+    }
+
+    let re_standalone = regex::Regex::new(r"^\{\{(\w+)\}\}$").unwrap();
+    for line in template.lines() {
+        let line = line.trim();
+        if let Some(cap) = re_standalone.captures(line) {
+            let placeholder = cap
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
+                fields.push((placeholder.clone(), placeholder, true));
+            }
+        }
+    }
+
+    fields
+}
+
+pub fn resolve_template(
+    template: &str,
+    values: &HashMap<String, String>,
+    strip_labels: &HashSet<String>,
+) -> String {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+
+    let mut result = template.to_string();
+
+    let re = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
+
+    result = re
+        .replace_all(&result, |caps: &regex::Captures| {
+            let placeholder = &caps[1];
+
+            if placeholder == "TODAY" {
+                return today.clone();
+            }
+
+            values.get(placeholder).cloned().unwrap_or_default()
+        })
+        .to_string();
+
+    if !strip_labels.is_empty() {
+        let re_strip = regex::Regex::new(r"#([^:!]+)![:]?\s*(.*)").unwrap();
+        result = re_strip.replace_all(&result, "$2").to_string();
+    }
+
+    result
 }

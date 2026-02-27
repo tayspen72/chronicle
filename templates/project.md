@@ -1,17 +1,11 @@
+# Details
+#Title: {{NAME}}
+#Status: {{DEFAULT_STATUS}}
+#Creation Date: {{TODAY}}
+#Created By: {{OWNER}}
+#Assigned To: {{ASSIGNED_TO}}
+#Due Date: {{DUE_DATE}}
 
-#title: {{PROJECT_NAME}}
-#status: todo
-#tags: #project
+# Description
+#Description! {{DESCRIPTION}}
 
-## Goal
-(What is this project trying to accomplish?)
-
-## Deliverables
-- (Deliverable 1)
-- (Deliverable 2)
-
-## Milestones
-- (Planned milestones)
-
-## Notes
-(Project-specific notes and context.)

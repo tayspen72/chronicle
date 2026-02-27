@@ -1,6 +1,10 @@
+# Details
+#Title: {{NAME}}
+#Status: {{DEFAULT_STATUS}}
+#Creation Date: {{TODAY}}
+#Created By: {{OWNER}}
+#Assigned To: {{ASSIGNED_TO}}
+#Due Date: {{DUE_DATE}}
 
-#title: {{SUBTASK_NAME}}
-#status: todo
-#tags: #subtask
-
-## Notes
+# Description
+#Description! {{DESCRIPTION}}

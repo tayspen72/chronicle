@@ -18,16 +18,55 @@ use crate::config::Config;
 use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage};
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum SidebarSection {
+    Programs,
+    Planning,
+    Journal,
+}
+
+#[derive(Debug, Clone)]
+pub struct SidebarItem {
+    pub name: String,
+    pub section: SidebarSection,
+    pub is_header: bool,
+    pub is_planning_item: Option<String>, // Some("WeeklyPlanning") or Some("Backlog")
+    pub is_journal_item: Option<String>,  // Some("Today") or Some("History")
+    pub indent: usize,
+    pub path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TemplateFieldState {
+    pub template_name: String,
+    pub target_path: Option<std::path::PathBuf>,
+    pub fields: Vec<(String, String, bool)>, // (display_label, placeholder, strip_label)
+    pub current_index: usize,
+    pub values: std::collections::HashMap<String, String>,
+    pub strip_labels: std::collections::HashSet<String>, // placeholders whose labels should be stripped
+    pub date_part: Option<DateInputPart>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DateInputPart {
+    Year,
+    Month,
+    Day,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ViewType {
     TreeView,
     Journal,
     JournalArchiveList,
+    JournalToday,
     Backlog,
+    WeeklyPlanning,
     ViewingContent,
     InputProgram,
     InputProject,
     InputMilestone,
     InputTask,
+    InputTemplateField,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -82,6 +121,8 @@ pub struct App {
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
+    pub sidebar_items: Vec<SidebarItem>,
+    pub template_field_state: Option<TemplateFieldState>,
 }
 
 impl App {
@@ -110,6 +151,8 @@ impl App {
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
+            sidebar_items: Vec::new(),
+            template_field_state: None,
         };
 
         app.load_tree_view_data();
@@ -310,117 +353,134 @@ impl App {
     }
 
     fn navigate_up(&mut self) {
-        match &self.current_view {
-            ViewType::TreeView
-            | ViewType::JournalArchiveList
-            | ViewType::InputProgram
-            | ViewType::InputProject
-            | ViewType::InputMilestone
-            | ViewType::InputTask => {
-                if self.selected_entry_index > 0 {
-                    self.selected_entry_index -= 1;
-                }
-            }
-            _ => {}
+        if self.sidebar_items.is_empty() {
+            return;
         }
+
+        let mut new_index = self.selected_entry_index;
+        loop {
+            if new_index == 0 {
+                new_index = self.sidebar_items.len() - 1;
+            } else {
+                new_index -= 1;
+            }
+
+            let item = &self.sidebar_items[new_index];
+            if !item.is_header && !item.name.is_empty() {
+                break;
+            }
+
+            if new_index == self.selected_entry_index {
+                break;
+            }
+        }
+
+        self.selected_entry_index = new_index;
     }
 
     fn navigate_down(&mut self) {
-        let item_count = self.get_visible_item_count();
-        match &self.current_view {
-            ViewType::TreeView
-            | ViewType::JournalArchiveList
-            | ViewType::InputProgram
-            | ViewType::InputProject
-            | ViewType::InputMilestone
-            | ViewType::InputTask => {
-                if self.selected_entry_index < item_count.saturating_sub(1) {
-                    self.selected_entry_index += 1;
-                }
-            }
-            _ => {}
+        if self.sidebar_items.is_empty() {
+            return;
         }
+
+        let mut new_index = self.selected_entry_index;
+        loop {
+            new_index = (new_index + 1) % self.sidebar_items.len();
+
+            let item = &self.sidebar_items[new_index];
+            if !item.is_header && !item.name.is_empty() {
+                break;
+            }
+
+            if new_index == self.selected_entry_index {
+                break;
+            }
+        }
+
+        self.selected_entry_index = new_index;
+    }
+
+    fn get_current_tier_start_index(&self) -> usize {
+        0
+    }
+
+    fn get_current_tier_item_count(&self) -> usize {
+        self.sidebar_items
+            .iter()
+            .filter(|i| !i.is_header && !i.name.is_empty())
+            .count()
     }
 
     fn get_visible_item_count(&self) -> usize {
-        match &self.current_view {
-            ViewType::TreeView => {
-                let depth = self.tree_state.path.len();
-                let mut count = 0;
-
-                count += self.programs.len();
-
-                if depth >= 1 && !self.projects.is_empty() {
-                    count += self.projects.len();
-                }
-
-                if depth >= 2 && !self.milestones.is_empty() {
-                    count += self.milestones.len();
-                }
-
-                if depth >= 3 && !self.tasks.is_empty() {
-                    count += self.tasks.len();
-                }
-
-                count
-            }
-            ViewType::JournalArchiveList => self.journal_entries.len(),
-            _ => 0,
-        }
+        self.sidebar_items
+            .iter()
+            .filter(|i| !i.is_header && !i.name.is_empty())
+            .count()
     }
 
     fn open_tree_item(&mut self) {
-        let depth = self.tree_state.path.len();
         let idx = self.selected_entry_index;
 
-        let entry_to_open: Option<DirectoryEntry>;
-
-        if depth == 0 {
-            if idx < self.programs.len() {
-                entry_to_open = self.programs.get(idx).cloned();
-            } else {
-                entry_to_open = None;
-            }
-        } else if depth == 1 {
-            let prog_count = self.programs.len();
-            if idx < prog_count {
-                entry_to_open = None;
-            } else {
-                let proj_idx = idx - prog_count;
-                entry_to_open = self.projects.get(proj_idx).cloned();
-            }
-        } else if depth == 2 {
-            let prog_count = self.programs.len();
-            let proj_count = self.projects.len();
-            if idx < prog_count {
-                entry_to_open = None;
-            } else if idx < prog_count + proj_count {
-                entry_to_open = None;
-            } else {
-                let mile_idx = idx - prog_count - proj_count;
-                entry_to_open = self.milestones.get(mile_idx).cloned();
-            }
-        } else if depth >= 3 {
-            let prog_count = self.programs.len();
-            let proj_count = self.projects.len();
-            let mile_count = self.milestones.len();
-            if idx < prog_count {
-                entry_to_open = None;
-            } else if idx < prog_count + proj_count {
-                entry_to_open = None;
-            } else if idx < prog_count + proj_count + mile_count {
-                entry_to_open = None;
-            } else {
-                let task_idx = idx - prog_count - proj_count - mile_count;
-                entry_to_open = self.tasks.get(task_idx).cloned();
-            }
-        } else {
-            entry_to_open = None;
+        if idx >= self.sidebar_items.len() {
+            return;
         }
 
-        if let Some(entry) = entry_to_open {
-            if entry.is_dir {
-                self.tree_state.path.push(entry.name.clone());
+        let item = &self.sidebar_items[idx];
+
+        if item.is_header || item.name.is_empty() {
+            return;
+        }
+
+        if let Some(plan_type) = &item.is_planning_item {
+            match plan_type.as_str() {
+                "WeeklyPlanning" => {
+                    self.current_view = ViewType::WeeklyPlanning;
+                }
+                "Backlog" => {
+                    self.current_view = ViewType::Backlog;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if let Some(journal_action) = &item.is_journal_item {
+            match journal_action.as_str() {
+                "Today" => {
+                    if let Ok((path, _)) = self.config.data_path.open_or_create_today_journal() {
+                        self.launch_editor(&path);
+                    }
+                }
+                "History" => {
+                    match self.config.data_path.list_journal_entries() {
+                        Ok(entries) => self.journal_entries = entries,
+                        Err(_) => self.journal_entries.clear(),
+                    }
+                    self.current_view = ViewType::JournalArchiveList;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if let Some(path) = &item.path {
+            let entry = DirectoryEntry {
+                name: item.name.clone(),
+                path: path.clone(),
+                is_dir: false,
+            };
+
+            let depth = self.tree_state.path.len();
+            let is_dir = match depth {
+                0 => true,
+                1 => self.projects.iter().any(|p| p.name == item.name),
+                2 => self.milestones.iter().any(|m| m.name == item.name),
+                3 => self.tasks.iter().any(|t| t.name == item.name),
+                _ => false,
+            };
+
+            if is_dir {
+                self.tree_state.path.push(item.name.clone());
                 self.selected_entry_index = 0;
                 self.load_tree_view_data();
             } else {
@@ -465,8 +525,6 @@ impl App {
                     Ok(entries) => self.projects = entries,
                     Err(_) => self.projects.clear(),
                 }
-                self.current_project = None;
-                self.current_milestone = None;
             }
             2 => {
                 let program = &self.tree_state.path[0];
@@ -477,7 +535,6 @@ impl App {
                     Ok(entries) => self.milestones = entries,
                     Err(_) => self.milestones.clear(),
                 }
-                self.current_milestone = None;
             }
             3 => {
                 let program = &self.tree_state.path[0];
@@ -498,6 +555,155 @@ impl App {
             _ => {}
         }
         self.selected_entry_index = 0;
+        self.build_sidebar_items();
+    }
+
+    fn build_sidebar_items(&mut self) {
+        self.sidebar_items.clear();
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Programs".to_string(),
+            section: SidebarSection::Programs,
+            is_header: true,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        for prog in self.programs.iter() {
+            self.sidebar_items.push(SidebarItem {
+                name: prog.name.clone(),
+                section: SidebarSection::Programs,
+                is_header: false,
+                is_planning_item: None,
+                is_journal_item: None,
+                indent: 0,
+                path: Some(prog.path.clone()),
+            });
+
+            if self.current_program.as_ref() == Some(&prog.name) {
+                for proj in &self.projects {
+                    self.sidebar_items.push(SidebarItem {
+                        name: proj.name.clone(),
+                        section: SidebarSection::Programs,
+                        is_header: false,
+                        is_planning_item: None,
+                        is_journal_item: None,
+                        indent: 1,
+                        path: Some(proj.path.clone()),
+                    });
+
+                    if self.current_project.as_ref() == Some(&proj.name) {
+                        for mile in &self.milestones {
+                            self.sidebar_items.push(SidebarItem {
+                                name: mile.name.clone(),
+                                section: SidebarSection::Programs,
+                                is_header: false,
+                                is_planning_item: None,
+                                is_journal_item: None,
+                                indent: 2,
+                                path: Some(mile.path.clone()),
+                            });
+
+                            if self.current_milestone.as_ref() == Some(&mile.name) {
+                                for task in &self.tasks {
+                                    self.sidebar_items.push(SidebarItem {
+                                        name: task.name.clone(),
+                                        section: SidebarSection::Programs,
+                                        is_header: false,
+                                        is_planning_item: None,
+                                        is_journal_item: None,
+                                        indent: 3,
+                                        path: Some(task.path.clone()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.sidebar_items.push(SidebarItem {
+            name: "".to_string(),
+            section: SidebarSection::Planning,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Planning".to_string(),
+            section: SidebarSection::Planning,
+            is_header: true,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Weekly Planning".to_string(),
+            section: SidebarSection::Planning,
+            is_header: false,
+            is_planning_item: Some("WeeklyPlanning".to_string()),
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Backlog".to_string(),
+            section: SidebarSection::Planning,
+            is_header: false,
+            is_planning_item: Some("Backlog".to_string()),
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "".to_string(),
+            section: SidebarSection::Journal,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Journal".to_string(),
+            section: SidebarSection::Journal,
+            is_header: true,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "Today".to_string(),
+            section: SidebarSection::Journal,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: Some("Today".to_string()),
+            indent: 0,
+            path: None,
+        });
+
+        self.sidebar_items.push(SidebarItem {
+            name: "History".to_string(),
+            section: SidebarSection::Journal,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: Some("History".to_string()),
+            indent: 0,
+            path: None,
+        });
     }
 
     fn handle_enter(&mut self) {
@@ -520,6 +726,9 @@ impl App {
             ViewType::InputTask => {
                 self.confirm_create_task();
             }
+            ViewType::InputTemplateField => {
+                self.confirm_template_field();
+            }
             _ => {}
         }
     }
@@ -529,7 +738,8 @@ impl App {
             ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
-            | ViewType::InputTask => {
+            | ViewType::InputTask
+            | ViewType::InputTemplateField => {
                 self.input_buffer.push(c);
             }
             _ => {}
@@ -541,7 +751,8 @@ impl App {
             ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
-            | ViewType::InputTask => {
+            | ViewType::InputTask
+            | ViewType::InputTemplateField => {
                 self.input_buffer.pop();
             }
             _ => {}
@@ -816,112 +1027,311 @@ impl App {
     }
 
     fn confirm_create_program(&mut self) {
-        if !self.input_buffer.is_empty() {
-            match self.config.data_path.create_program(&self.input_buffer) {
-                Ok(_) => {
-                    self.current_program = Some(self.input_buffer.clone());
-                    self.tree_state.path.push(self.input_buffer.clone());
-                    self.selected_entry_index = 0;
-                    self.load_tree_view_data();
-                    self.current_view = ViewType::TreeView;
-                }
-                Err(e) => {
-                    eprintln!("Error creating program: {}", e);
-                    self.current_view = ViewType::Journal;
-                }
-            }
-        } else {
-            self.current_view = ViewType::TreeView;
+        let template = include_str!("../../templates/program.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+        let target_path = self
+            .config
+            .data_path
+            .programs_dir()
+            .join(format!("{}.md", self.input_buffer));
+
+        let mut values = std::collections::HashMap::new();
+        values.insert("PROGRAM_NAME".to_string(), self.input_buffer.clone());
+        values.insert("NAME".to_string(), self.input_buffer.clone());
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
+
+        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        let fields: Vec<_> = all_fields
+            .into_iter()
+            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .collect();
+
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "program".to_string(),
+            target_path: Some(target_path),
+            fields,
+            current_index: 0,
+            values,
+            strip_labels,
+            date_part: None,
+        });
+
         self.input_buffer.clear();
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_create_project(&mut self) {
-        if !self.input_buffer.is_empty() {
-            if let Some(ref program) = self.current_program {
-                match self
-                    .config
-                    .data_path
-                    .create_project(program, &self.input_buffer)
-                {
-                    Ok(_) => {
-                        self.current_project = Some(self.input_buffer.clone());
-                        self.tree_state.path.push(self.input_buffer.clone());
-                        self.load_tree_view_data();
-                        // Set index to first project (after all programs)
-                        self.selected_entry_index = self.programs.len();
-                        self.current_view = ViewType::TreeView;
-                    }
-                    Err(e) => {
-                        eprintln!("Error creating project: {}", e);
-                        self.current_view = ViewType::Journal;
-                    }
-                }
-            }
-        } else {
-            self.current_view = ViewType::TreeView;
+        let template = include_str!("../../templates/project.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let target_path = self
+            .config
+            .data_path
+            .programs_dir()
+            .join(self.current_program.as_ref().unwrap())
+            .join(format!("{}.md", self.input_buffer));
+
+        let mut values = std::collections::HashMap::new();
+        values.insert("PROJECT_NAME".to_string(), self.input_buffer.clone());
+        values.insert("NAME".to_string(), self.input_buffer.clone());
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
+
+        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        let fields: Vec<_> = all_fields
+            .into_iter()
+            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .collect();
+
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "project".to_string(),
+            target_path: Some(target_path),
+            fields,
+            current_index: 0,
+            values,
+            strip_labels,
+            date_part: None,
+        });
+
         self.input_buffer.clear();
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_create_milestone(&mut self) {
-        if !self.input_buffer.is_empty() {
-            if let (Some(ref program), Some(ref project)) =
-                (&self.current_program, &self.current_project)
-            {
-                match self
-                    .config
-                    .data_path
-                    .create_milestone(program, project, &self.input_buffer)
-                {
-                    Ok(_) => {
-                        self.current_milestone = Some(self.input_buffer.clone());
-                        self.tree_state.path.push(self.input_buffer.clone());
-                        self.load_tree_view_data();
-                        // Set index to first milestone (after programs + projects)
-                        self.selected_entry_index = self.programs.len() + self.projects.len();
-                        self.current_view = ViewType::TreeView;
-                    }
-                    Err(e) => {
-                        eprintln!("Error creating milestone: {}", e);
-                        self.current_view = ViewType::Journal;
-                    }
-                }
-            }
-        } else {
-            self.current_view = ViewType::TreeView;
+        let template = include_str!("../../templates/milestone.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let target_path = self
+            .config
+            .data_path
+            .programs_dir()
+            .join(self.current_program.as_ref().unwrap())
+            .join(self.current_project.as_ref().unwrap())
+            .join(format!("{}.md", self.input_buffer));
+
+        let mut values = std::collections::HashMap::new();
+        values.insert("MILESTONE_NAME".to_string(), self.input_buffer.clone());
+        values.insert("NAME".to_string(), self.input_buffer.clone());
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
+
+        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        let fields: Vec<_> = all_fields
+            .into_iter()
+            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .collect();
+
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "milestone".to_string(),
+            target_path: Some(target_path),
+            fields,
+            current_index: 0,
+            values,
+            strip_labels,
+            date_part: None,
+        });
+
         self.input_buffer.clear();
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_create_task(&mut self) {
-        if !self.input_buffer.is_empty() {
-            if let (Some(ref program), Some(ref project), Some(ref milestone)) = (
-                &self.current_program,
-                &self.current_project,
-                &self.current_milestone,
-            ) {
-                match self.config.data_path.create_task(
-                    program,
-                    project,
-                    milestone,
-                    &self.input_buffer,
-                ) {
-                    Ok(path) => {
-                        self.load_tree_view_data();
-                        // Set index to first task (after programs + projects + milestones)
-                        self.selected_entry_index =
-                            self.programs.len() + self.projects.len() + self.milestones.len();
-                        self.launch_editor(&path);
+        let template = include_str!("../../templates/task.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let target_path = self
+            .config
+            .data_path
+            .programs_dir()
+            .join(self.current_program.as_ref().unwrap())
+            .join(self.current_project.as_ref().unwrap())
+            .join(self.current_milestone.as_ref().unwrap())
+            .join(format!("{}.md", self.input_buffer));
+
+        let mut values = std::collections::HashMap::new();
+        values.insert("TASK_NAME".to_string(), self.input_buffer.clone());
+        values.insert("NAME".to_string(), self.input_buffer.clone());
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+        }
+
+        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        let fields: Vec<_> = all_fields
+            .into_iter()
+            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .collect();
+
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "task".to_string(),
+            target_path: Some(target_path),
+            fields,
+            current_index: 0,
+            values,
+            strip_labels,
+            date_part: None,
+        });
+
+        self.input_buffer.clear();
+        self.current_view = ViewType::InputTemplateField;
+    }
+
+    fn confirm_template_field(&mut self) {
+        if let Some(ref mut state) = self.template_field_state {
+            // Store current input value
+            if let Some((_, placeholder, _)) = state.fields.get(state.current_index) {
+                if placeholder.contains("DATE") {
+                    // For date fields, accumulate the parts
+                    let part = state.date_part.take();
+                    if let Some(ref p) = part {
+                        let key = format!(
+                            "{}_{}",
+                            placeholder,
+                            match p {
+                                DateInputPart::Year => "year",
+                                DateInputPart::Month => "month",
+                                DateInputPart::Day => "day",
+                            }
+                        );
+                        state.values.insert(key, self.input_buffer.clone());
                     }
-                    Err(e) => {
-                        eprintln!("Error creating task: {}", e);
-                        self.current_view = ViewType::Journal;
+                    // Check if we need more parts for date
+                    if state.values.get(&format!("{}_year", placeholder)).is_some()
+                        && state
+                            .values
+                            .get(&format!("{}_month", placeholder))
+                            .is_none()
+                    {
+                        state.date_part = Some(DateInputPart::Month);
+                        self.input_buffer.clear();
+                        return;
                     }
+                    if state.values.get(&format!("{}_year", placeholder)).is_some()
+                        && state
+                            .values
+                            .get(&format!("{}_month", placeholder))
+                            .is_some()
+                        && state.values.get(&format!("{}_day", placeholder)).is_none()
+                    {
+                        state.date_part = Some(DateInputPart::Day);
+                        self.input_buffer.clear();
+                        return;
+                    }
+                    // All date parts collected, combine them
+                    if let (Some(year), Some(month), Some(day)) = (
+                        state.values.get(&format!("{}_year", placeholder)),
+                        state.values.get(&format!("{}_month", placeholder)),
+                        state.values.get(&format!("{}_day", placeholder)),
+                    ) {
+                        let date_str = format!("{}-{:0>2}-{:0>2}", year, month, day);
+                        state.values.insert(placeholder.clone(), date_str);
+                    }
+                } else {
+                    state
+                        .values
+                        .insert(placeholder.clone(), self.input_buffer.clone());
                 }
             }
-        } else {
-            self.current_view = ViewType::Journal;
+
+            // Advance to next field
+            state.current_index += 1;
+            self.input_buffer.clear();
+
+            // Check if more fields to process
+            if state.current_index >= state.fields.len() {
+                // All fields done, create the item
+                let template_name = state.template_name.clone();
+                let program_name = state.values.get("PROGRAM_NAME").cloned();
+                let project_name = state.values.get("PROJECT_NAME").cloned();
+                let milestone_name = state.values.get("MILESTONE_NAME").cloned();
+
+                if let Some(ref target) = state.target_path {
+                    let _ = self.config.data_path.create_from_template(
+                        &template_name,
+                        target,
+                        &state.values,
+                        &state.strip_labels,
+                    );
+                }
+
+                // Clear template state before calling load_tree_view_data
+                self.template_field_state = None;
+
+                // Refresh the tree view
+                self.load_tree_view_data();
+
+                // Navigate to the new item
+                match template_name.as_str() {
+                    "program" => {
+                        if let Some(name) = program_name {
+                            self.current_program = Some(name.clone());
+                            self.tree_state.path.push(name);
+                        }
+                    }
+                    "project" => {
+                        if let Some(name) = project_name {
+                            self.current_project = Some(name.clone());
+                            self.tree_state.path.push(name);
+                        }
+                    }
+                    "milestone" => {
+                        if let Some(name) = milestone_name {
+                            self.current_milestone = Some(name.clone());
+                            self.tree_state.path.push(name);
+                        }
+                    }
+                    _ => {}
+                }
+                self.current_view = ViewType::TreeView;
+                return;
+            }
         }
         self.input_buffer.clear();
     }
@@ -976,7 +1386,7 @@ impl App {
                         action: Some(CommandAction::OpenTodayJournal),
                     },
                     CommandMatch {
-                        label: "Read Archived Journal Entries".to_string(),
+                        label: "Journal History".to_string(),
                         view: ViewType::Journal,
                         exit: false,
                         action: Some(CommandAction::ShowArchiveList),
@@ -991,7 +1401,7 @@ impl App {
                         action: Some(CommandAction::OpenTodayJournal),
                     },
                     CommandMatch {
-                        label: "Read Archived Journal Entries".to_string(),
+                        label: "Journal History".to_string(),
                         view: ViewType::Journal,
                         exit: false,
                         action: Some(CommandAction::ShowArchiveList),
@@ -1017,8 +1427,9 @@ impl App {
                                     | "Programs"
                                     | "Journal"
                                     | "Backlog"
+                                    | "Weekly Planning"
                                     | "Open Today's Journal"
-                                    | "Read Archived Journal Entries"
+                                    | "Journal History"
                                     | "Exit"
                             )
                     } else if depth == 1 {
@@ -1030,8 +1441,9 @@ impl App {
                                     | "Projects"
                                     | "Journal"
                                     | "Backlog"
+                                    | "Weekly Planning"
                                     | "Open Today's Journal"
-                                    | "Read Archived Journal Entries"
+                                    | "Journal History"
                                     | "Exit"
                             )
                     } else if depth == 2 {
@@ -1044,8 +1456,9 @@ impl App {
                                     | "Milestones"
                                     | "Journal"
                                     | "Backlog"
+                                    | "Weekly Planning"
                                     | "Open Today's Journal"
-                                    | "Read Archived Journal Entries"
+                                    | "Journal History"
                                     | "Exit"
                             )
                     } else {
@@ -1059,8 +1472,9 @@ impl App {
                                     | "Tasks"
                                     | "Journal"
                                     | "Backlog"
+                                    | "Weekly Planning"
                                     | "Open Today's Journal"
-                                    | "Read Archived Journal Entries"
+                                    | "Journal History"
                                     | "Exit"
                             )
                     }
@@ -1115,6 +1529,12 @@ fn get_command_list() -> Vec<CommandMatch> {
             action: None,
         },
         CommandMatch {
+            label: "Weekly Planning".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: None,
+        },
+        CommandMatch {
             label: "New Program".to_string(),
             view: ViewType::InputProgram,
             exit: false,
@@ -1145,7 +1565,7 @@ fn get_command_list() -> Vec<CommandMatch> {
             action: Some(CommandAction::OpenTodayJournal),
         },
         CommandMatch {
-            label: "Read Archived Journal Entries".to_string(),
+            label: "Journal History".to_string(),
             view: ViewType::Journal,
             exit: false,
             action: Some(CommandAction::ShowArchiveList),

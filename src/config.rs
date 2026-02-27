@@ -9,6 +9,7 @@ pub struct Config {
     pub version: String,
     pub data_path: PathBuf,
     pub editor: String,
+    pub workflow: Vec<String>,
 }
 
 impl Default for Config {
@@ -21,14 +22,20 @@ impl Default for Config {
             version: "1.0".to_string(),
             data_path: home.join("chronicle").join("workspace"),
             editor: "hx".to_string(),
+            workflow: vec![
+                "New".to_string(),
+                "In Progress".to_string(),
+                "Done".to_string(),
+            ],
         }
     }
 }
 
 impl Config {
     pub fn config_dir() -> Option<PathBuf> {
-        directories::ProjectDirs::from("rs", "chronicle", "chronicle")
-            .map(|dirs| dirs.config_dir().to_path_buf())
+        directories::UserDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .map(|home| home.join(".config").join("chronicle"))
     }
 
     pub fn config_path() -> Option<PathBuf> {
@@ -107,6 +114,11 @@ impl Config {
             version: "1.0".to_string(),
             data_path,
             editor,
+            workflow: vec![
+                "New".to_string(),
+                "In Progress".to_string(),
+                "Done".to_string(),
+            ],
         })
     }
 }

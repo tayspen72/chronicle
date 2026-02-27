@@ -1,5 +1,5 @@
-use crate::storage::WorkspaceStorage;
-use crate::tui::{App, ViewType};
+use crate::storage::{JournalStorage, WorkspaceStorage};
+use crate::tui::{App, DateInputPart, ViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -57,184 +57,53 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn calculate_sidebar_width(app: &App) -> u16 {
-    let depth = app.tree_state.path.len();
     let mut max_len = 0usize;
 
-    // Add current level name
-    let level_name = match depth {
-        0 => "Programs",
-        1 => "Projects",
-        2 => "Milestones",
-        3 => "Tasks",
-        _ => "Items",
-    };
-    max_len = max_len.max(level_name.len());
+    max_len = max_len.max("Navigator".len());
 
-    // Add all visible item names
-    for prog in &app.programs {
-        max_len = max_len.max(prog.name.len());
-    }
-    if depth >= 1 {
-        for proj in &app.projects {
-            max_len = max_len.max(proj.name.len() + 4); // +4 for tree indentation
-        }
-    }
-    if depth >= 2 {
-        for mile in &app.milestones {
-            max_len = max_len.max(mile.name.len() + 8);
-        }
-    }
-    if depth >= 3 {
-        for task in &app.tasks {
-            max_len = max_len.max(task.name.len() + 12);
-        }
+    for item in &app.sidebar_items {
+        let len = item.name.len() + (item.indent * 4);
+        max_len = max_len.max(len);
     }
 
-    // Add padding for borders
     (max_len + 4).min(60).max(15) as u16
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let depth = app.tree_state.path.len();
     let idx = app.selected_entry_index;
 
-    let prog_count = app.programs.len();
-    let proj_count = app.projects.len();
-    let mile_count = app.milestones.len();
-    let task_count = app.tasks.len();
-
-    let mut all_items: Vec<(usize, String, bool, bool)> = Vec::new();
-
-    let add_tree_line =
-        |all_items: &mut Vec<_>, indent: usize, name: &str, is_last: bool, is_selected: bool| {
-            let prefix = if indent == 0 {
-                name.to_string()
-            } else if is_last {
-                format!("└── {}", name)
-            } else {
-                format!("├── {}", name)
-            };
-            all_items.push((indent, prefix, is_selected, is_last));
-        };
-
-    if depth == 0 {
-        for (i, entry) in app.programs.iter().enumerate() {
-            let is_last = i == prog_count.saturating_sub(1);
-            add_tree_line(&mut all_items, 0, &entry.name, is_last, i == idx);
-        }
-    } else if depth == 1 {
-        let selected_program = &app.tree_state.path[0];
-        for (i, entry) in app.programs.iter().enumerate() {
-            let is_current = entry.name == *selected_program;
-            let is_last_prog = i == prog_count.saturating_sub(1);
-            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, false);
-            if is_current {
-                for (j, proj) in app.projects.iter().enumerate() {
-                    let is_last = j == proj_count.saturating_sub(1);
-                    let selected_proj_idx = idx.saturating_sub(prog_count);
-                    add_tree_line(
-                        &mut all_items,
-                        1,
-                        &proj.name,
-                        is_last,
-                        j == selected_proj_idx,
-                    );
-                }
-            }
-        }
-    } else if depth == 2 {
-        let selected_program = &app.tree_state.path[0];
-        let selected_project = &app.tree_state.path[1];
-
-        for (i, entry) in app.programs.iter().enumerate() {
-            let is_current_prog = entry.name == *selected_program;
-            let is_last_prog = i == prog_count.saturating_sub(1);
-            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, false);
-
-            if is_current_prog {
-                for (j, proj) in app.projects.iter().enumerate() {
-                    let is_current_proj = proj.name == *selected_project;
-                    let is_last_proj = j == proj_count.saturating_sub(1);
-                    add_tree_line(&mut all_items, 1, &proj.name, is_last_proj, false);
-
-                    if is_current_proj {
-                        for (k, mile) in app.milestones.iter().enumerate() {
-                            let is_last = k == mile_count.saturating_sub(1);
-                            let selected_mile_idx = idx.saturating_sub(prog_count + proj_count);
-                            add_tree_line(
-                                &mut all_items,
-                                2,
-                                &mile.name,
-                                is_last,
-                                k == selected_mile_idx,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    } else if depth >= 3 {
-        let selected_program = &app.tree_state.path[0];
-        let selected_project = &app.tree_state.path[1];
-        let selected_milestone = &app.tree_state.path[2];
-
-        for (i, entry) in app.programs.iter().enumerate() {
-            let is_current_prog = entry.name == *selected_program;
-            let is_last_prog = i == prog_count.saturating_sub(1);
-            add_tree_line(&mut all_items, 0, &entry.name, is_last_prog, i == idx);
-
-            if is_current_prog {
-                for (j, proj) in app.projects.iter().enumerate() {
-                    let is_current_proj = proj.name == *selected_project;
-                    let is_last_proj = j == proj_count.saturating_sub(1);
-                    let proj_offset = prog_count;
-                    add_tree_line(
-                        &mut all_items,
-                        1,
-                        &proj.name,
-                        is_last_proj,
-                        j + proj_offset == idx,
-                    );
-
-                    if is_current_proj {
-                        for (k, mile) in app.milestones.iter().enumerate() {
-                            let is_current_mile = mile.name == *selected_milestone;
-                            let is_last_mile = k == mile_count.saturating_sub(1);
-                            let mile_offset = prog_count + proj_count;
-                            add_tree_line(
-                                &mut all_items,
-                                2,
-                                &mile.name,
-                                is_last_mile,
-                                k + mile_offset == idx,
-                            );
-
-                            if is_current_mile {
-                                for (t, task) in app.tasks.iter().enumerate() {
-                                    let is_last_task = t == task_count.saturating_sub(1);
-                                    let task_offset = prog_count + proj_count + mile_count;
-                                    add_tree_line(
-                                        &mut all_items,
-                                        3,
-                                        &task.name,
-                                        is_last_task,
-                                        t + task_offset == idx,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let items: Vec<ListItem> = all_items
+    let items: Vec<ListItem> = app
+        .sidebar_items
         .iter()
-        .map(|(indent, prefix, is_selected, _is_last)| {
-            let indent_str = "    ".repeat(*indent);
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == idx;
+            let indent_str = "    ".repeat(item.indent);
+
+            let prefix = if item.is_header {
+                item.name.clone()
+            } else if item.indent == 0 {
+                item.name.clone()
+            } else {
+                let is_last = app
+                    .sidebar_items
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|p| p.indent == item.indent)
+                    .next()
+                    .is_none();
+                if is_last {
+                    format!("└── {}", item.name)
+                } else {
+                    format!("├── {}", item.name)
+                }
+            };
+
             let full_label = format!("{}{}", indent_str, prefix);
-            let style = if *is_selected {
+
+            let style = if item.is_header {
+                Style::default().fg(Color::DarkGray)
+            } else if is_selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -246,21 +115,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let tier_name = match app.tree_state.path.len() {
-        0 => "Programs",
-        1 => "Projects",
-        2 => "Milestones",
-        3 => "Tasks",
-        _ => "Items",
-    };
-    let title = tier_name.to_string();
-
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(title),
+                .title("Navigator"),
         )
         .style(Style::default().fg(Color::White));
 
@@ -272,12 +132,32 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::TreeView => render_tree_view(f, app, area),
         ViewType::Journal => render_journal_welcome(f, app, area),
         ViewType::JournalArchiveList => render_archive_list(f, app, area),
+        ViewType::JournalToday => render_journal_today(f, app, area),
         ViewType::Backlog => render_placeholder(f, area, "Backlog", "No backlog items"),
+        ViewType::WeeklyPlanning => render_placeholder(f, area, "Weekly Planning", "Coming soon"),
         ViewType::ViewingContent => render_content_viewer(f, app, area),
         ViewType::InputProgram => render_input(f, app, area, "Enter program name:"),
         ViewType::InputProject => render_input(f, app, area, "Enter project name:"),
         ViewType::InputMilestone => render_input(f, app, area, "Enter milestone name:"),
         ViewType::InputTask => render_input(f, app, area, "Enter task name:"),
+        ViewType::InputTemplateField => {
+            let prompt = if let Some(ref state) = app.template_field_state {
+                if let Some((ref label, _, _)) = state.fields.get(state.current_index) {
+                    let date_part = state.date_part.as_ref();
+                    match date_part {
+                        Some(DateInputPart::Year) => format!("{} - Year (YYYY):", label),
+                        Some(DateInputPart::Month) => format!("{} - Month (MM):", label),
+                        Some(DateInputPart::Day) => format!("{} - Day (DD):", label),
+                        None => format!("{}:", label),
+                    }
+                } else {
+                    "Enter value:".to_string()
+                }
+            } else {
+                "Enter value:".to_string()
+            };
+            render_input(f, app, area, &prompt);
+        }
     }
 }
 
@@ -295,69 +175,53 @@ fn render_placeholder(f: &mut Frame, area: Rect, title: &str, message: &str) {
 }
 
 fn render_tree_view(f: &mut Frame, app: &App, area: Rect) {
-    let depth = app.tree_state.path.len();
     let idx = app.selected_entry_index;
+    let mut content_to_show = "No item selected".to_string();
+    let mut title = "Empty".to_string();
 
-    let selected_entry: Option<&crate::storage::DirectoryEntry>;
-    let content_to_show: String;
+    if idx < app.sidebar_items.len() {
+        let item = &app.sidebar_items[idx];
 
-    if depth == 0 {
-        selected_entry = app.programs.get(idx);
-    } else if depth == 1 {
-        let prog_count = app.programs.len();
-        if idx < prog_count {
-            selected_entry = app.programs.get(idx);
-        } else {
-            selected_entry = app.projects.get(idx - prog_count);
-        }
-    } else if depth == 2 {
-        let prog_count = app.programs.len();
-        let proj_count = app.projects.len();
-        if idx < prog_count {
-            selected_entry = app.programs.get(idx);
-        } else if idx < prog_count + proj_count {
-            selected_entry = app.projects.get(idx - prog_count);
-        } else {
-            selected_entry = app.milestones.get(idx - prog_count - proj_count);
-        }
-    } else {
-        let prog_count = app.programs.len();
-        let proj_count = app.projects.len();
-        let mile_count = app.milestones.len();
-        if idx < prog_count {
-            selected_entry = app.programs.get(idx);
-        } else if idx < prog_count + proj_count {
-            selected_entry = app.projects.get(idx - prog_count);
-        } else if idx < prog_count + proj_count + mile_count {
-            selected_entry = app.milestones.get(idx - prog_count - proj_count);
-        } else {
-            selected_entry = app.tasks.get(idx - prog_count - proj_count - mile_count);
+        if !item.is_header && !item.name.is_empty() {
+            if let Some(journal_action) = &item.is_journal_item {
+                match journal_action.as_str() {
+                    "Today" => {
+                        title = "Today".to_string();
+                        if let Ok((_, content)) =
+                            app.config.data_path.open_or_create_today_journal()
+                        {
+                            content_to_show = content;
+                        } else {
+                            content_to_show = "No journal entry for today".to_string();
+                        }
+                    }
+                    "History" => {
+                        title = "Journal History".to_string();
+                        let entries = app
+                            .config
+                            .data_path
+                            .list_journal_entries()
+                            .unwrap_or_default();
+                        if entries.is_empty() {
+                            content_to_show = "No journal entries found".to_string();
+                        } else {
+                            content_to_show = entries
+                                .iter()
+                                .map(|e| e.filename.trim_end_matches(".md").to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                        }
+                    }
+                    _ => {}
+                }
+            } else if let Some(path) = &item.path {
+                title = item.name.clone();
+                content_to_show = app.config.data_path.read_md_file(path).unwrap_or_else(|_| {
+                    format!("# {}\n\n(No content or file not found)", item.name)
+                });
+            }
         }
     }
-
-    if let Some(entry) = selected_entry {
-        content_to_show = app
-            .config
-            .data_path
-            .read_md_file(&entry.path)
-            .unwrap_or_else(|_| format!("# {}\n\n(No content or file not found)", entry.name));
-    } else {
-        content_to_show = "No item selected".to_string();
-    }
-
-    let level_name = match depth {
-        0 => "Programs",
-        1 => "Projects",
-        2 => "Milestones",
-        3 => "Tasks",
-        _ => "Items",
-    };
-
-    let title = if let Some(entry) = selected_entry {
-        entry.name.clone()
-    } else {
-        "Empty".to_string()
-    };
 
     let paragraph = Paragraph::new(content_to_show)
         .style(Style::default().fg(Color::White))
@@ -384,16 +248,22 @@ fn render_content_viewer(f: &mut Frame, app: &App, area: Rect) {
         .map(|t| t.clone())
         .unwrap_or_else(|| "No content".to_string());
 
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(title),
-        );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(title);
 
-    f.render_widget(paragraph, area);
+    f.render_widget(block, area);
+
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let paragraph = Paragraph::new(content.as_str()).style(Style::default().fg(Color::White));
+    f.render_widget(paragraph, inner_area);
 }
 
 fn render_journal_welcome(f: &mut Frame, _app: &App, area: Rect) {
@@ -401,7 +271,7 @@ fn render_journal_welcome(f: &mut Frame, _app: &App, area: Rect) {
         Welcome to your journal!\n\n\
         Type /journal to access:\n\
           - Open Today's Journal\n\
-          - Read Archived Journal Entries\n\n\
+          - Journal History\n\n\
         Press / to open command palette";
 
     let paragraph = Paragraph::new(content)
@@ -411,6 +281,21 @@ fn render_journal_welcome(f: &mut Frame, _app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title("Journal"),
+        );
+    f.render_widget(paragraph, area);
+}
+
+fn render_journal_today(f: &mut Frame, app: &App, area: Rect) {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let content = format!("Today's Journal\n\n{}", app.input_buffer);
+
+    let paragraph = Paragraph::new(content)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(format!("Journal - {}", today)),
         );
     f.render_widget(paragraph, area);
 }
@@ -632,13 +517,13 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, prompt: &str) {
 
 fn render_archive_list(f: &mut Frame, app: &App, area: Rect) {
     if app.journal_entries.is_empty() {
-        let paragraph = Paragraph::new("No archived journal entries found.")
+        let paragraph = Paragraph::new("No journal entries found.")
             .style(Style::default().fg(Color::White))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray))
-                    .title("Archived Journals"),
+                    .title("Journal History"),
             );
         f.render_widget(paragraph, area);
         return;
@@ -667,7 +552,7 @@ fn render_archive_list(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title("Archived Journals (newest first)"),
+                .title("Journal History"),
         )
         .style(Style::default().fg(Color::White));
 

@@ -177,6 +177,7 @@ dependencies = [
  "crossterm",
  "directories",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

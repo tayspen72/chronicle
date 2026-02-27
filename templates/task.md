@@ -1,18 +1,10 @@
+# Details
+#Title: {{NAME}}
+#Status: {{DEFAULT_STATUS}}
+#Creation Date: {{TODAY}}
+#Created By: {{OWNER}}
+#Assigned To: {{ASSIGNED_TO}}
+#Due Date: {{DUE_DATE}}
 
-#title: {{TASK_NAME}}
-#status: todo
-#priority:
-#due:
-#tags: #task
-
-## Details
-(Context, acceptance criteria, requirements.)
-
-## Subtasks
-- [ ] (Optional) Subtask 1
-- [ ] (Optional) Subtask 2
-
-## Links
-- (Related specs, PRs, tickets)
-
-## Notes
+# Description
+#Description! {{DESCRIPTION}}
