@@ -1,5 +1,5 @@
 use super::views;
-use crate::tui::{App, DateInputPart, Mode, ViewType};
+use crate::tui::{App, Mode, ViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -141,22 +141,12 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::InputMilestone => views::render_input(f, app, area, "Enter milestone name:"),
         ViewType::InputTask => views::render_input(f, app, area, "Enter task name:"),
         ViewType::InputTemplateField => {
-            let prompt = if let Some(ref state) = app.template_field_state {
-                if let Some((ref label, _, _)) = state.fields.get(state.current_index) {
-                    let date_part = state.date_part.as_ref();
-                    match date_part {
-                        Some(DateInputPart::Year) => format!("{} - Year (YYYY):", label),
-                        Some(DateInputPart::Month) => format!("{} - Month (MM):", label),
-                        Some(DateInputPart::Day) => format!("{} - Day (DD):", label),
-                        None => format!("{}:", label),
-                    }
-                } else {
-                    "Enter value:".to_string()
-                }
+            if let Some(ref state) = app.template_field_state {
+                let prompt = format!("Fill in fields for: {}", state.template_name);
+                views::render_template_fields(f, app, area, &prompt);
             } else {
-                "Enter value:".to_string()
-            };
-            views::render_input(f, app, area, &prompt);
+                views::render_input(f, app, area, "Enter value:");
+            }
         }
     }
 }

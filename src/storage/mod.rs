@@ -726,6 +726,7 @@ impl WorkspaceStorage for PathBuf {
 pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
     let mut fields = Vec::new();
 
+    // Pass 1: Labeled fields - #Label! {{PLACEHOLDER}}
     let re_labeled = regex::Regex::new(r"#([^:!]+)![:]?\s*\{\{(\w+)\}\}").unwrap();
     for cap in re_labeled.captures_iter(template) {
         let field_label = cap
@@ -744,6 +745,7 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
         }
     }
 
+    // Pass 2: Standalone fields - entire line is just {{PLACEHOLDER}}
     let re_standalone = regex::Regex::new(r"^\{\{(\w+)\}\}$").unwrap();
     for line in template.lines() {
         let line = line.trim();
@@ -755,6 +757,35 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
                 fields.push((placeholder.clone(), placeholder, true));
             }
+        }
+    }
+
+    // Pass 3: Inline placeholders - anywhere in the template (e.g., due_date: {{DUE_DATE}})
+    let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
+    for cap in re_inline.captures_iter(template) {
+        let placeholder = cap
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
+            // For inline placeholders, use the placeholder name as the label
+            // Format it nicely (e.g., DUE_DATE -> "Due Date")
+            let label = placeholder
+                .replace('_', " ")
+                .split_whitespace()
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(c) => {
+                            c.to_uppercase().collect::<String>()
+                                + chars.as_str().to_lowercase().as_str()
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            fields.push((label, placeholder, true));
         }
     }
 

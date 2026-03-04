@@ -193,6 +193,106 @@ pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, promp
     f.render_widget(paragraph, area);
 }
 
+/// Renders the template field wizard as a single-page form with navigation.
+pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect, prompt: &str) {
+    let state = match app.template_field_state.as_ref() {
+        Some(s) => s,
+        None => {
+            render_input(f, app, area, prompt);
+            return;
+        }
+    };
+
+    let fields = &state.fields;
+    let focused_index = state.focused_index;
+    let field_count = fields.len();
+    let is_confirming = state.confirming;
+
+    // Calculate available height for fields
+    let header_height = 5u16;
+    let instructions_height = 2u16;
+    let input_height = 3u16;
+    let button_height = 3u16;
+    let available_height = area
+        .height
+        .saturating_sub(header_height + instructions_height + input_height + button_height);
+
+    // Calculate how many fields can be visible
+    let visible_fields = (available_height / 2) as usize;
+    let scroll_offset = if focused_index >= visible_fields {
+        focused_index - visible_fields + 1
+    } else {
+        0
+    };
+
+    // Build content
+    let mut lines = vec![
+        prompt.to_string(),
+        String::new(),
+        "Use ↑/↓ to navigate | Enter to edit field | Tab for next | Esc to cancel".to_string(),
+        String::new(),
+    ];
+
+    // Scroll indicator if needed
+    if field_count > visible_fields && scroll_offset > 0 {
+        lines.push(format!(
+            "  ↑ {} more fields above...",
+            field_count - scroll_offset
+        ));
+    }
+
+    // Render visible fields
+    for (i, field) in fields.iter().enumerate() {
+        if i < scroll_offset || i >= scroll_offset + visible_fields {
+            continue;
+        }
+
+        let is_focused = i == focused_index;
+        let prefix = if is_focused { "→ " } else { "  " };
+        let value_display = if field.value.is_empty() {
+            &field.placeholder
+        } else {
+            &field.value
+        };
+
+        lines.push(format!("{}{}: {}", prefix, field.label, value_display));
+    }
+
+    // Scroll indicator if there are more fields below
+    if field_count > visible_fields && scroll_offset + visible_fields < field_count {
+        lines.push(format!(
+            "  ↓ {} more fields below...",
+            field_count - scroll_offset - visible_fields
+        ));
+    }
+
+    // Confirm button
+    lines.push(String::new());
+    if is_confirming {
+        lines.push("→ [Confirm and Create]".to_string());
+    } else {
+        lines.push("  [Confirm]".to_string());
+    }
+    lines.push(String::new());
+
+    // Input area
+    lines.push(format!("> {}", app.input_buffer));
+
+    // Join all lines
+    let content = lines.join("\n");
+
+    // Render the widget
+    let paragraph = Paragraph::new(content)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Template Fields"),
+        );
+    f.render_widget(paragraph, area);
+}
+
 pub fn render_placeholder(f: &mut Frame, area: ratatui::layout::Rect, title: &str, message: &str) {
     let content = format!("{}\n\n({})", title, message);
     let paragraph = Paragraph::new(content)
