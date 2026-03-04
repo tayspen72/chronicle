@@ -1627,4 +1627,59 @@ mod tests {
 
         assert!(matches!(app.mode, Mode::Normal));
     }
+
+    #[test]
+    fn test_command_palette_has_new_program_with_empty_workspace() {
+        // Simulate an empty workspace scenario
+        let mut config = crate::config::Config::default();
+        // Set workspace to a temp directory (simulating empty workspace)
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        config.workspace = temp_dir.path().to_path_buf();
+
+        let mut app = App::new(config);
+
+        // Verify programs list is empty
+        assert!(
+            app.programs.is_empty(),
+            "Programs should be empty in new workspace"
+        );
+
+        // Verify sidebar has items (Planning and Journal sections should exist)
+        assert!(
+            !app.sidebar_items.is_empty(),
+            "Sidebar should have items even with empty programs"
+        );
+
+        // Open command palette
+        app.handle_key(KeyCode::Char('/'));
+        assert!(matches!(app.mode, Mode::CommandPalette));
+
+        // Verify "New Program" is in the command list
+        assert!(
+            app.command_matches.iter().any(|c| c.label == "New Program"),
+            "New Program command should be available even with empty workspace"
+        );
+
+        // Verify we can navigate the command list
+        assert!(
+            !app.command_matches.is_empty(),
+            "Command list should not be empty"
+        );
+
+        // Verify we can select "New Program" command
+        let new_program_idx = app
+            .command_matches
+            .iter()
+            .position(|c| c.label == "New Program");
+        assert!(
+            new_program_idx.is_some(),
+            "Should be able to find New Program command index"
+        );
+
+        // Navigate to New program command
+        if let Some(idx) = new_program_idx {
+            app.command_selection_index = idx;
+            assert_eq!(app.command_matches[idx].label, "New Program");
+        }
+    }
 }
