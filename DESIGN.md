@@ -311,107 +311,23 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `feat/layered-error-types`
-**Tag**: `stable/pre-error-types-2026-03-04`
-**Goal**: Add layered error types using `thiserror` to replace `anyhow` in library code.
-
-### Problem
-
-Currently all modules use `anyhow::Result` directly, mixing library and application error handling:
-- No `error.rs` or `lib.rs` exists
-- `config.rs`, `storage/mod.rs`, `storage/md.rs`, `commands/*.rs`, `tui/mod.rs` all use `anyhow::Result`
-- Per AGENTS.md: library code should use `thiserror`, only `main.rs` should use `anyhow`
-
-### Target Structure
-
-Create `src/error.rs` with layered error types:
-```rust
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Configuration error: {0}")]
-    Config(#[from] ConfigError),
-    #[error("Storage error: {0}")]
-    Storage(#[from] StorageError),
-    #[error("Model error: {0}")]
-    Model(#[from] ModelError),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-#[derive(Error, Debug)]
-pub enum ConfigError { ... }
-
-#[derive(Error, Debug)]
-pub enum StorageError { ... }
-
-#[derive(Error, Debug)]
-pub enum ModelError { ... }
-```
-
-Create `src/lib.rs` as crate root:
-```rust
-pub mod commands;
-pub mod config;
-pub mod error;
-pub mod model;
-pub mod storage;
-pub mod tui;
-
-pub use error::{Error, Result};
-```
-
-### Tasks
-
-- [ ] **T1: Create `src/error.rs`**
-  - Define `ConfigError` enum with variants: NotFound, Invalid, Io wrapped
-  - Define `StorageError` enum with variants: NotFound, Io, Yaml, Template
-  - Define `ModelError` enum with variants: Validation, NotFound
-  - Define top-level `Error` enum with `#[from]` for sub-errors and std::io::Error
-  - Define `pub type Result<T> = std::result::Result<T, Error>;`
-
-- [ ] **T2: Create `src/lib.rs`**
-  - Export all modules
-  - Re-export `Error` and `Result` at crate root
-
-- [ ] **T3: Update `config.rs`**
-  - Change `use anyhow::Result` to `use crate::error::{ConfigError, Result}`
-  - Update error creation sites to use `ConfigError::NotFound` etc.
-  - Keep `#[error(transparent)]` for std::io::Error propagation
-
-- [ ] **T4: Update `storage/mod.rs` and `storage/md.rs`**
-  - Change to use `crate::error::{StorageError, Result}`
-  - Update error creation sites
-
-- [ ] **T5: Update other library modules**
-  - `model/mod.rs` - use `crate::error::{ModelError, Result}`
-  - `commands/*.rs` - use `crate::Result`
-  - `tui/mod.rs` - use `crate::Result`
-
-- [ ] **T6: Update `main.rs`**
-  - Keep `use anyhow::Result` (binary entry point)
-  - Add `.context()` or map errors as needed at entry point
-
-- [ ] **T7: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings` - no warnings
-
-### Success Criteria
-
-- All 49 tests pass
-- Clippy reports 0 warnings
-- Library code uses `thiserror` types via `crate::Result`
-- Only `main.rs` uses `anyhow`
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
+- Created `src/error.rs` with layered error types (Error, ConfigError, StorageError, ModelError)
+- Created `src/lib.rs` as crate root exporting all modules
+- Updated all library modules to use `crate::Result`
+- Only `main.rs` uses `anyhow` (binary entry point)
+- Fixed pre-existing bug in `new_task.rs` (unterminated char literal)
+- All 49 tests passing, clippy clean
+
 **Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
 - Extracted 11 view-specific render functions from `layout.rs` to `views/mod.rs`
 - `layout.rs`: 674 → 272 lines (60% reduction)
-- `views/mod.rs`: 2 → 413 lines
 - All 49 tests passing, clippy clean
 
 **Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
