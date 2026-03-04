@@ -311,7 +311,61 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `feat/status-panel`
+**Tag**: `stable/pre-status-panel-2026-03-04`
+**Goal**: Redesign status bar to be more intuitive and useful.
+
+### Problem
+
+The current status bar only shows the selected file path, which is not very useful to the user. Per Open Question #5, several options were proposed.
+
+### Design Decision
+
+Implement a **split status bar** with:
+
+**Left side**: Breadcrumb navigation showing current context
+- Shows: `Program > Project > Milestone > Task` hierarchy
+- Uses `current_program/project/milestone/task` state
+- Empty state shows "No selection"
+
+**Right side**: Mode indicator
+- Shows current mode: `NORMAL`, `COMMAND`, or `INPUT`
+- Color-coded: Green (Normal), Yellow (Command), Cyan (Input)
+
+### Implementation
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Program Name > Project Name > Milestone Name      NORMAL       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Tasks
+
+- [ ] **T1: Redesign `render_status_bar()` in `layout.rs`**
+  - Split area into left (breadcrumb) and right (mode) sections
+  - Left: Build breadcrumb from current_* state
+  - Right: Display mode based on App's current state
+
+- [ ] **T2: Add mode detection**
+  - Normal mode: default
+  - Command mode: when command palette is open
+  - Input mode: when in input/template wizard
+
+- [ ] **T3: Add styling**
+  - Breadcrumb: White text, separators in dark gray
+  - Mode indicator: Color-coded by mode
+
+- [ ] **T4: Verify**
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+
+### Success Criteria
+
+- All 56 tests pass
+- Clippy reports 0 warnings
+- Status bar shows breadcrumb context
+- Status bar shows current mode
 
 ---
 
