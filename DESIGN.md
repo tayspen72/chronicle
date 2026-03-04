@@ -311,7 +311,59 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `feat/planning-views`
+**Tag**: `stable/pre-planning-views-2026-03-04`
+**Goal**: Implement basic Backlog and WeeklyPlanning views.
+
+### Problem
+
+The Backlog and WeeklyPlanning views currently show placeholder messages. Per design_requirements.md:
+> "Planning will have two entries: iteration planning and backlog. Ultimately these two will be created and show reports of statistics and statuses of tasks. For now, nothing. A simple placeholder can be shown (in development) until this is fully thought through."
+
+However, basic useful functionality can be added:
+
+### Planned Implementation
+
+**Backlog View**:
+- Show all tasks in a flat list (across all programs/projects/milestones)
+- Display task name and parent path
+- Allow navigation and selection
+- Press Enter to jump to task in tree view
+
+**WeeklyPlanning View**:
+- Show current week date range
+- Display tasks with due dates in the current week (if parseable)
+- Show task counts and status summary
+- Placeholder message for future features
+
+### Tasks
+
+- [ ] **T1: Implement Backlog view**
+  - Add `render_backlog()` function in `views/mod.rs`
+  - Show all tasks as a flat list
+  - Display parent context (Program > Project > Milestone)
+  - Update `render_content()` dispatcher in layout.rs
+
+- [ ] **T2: Implement WeeklyPlanning view**
+  - Add `render_weekly_planning()` function in `views/mod.rs`
+  - Show current week date range
+  - Display basic task statistics
+  - Update `render_content()` dispatcher in layout.rs
+
+- [ ] **T3: Add data loading for views**
+  - App may need to load all tasks for backlog view
+  - Consider caching strategy
+
+- [ ] **T4: Verify**
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+
+### Success Criteria
+
+- All 56 tests pass
+- Clippy reports 0 warnings
+- Backlog view shows all tasks
+- WeeklyPlanning view shows week info and statistics
 
 ---
 

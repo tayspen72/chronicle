@@ -131,10 +131,8 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::Journal => views::render_journal_welcome(f, app, area),
         ViewType::JournalArchiveList => views::render_archive_list(f, app, area),
         ViewType::JournalToday => views::render_journal_today(f, app, area),
-        ViewType::Backlog => views::render_placeholder(f, area, "Backlog", "No backlog items"),
-        ViewType::WeeklyPlanning => {
-            views::render_placeholder(f, area, "Weekly Planning", "Coming soon")
-        }
+        ViewType::Backlog => views::render_backlog(f, app, area),
+        ViewType::WeeklyPlanning => views::render_weekly_planning(f, app, area),
         ViewType::ViewingContent => views::render_content_viewer(f, app, area),
         ViewType::InputProgram => views::render_input(f, app, area, "Enter program name:"),
         ViewType::InputProject => views::render_input(f, app, area, "Enter project name:"),
