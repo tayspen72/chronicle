@@ -186,7 +186,7 @@ fn render_tree_view(f: &mut Frame, app: &App, area: Rect) {
                     "Today" => {
                         title = "Today".to_string();
                         if let Ok((_, content)) =
-                            app.config.data_path.open_or_create_today_journal()
+                            app.config.workspace.open_or_create_today_journal()
                         {
                             content_to_show = content;
                         } else {
@@ -197,7 +197,7 @@ fn render_tree_view(f: &mut Frame, app: &App, area: Rect) {
                         title = "Journal History".to_string();
                         let entries = app
                             .config
-                            .data_path
+                            .workspace
                             .list_journal_entries()
                             .unwrap_or_default();
                         if entries.is_empty() {
@@ -214,7 +214,7 @@ fn render_tree_view(f: &mut Frame, app: &App, area: Rect) {
                 }
             } else if let Some(path) = &item.path {
                 title = item.name.clone();
-                content_to_show = app.config.data_path.read_md_file(path).unwrap_or_else(|_| {
+                content_to_show = app.config.workspace.read_md_file(path).unwrap_or_else(|_| {
                     format!("# {}\n\n(No content or file not found)", item.name)
                 });
             }

@@ -4,12 +4,84 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+/// Key bindings for navigation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavigationKeys {
+    #[serde(default = "default_left")]
+    pub left: char,
+    #[serde(default = "default_right")]
+    pub right: char,
+    #[serde(default = "default_up")]
+    pub up: char,
+    #[serde(default = "default_down")]
+    pub down: char,
+}
+
+impl Default for NavigationKeys {
+    fn default() -> Self {
+        NavigationKeys {
+            left: default_left(),
+            right: default_right(),
+            up: default_up(),
+            down: default_down(),
+        }
+    }
+}
+
+fn default_workflow() -> Vec<String> {
+    vec![
+        "New".into(),
+        "Active".into(),
+        "Blocked".into(),
+        "Testing".into(),
+        "Completed".into(),
+        "Cancelled".into(),
+    ]
+}
+
+fn default_navigator_width() -> u16 {
+    60
+}
+
+fn default_planning_duration() -> String {
+    "biweekly".into()
+}
+
+fn default_left() -> char {
+    'h'
+}
+
+fn default_right() -> char {
+    'l'
+}
+
+fn default_up() -> char {
+    'k'
+}
+
+fn default_down() -> char {
+    'j'
+}
+
+/// User configuration for Chronicle
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub version: String,
-    pub data_path: PathBuf,
+    /// Path to the chronicle workspace directory
+    pub workspace: PathBuf,
+    /// Editor command for opening files
     pub editor: String,
+    /// Workflow status values
+    #[serde(default = "default_workflow")]
     pub workflow: Vec<String>,
+    /// Width of the navigator panel in columns
+    #[serde(default = "default_navigator_width")]
+    pub navigator_width: u16,
+    /// Planning iteration duration
+    #[serde(default = "default_planning_duration")]
+    pub planning_duration: String,
+    /// Key bindings for navigation
+    #[serde(default)]
+    pub navigation_keys: NavigationKeys,
 }
 
 impl Default for Config {
@@ -19,14 +91,12 @@ impl Default for Config {
             .unwrap_or_else(|| PathBuf::from("."));
 
         Config {
-            version: "1.0".to_string(),
-            data_path: home.join("chronicle").join("workspace"),
+            workspace: home.join("chronicle").join("workspace"),
             editor: "hx".to_string(),
-            workflow: vec![
-                "New".to_string(),
-                "In Progress".to_string(),
-                "Done".to_string(),
-            ],
+            workflow: default_workflow(),
+            navigator_width: 60,
+            planning_duration: "biweekly".to_string(),
+            navigation_keys: NavigationKeys::default(),
         }
     }
 }
@@ -48,7 +118,7 @@ impl Config {
 
         if config_path.exists() {
             let contents = fs::read_to_string(&config_path)?;
-            let mut config: Config = serde_yaml::from_str(&contents)?;
+            let mut config: Config = toml::from_str(&contents)?;
 
             if config.editor.is_empty() {
                 config.editor = "hx".to_string();
@@ -60,7 +130,7 @@ impl Config {
             if let Some(parent) = config_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let contents = serde_yaml::to_string(&config)?;
+            let contents = toml::to_string_pretty(&config)?;
             fs::write(&config_path, contents)?;
             Ok(config)
         }
@@ -73,22 +143,22 @@ impl Config {
             .map(|dirs| dirs.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let default_data_path = home.join("chronicle").join("workspace");
+        let default_workspace = home.join("chronicle").join("workspace");
 
         print!(
-            "Chronicle data directory [{}]: ",
-            default_data_path.display()
+            "Chronicle workspace directory [{}]: ",
+            default_workspace.display()
         );
         io::stdout().flush()?;
 
-        let mut data_path_input = String::new();
-        io::stdin().read_line(&mut data_path_input)?;
-        let data_path_input = data_path_input.trim().to_string();
+        let mut workspace_input = String::new();
+        io::stdin().read_line(&mut workspace_input)?;
+        let workspace_input = workspace_input.trim().to_string();
 
-        let data_path = if data_path_input.is_empty() {
-            default_data_path
+        let workspace = if workspace_input.is_empty() {
+            default_workspace
         } else {
-            PathBuf::from(data_path_input)
+            PathBuf::from(workspace_input)
         };
 
         print!("Text editor (e.g., hx, vim, code) [hx]: ");
@@ -105,20 +175,150 @@ impl Config {
         };
 
         println!("\n=== Setup Complete ===\n");
-        println!("Data directory: {}", data_path.display());
+        println!("Workspace directory: {}", workspace.display());
         println!("Editor: {}", editor);
         println!("\nPress Enter to continue...");
         io::stdin().read_line(&mut String::new())?;
 
         Ok(Config {
-            version: "1.0".to_string(),
-            data_path,
+            workspace,
             editor,
-            workflow: vec![
-                "New".to_string(),
-                "In Progress".to_string(),
-                "Done".to_string(),
-            ],
+            workflow: default_workflow(),
+            navigator_width: 60,
+            planning_duration: "biweekly".to_string(),
+            navigation_keys: NavigationKeys::default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_full_config() {
+        let toml_content = r#"
+workspace = "/home/user/chronicle"
+editor = "helix"
+navigator_width = 60
+planning_duration = "biweekly"
+
+workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
+
+[navigation_keys]
+left = "h"
+right = "l"
+up = "k"
+down = "j"
+"#;
+        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+
+        assert_eq!(config.workspace, PathBuf::from("/home/user/chronicle"));
+        assert_eq!(config.editor, "helix");
+        assert_eq!(config.navigator_width, 60);
+        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(
+            config.workflow,
+            vec![
+                "New",
+                "Active",
+                "Blocked",
+                "Testing",
+                "Completed",
+                "Cancelled"
+            ]
+        );
+        assert_eq!(config.navigation_keys.left, 'h');
+        assert_eq!(config.navigation_keys.right, 'l');
+        assert_eq!(config.navigation_keys.up, 'k');
+        assert_eq!(config.navigation_keys.down, 'j');
+    }
+
+    #[test]
+    fn test_parse_minimal_config() {
+        let toml_content = r#"
+workspace = "/home/user/chronicle"
+editor = "vim"
+"#;
+        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+
+        assert_eq!(config.workspace, PathBuf::from("/home/user/chronicle"));
+        assert_eq!(config.editor, "vim");
+        // Check defaults are applied
+        assert_eq!(config.navigator_width, 60);
+        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(
+            config.workflow,
+            vec![
+                "New",
+                "Active",
+                "Blocked",
+                "Testing",
+                "Completed",
+                "Cancelled"
+            ]
+        );
+        assert_eq!(config.navigation_keys.left, 'h');
+        assert_eq!(config.navigation_keys.right, 'l');
+        assert_eq!(config.navigation_keys.up, 'k');
+        assert_eq!(config.navigation_keys.down, 'j');
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+
+        assert!(config.workspace.to_string_lossy().contains("chronicle"));
+        assert!(config.workspace.to_string_lossy().contains("workspace"));
+        assert_eq!(config.editor, "hx");
+        assert_eq!(config.navigator_width, 60);
+        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(
+            config.workflow,
+            vec![
+                "New",
+                "Active",
+                "Blocked",
+                "Testing",
+                "Completed",
+                "Cancelled"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_navigation_keys_default() {
+        let keys = NavigationKeys::default();
+
+        assert_eq!(keys.left, 'h');
+        assert_eq!(keys.right, 'l');
+        assert_eq!(keys.up, 'k');
+        assert_eq!(keys.down, 'j');
+    }
+
+    #[test]
+    fn test_serialize_config() {
+        let config = Config {
+            workspace: PathBuf::from("/test/path"),
+            editor: "code".to_string(),
+            workflow: vec!["todo".to_string(), "done".to_string()],
+            navigator_width: 80,
+            planning_duration: "weekly".to_string(),
+            navigation_keys: NavigationKeys {
+                left: 'a',
+                right: 'd',
+                up: 'w',
+                down: 's',
+            },
+        };
+
+        let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize");
+
+        assert!(toml_str.contains("workspace = \"/test/path\""));
+        assert!(toml_str.contains("editor = \"code\""));
+        assert!(toml_str.contains("navigator_width = 80"));
+        assert!(toml_str.contains("planning_duration = \"weekly\""));
+        assert!(toml_str.contains("left = \"a\""));
+        assert!(toml_str.contains("right = \"d\""));
     }
 }

@@ -204,196 +204,59 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `feat/app-modes`
+**Branch**: `fix/config-toml-parsing`
 
 ### Goal
 
-Refactor the monolithic App into maintainable modules with explicit Mode enum.
+Fix the config system to properly parse TOML files and include all expected fields.
 
-### Strategy: Incremental Refactoring
+### Problem
 
-Each phase is a **single implementer task**. A phase is complete when:
-- `cargo check` passes
-- `cargo test` passes  
-- `cargo run` still works (manual smoke test by architect)
+The `Config` struct in `src/config.rs` has three issues:
 
-**Do not proceed to the next phase until the current phase is verified.**
+1. **Wrong parser**: Uses `serde_yaml::from_str()` to parse a `.toml` file (line 51)
+2. **Missing fields**: Config file has `workspace`, `navigator_width`, `planning_duration`, `navigation_keys` but struct only has `version`, `data_path`, `editor`, `workflow`
+3. **Field name mismatch**: Config file uses `workspace` but struct uses `data_path`
 
----
+### Tasks
 
-### Phase 1: Add Mode Enum (Additive Only)
+- [ ] **T1: Add toml dependency** to `Cargo.toml` (already present, just verify)
+- [ ] **T2: Fix Config struct** to include all fields from the config file format
+- [ ] **T3: Replace YAML parser with TOML parser** in `load_or_create()` and `prompt_first_run()`
+- [ ] **T4: Update tests** to ensure config parsing works
+- [ ] **T5: Verify** with `cargo run` that existing config loads correctly
 
-**Goal**: Introduce the Mode enum without breaking anything.
+### Target Config Structure
 
-**Changes** (in `src/tui/mod.rs` only):
-1. Add `pub enum Mode { Normal, CommandPalette, Input }` near the top of the file, after imports
-2. Add `mode: Mode` field to `App` struct (keep `command_palette_open: bool` for now)
-3. In `App::new()`, initialize `mode: Mode::Normal`
-4. **Do NOT** change any conditionals or remove anything
+```toml
+workspace = "/home/user/chronicle"
+editor = "helix"
+navigator_width = 60
+planning_duration = "biweekly"
 
-**Verification**:
+workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
+
+[navigation_keys]
+left = "h"
+right = "l"
+up = "k"
+down = "j"
+```
+
+### Verification
+
 ```bash
-cargo check   # Must compile
 cargo test    # All tests pass
-```
-
-This is purely additive. Zero risk.
-
----
-
-### Phase 2: Dual-Track Mode Setting (Transitional)
-
-**Goal**: Start setting the mode alongside the existing bool.
-
-**Changes** (in `src/tui/mod.rs` only):
-1. Find every place where `command_palette_open = true` is set
-2. Add `self.mode = Mode::CommandPalette;` on the next line
-3. Find every place where `command_palette_open = false` is set
-4. Add `self.mode = Mode::Normal;` on the next line
-5. **Do NOT** change any conditionals yet
-
-**Verification**:
-```bash
-cargo check   # Must compile
-cargo test    # All tests pass
+cargo run     # Config loads without error
 ```
 
 ---
 
-### Phase 3: Switch Conditionals to Mode
+### Previous Sprint (Completed)
 
-**Goal**: Use the mode in conditionals instead of the bool.
+**Branch**: `feat/app-modes` — **MERGED** (tag: `stable/app-modes-2026-03-03`)
 
-**Changes** (in `src/tui/mod.rs` only):
-1. Replace `if self.command_palette_open` with `matches!(self.mode, Mode::CommandPalette)`
-2. Replace `if !self.command_palette_open` with `!matches!(self.mode, Mode::CommandPalette)`
-3. Keep the `command_palette_open` field for now (safety net)
-
-**Verification**:
-```bash
-cargo check   # Must compile
-cargo test    # All tests pass
-cargo run     # Command palette must still work
-```
-
----
-
-### Phase 4: Remove command_palette_open Field
-
-**Goal**: Complete the transition to Mode.
-
-**Changes** (in `src/tui/mod.rs` only):
-1. Delete the `command_palette_open: bool` field from `App` struct
-2. Delete all lines that set `command_palette_open = true/false`
-3. Run `cargo clippy --fix` to clean up any unused imports
-
-**Verification**:
-```bash
-cargo check   # Must compile
-cargo test    # All tests pass
-cargo run     # Everything still works
-```
-
----
-
-### Phase 5: Create CommandPalette Struct (In Place)
-
-**Goal**: Encapsulate command palette state without extracting to new file yet.
-
-**Changes** (in `src/tui/mod.rs` only):
-1. Create `pub struct CommandPalette` with fields:
-   - `input: String`
-   - `matches: Vec<CommandMatch>`
-   - `selection_index: usize`
-2. Add `impl CommandPalette` with:
-   - `fn new() -> Self`
-   - `fn is_empty(&self) -> bool`
-   - `fn clear(&mut self)`
-3. Add `command_palette: CommandPalette` field to `App`
-4. In `App::new()`, initialize it
-5. Update references: `self.command_input` → `self.command_palette.input`, etc.
-
-**Verification**:
-```bash
-cargo check   # Must compile
-cargo test    # All tests pass
-```
-
----
-
-### Phase 6: Move CommandPalette to command.rs
-
-**Goal**: Extract the struct to its module.
-
-**Changes**:
-1. Move `CommandMatch`, `CommandAction`, `CommandPalette` from `mod.rs` to `command.rs`
-2. Add `use crate::tui::command::{CommandPalette, CommandMatch, CommandAction};` in `mod.rs`
-3. Ensure `command.rs` has necessary imports
-
-**Verification**:
-```bash
-cargo check   # Must compile
-cargo test    # All tests pass
-```
-
----
-
-### Phase 7-9: Navigation Extraction (Similar Pattern)
-
-Following the same incremental approach:
-- Phase 7: Create TreeNavigation struct in mod.rs
-- Phase 8: Update App to use it
-- Phase 9: Move to navigation.rs
-
----
-
-### Phase 10: Add Mode Transition Tests
-
-**Goal**: Verify mode transitions with unit tests.
-
-**Changes** (add `#[cfg(test)]` block to `tui/mod.rs`):
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_slash_enters_command_palette_mode() {
-        // Create app, send '/' key, assert mode is CommandPalette
-    }
-    
-    #[test]
-    fn test_esc_exits_command_palette_mode() {
-        // Create app with CommandPalette mode, send Esc, assert Normal
-    }
-}
-```
-
----
-
-### Phase 11: Final Cleanup
-
-- Run `cargo clippy -- -D warnings` and fix all issues
-- Remove any `#[allow(dead_code)]` that are no longer needed
-- Final `cargo test` and `cargo run` verification
-
----
-
-### Current Status
-
-| Phase | Status |
-|-------|--------|
-| Phase 1: Add Mode Enum | ✅ Complete |
-| Phase 2: Dual-Track | ✅ Complete |
-| Phase 3: Switch Conditionals | ✅ Complete |
-| Phase 4: Remove Bool | ✅ Complete |
-| Phase 5: CommandPalette Struct | ✅ Complete (skipped - went straight to Phase 6) |
-| Phase 6: Extract to command.rs | ✅ Complete |
-| Phase 7-9: Navigation | ✅ Complete |
-| Phase 10: Tests | ✅ Complete |
-| Phase 11: Cleanup | ✅ Complete |
-
-**Sprint Complete!** All phases finished. Ready for merge.
+All phases completed: Mode enum, CommandPalette extraction, Navigation extraction, tests, cleanup.
 
 ## Open Questions
 

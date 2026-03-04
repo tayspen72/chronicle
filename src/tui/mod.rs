@@ -459,12 +459,12 @@ impl App {
         if let Some(journal_action) = &item.is_journal_item {
             match journal_action.as_str() {
                 "Today" => {
-                    if let Ok((path, _)) = self.config.data_path.open_or_create_today_journal() {
+                    if let Ok((path, _)) = self.config.workspace.open_or_create_today_journal() {
                         self.launch_editor(&path);
                     }
                 }
                 "History" => {
-                    match self.config.data_path.list_journal_entries() {
+                    match self.config.workspace.list_journal_entries() {
                         Ok(entries) => self.journal_entries = entries,
                         Err(_) => self.journal_entries.clear(),
                     }
@@ -514,7 +514,7 @@ impl App {
     }
 
     fn open_content(&mut self, entry: &DirectoryEntry) {
-        if let Ok(content) = self.config.data_path.read_md_file(&entry.path) {
+        if let Ok(content) = self.config.workspace.read_md_file(&entry.path) {
             self.current_content_text = Some(content);
             self.current_view = ViewType::ViewingContent;
             self.selected_content = Some(entry.clone());
@@ -524,7 +524,7 @@ impl App {
     fn load_tree_view_data(&mut self) {
         match self.tree_state.path.len() {
             0 => {
-                match self.config.data_path.list_programs() {
+                match self.config.workspace.list_programs() {
                     Ok(entries) => self.programs = entries,
                     Err(_) => self.programs.clear(),
                 }
@@ -535,7 +535,7 @@ impl App {
             1 => {
                 let program = &self.tree_state.path[0];
                 self.current_program = Some(program.clone());
-                match self.config.data_path.list_projects(program) {
+                match self.config.workspace.list_projects(program) {
                     Ok(entries) => self.projects = entries,
                     Err(_) => self.projects.clear(),
                 }
@@ -545,7 +545,7 @@ impl App {
                 let project = &self.tree_state.path[1];
                 self.current_program = Some(program.clone());
                 self.current_project = Some(project.clone());
-                match self.config.data_path.list_milestones(program, project) {
+                match self.config.workspace.list_milestones(program, project) {
                     Ok(entries) => self.milestones = entries,
                     Err(_) => self.milestones.clear(),
                 }
@@ -559,7 +559,7 @@ impl App {
                 self.current_milestone = Some(milestone.clone());
                 match self
                     .config
-                    .data_path
+                    .workspace
                     .list_tasks(program, project, milestone)
                 {
                     Ok(entries) => self.tasks = entries,
@@ -888,8 +888,8 @@ impl App {
     }
 
     fn open_today_journal(&mut self) {
-        let data_path = &self.config.data_path;
-        match data_path.open_or_create_today_journal() {
+        let workspace = &self.config.workspace;
+        match workspace.open_or_create_today_journal() {
             Ok((path, _)) => {
                 self.launch_editor(&path);
             }
@@ -900,8 +900,8 @@ impl App {
     }
 
     fn show_archive_list(&mut self) {
-        let data_path = &self.config.data_path;
-        match data_path.list_journal_entries() {
+        let workspace = &self.config.workspace;
+        match workspace.list_journal_entries() {
             Ok(entries) => {
                 self.journal_entries = entries;
                 self.selected_entry_index = 0;
@@ -1049,7 +1049,7 @@ impl App {
         let all_fields = crate::storage::parse_template_fields(template);
         let target_path = self
             .config
-            .data_path
+            .workspace
             .programs_dir()
             .join(format!("{}.md", self.input_buffer));
 
@@ -1097,7 +1097,7 @@ impl App {
 
         let target_path = self
             .config
-            .data_path
+            .workspace
             .programs_dir()
             .join(self.current_program.as_ref().unwrap())
             .join(format!("{}.md", self.input_buffer));
@@ -1146,7 +1146,7 @@ impl App {
 
         let target_path = self
             .config
-            .data_path
+            .workspace
             .programs_dir()
             .join(self.current_program.as_ref().unwrap())
             .join(self.current_project.as_ref().unwrap())
@@ -1196,7 +1196,7 @@ impl App {
 
         let target_path = self
             .config
-            .data_path
+            .workspace
             .programs_dir()
             .join(self.current_program.as_ref().unwrap())
             .join(self.current_project.as_ref().unwrap())
@@ -1305,7 +1305,7 @@ impl App {
                 let milestone_name = state.values.get("MILESTONE_NAME").cloned();
 
                 if let Some(ref target) = state.target_path {
-                    let _ = self.config.data_path.create_from_template(
+                    let _ = self.config.workspace.create_from_template(
                         &template_name,
                         target,
                         &state.values,
