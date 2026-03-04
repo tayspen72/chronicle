@@ -205,56 +205,54 @@ fn render_command_palette(f: &mut Frame, app: &App) {
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let depth = app.tree_state.path.len();
-    let idx = app.selected_entry_index;
+    // Build breadcrumb from current selection
+    let mut breadcrumb_parts = Vec::new();
 
-    let selected_path = if depth == 0 {
-        app.programs.get(idx).map(|e| e.path.clone())
-    } else if depth == 1 {
-        let prog_count = app.programs.len();
-        if idx < prog_count {
-            app.programs.get(idx).map(|e| e.path.clone())
-        } else {
-            app.projects.get(idx - prog_count).map(|e| e.path.clone())
-        }
-    } else if depth == 2 {
-        let prog_count = app.programs.len();
-        let proj_count = app.projects.len();
-        if idx < prog_count {
-            app.programs.get(idx).map(|e| e.path.clone())
-        } else if idx < prog_count + proj_count {
-            app.projects.get(idx - prog_count).map(|e| e.path.clone())
-        } else {
-            app.milestones
-                .get(idx - prog_count - proj_count)
-                .map(|e| e.path.clone())
-        }
+    if let Some(program) = &app.current_program {
+        breadcrumb_parts.push(program.clone());
+    }
+    if let Some(project) = &app.current_project {
+        breadcrumb_parts.push(project.clone());
+    }
+    if let Some(milestone) = &app.current_milestone {
+        breadcrumb_parts.push(milestone.clone());
+    }
+    if let Some(task) = &app.current_task {
+        breadcrumb_parts.push(task.clone());
+    }
+
+    let breadcrumb = if breadcrumb_parts.is_empty() {
+        "No selection".to_string()
     } else {
-        let prog_count = app.programs.len();
-        let proj_count = app.projects.len();
-        let mile_count = app.milestones.len();
-        if idx < prog_count {
-            app.programs.get(idx).map(|e| e.path.clone())
-        } else if idx < prog_count + proj_count {
-            app.projects.get(idx - prog_count).map(|e| e.path.clone())
-        } else if idx < prog_count + proj_count + mile_count {
-            app.milestones
-                .get(idx - prog_count - proj_count)
-                .map(|e| e.path.clone())
-        } else {
-            app.tasks
-                .get(idx - prog_count - proj_count - mile_count)
-                .map(|e| e.path.clone())
-        }
+        breadcrumb_parts.join(" > ")
     };
 
-    let path_str = selected_path
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "No selection".to_string());
+    // Determine mode text and color
+    let (mode_text, mode_color) = match app.mode {
+        Mode::Normal => ("NORMAL", Color::Green),
+        Mode::CommandPalette => ("COMMAND", Color::Yellow),
+        Mode::Input => ("INPUT", Color::Cyan),
+    };
 
-    let paragraph = Paragraph::new(path_str)
+    // Split the status bar into left (breadcrumb) and right (mode) sections
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(1),     // Breadcrumb - takes remaining space
+            Constraint::Length(10), // Mode indicator
+        ])
+        .split(area);
+
+    // Render breadcrumb (left side)
+    let breadcrumb_widget = Paragraph::new(breadcrumb)
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::NONE));
+    f.render_widget(breadcrumb_widget, chunks[0]);
 
-    f.render_widget(paragraph, area);
+    // Render mode indicator (right side)
+    let mode_widget = Paragraph::new(mode_text)
+        .style(Style::default().fg(mode_color))
+        .block(Block::default().borders(Borders::NONE))
+        .alignment(ratatui::layout::Alignment::Right);
+    f.render_widget(mode_widget, chunks[1]);
 }
