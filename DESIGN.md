@@ -220,11 +220,13 @@ The `Config` struct in `src/config.rs` has three issues:
 
 ### Tasks
 
-- [ ] **T1: Add toml dependency** to `Cargo.toml` (already present, just verify)
-- [ ] **T2: Fix Config struct** to include all fields from the config file format
-- [ ] **T3: Replace YAML parser with TOML parser** in `load_or_create()` and `prompt_first_run()`
-- [ ] **T4: Update tests** to ensure config parsing works
-- [ ] **T5: Verify** with `cargo run` that existing config loads correctly
+- [x] **T1: Add toml dependency** to `Cargo.toml` (already present, just verify)
+- [x] **T2: Fix Config struct** to include all fields from the config file format
+- [x] **T3: Replace YAML parser with TOML parser** in `load_or_create()` and `prompt_first_run()`
+- [x] **T4: Update tests** to ensure config parsing works
+- [x] **T5: Verify** with `cargo run` that existing config loads correctly
+
+**Sprint Complete!** Merged to master (tag: `stable/config-toml-fix-2026-03-03`)
 
 ### Target Config Structure
 
