@@ -204,9 +204,18 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `fix/storage-discovery`
+**Branch**: `fix/selection-on-navigate` — **MERGED** (tag: `stable/selection-fix-2026-03-03`)
 
-### Goal
+### Completed
+
+- [x] On initial load, first program is selected (not header)
+- [x] On navigate right, selection moves to first child item
+
+---
+
+### Previous Sprint (Completed)
+
+**Branch**: `fix/storage-discovery` — **MERGED** (tag: `stable/storage-discovery-2026-03-03`)
 
 Fix the storage discovery functions to handle both flat and nested element structures.
 
