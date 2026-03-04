@@ -311,59 +311,42 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `feat/domain-model`
-**Tag**: `stable/pre-domain-model-2026-03-04`
-**Goal**: Expand domain model with Program, Project, Milestone structs and YAML frontmatter parsing.
+No active sprint. Ready for next task.
 
-### Problem
+---
 
-The domain model (`model/mod.rs`) only has a `Task` struct. The codebase needs:
-1. Structs for Program, Project, Milestone to match the template structure
-2. A unified `Element` enum to represent any element type
-3. YAML frontmatter parsing (templates now use `---` delimited format)
+### Recent Sprints (Completed)
 
-### Current Template Fields
+**Branch**: `feat/domain-model` — **MERGED** (tag: `stable/domain-model-2026-03-04`)
+- Added Program, Project, Milestone, Task structs with serde support
+- Added ElementKind enum with Display/FromStr
+- Added Element enum to unify all element types
+- Added LegacyTask for backward compatibility
+- Added `parse_element()` for YAML frontmatter parsing
+- Added `element_to_markdown()` for serialization
+- 6 new tests, all 56 tests passing, clippy clean
+- `model/mod.rs`: +200 lines, `storage/md.rs`: +249 lines
 
-**Program**: title, status, tags, description
-**Project**: title, status, creation_date, created_by, assigned_to, due_date, type, description
-**Milestone**: title, status, creation_date, created_by, assigned_to, due_date, type, description
-**Task**: title, status, creation_date, created_by, assigned_to, due_date, type, description, tags
+**Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
+- Wired up `get_command_list()`, `filter_commands()` from command.rs
+- Wired up `navigate_up()`, `navigate_down()`, `build_sidebar_items()` from navigation.rs
+- `mod.rs`: 1735 → 1411 lines (**324 lines removed**)
 
-### Tasks
+**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
+- Fixed command palette context awareness
+- Single-page wizard UI with up/down/tab navigation
+- Updated templates to YAML frontmatter
 
-- [ ] **T1: Add domain structs to `model/mod.rs`**
-  - `Program` struct with title, status, tags, description
-  - `Project` struct with common fields
-  - `Milestone` struct with common fields
-  - Update `Task` to match template fields (add type, created_by)
-  - Add `ElementKind` enum (Program, Project, Milestone, Task, Subtask)
-  - Add `Element` enum that can hold any element type
+**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
+- Created `src/error.rs` with layered error types
+- Created `src/lib.rs` as crate root
 
-- [ ] **T2: Add YAML frontmatter parsing to `storage/md.rs`**
-  - Add `parse_element(content: &str) -> Result<Element>` function
-  - Parse YAML frontmatter between `---` delimiters
-  - Parse markdown body as description/details
-  - Keep existing `parse_task` for backward compatibility
+**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
+- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
+- `layout.rs`: 674 → 272 lines (60% reduction)
 
-- [ ] **T3: Add serialization functions**
-  - Add `element_to_markdown(element: &Element) -> String`
-  - Generate YAML frontmatter + body
-
-- [ ] **T4: Add tests**
-  - Test parsing each element type
-  - Test roundtrip (parse → serialize → parse)
-
-- [ ] **T5: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-
-### Success Criteria
-
-- All tests pass (existing + new)
-- Clippy reports 0 warnings
-- Domain model has Program, Project, Milestone, Task structs
-- Element enum unifies all types
-- YAML frontmatter parsing works
+**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
+- Wired up type imports from `navigation.rs` and `command.rs`
 
 ---
 
