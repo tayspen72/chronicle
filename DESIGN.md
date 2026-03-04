@@ -311,65 +311,18 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `feat/status-panel`
-**Tag**: `stable/pre-status-panel-2026-03-04`
-**Goal**: Redesign status bar to be more intuitive and useful.
-
-### Problem
-
-The current status bar only shows the selected file path, which is not very useful to the user. Per Open Question #5, several options were proposed.
-
-### Design Decision
-
-Implement a **split status bar** with:
-
-**Left side**: Breadcrumb navigation showing current context
-- Shows: `Program > Project > Milestone > Task` hierarchy
-- Uses `current_program/project/milestone/task` state
-- Empty state shows "No selection"
-
-**Right side**: Mode indicator
-- Shows current mode: `NORMAL`, `COMMAND`, or `INPUT`
-- Color-coded: Green (Normal), Yellow (Command), Cyan (Input)
-
-### Implementation
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Program Name > Project Name > Milestone Name      NORMAL       │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Tasks
-
-- [ ] **T1: Redesign `render_status_bar()` in `layout.rs`**
-  - Split area into left (breadcrumb) and right (mode) sections
-  - Left: Build breadcrumb from current_* state
-  - Right: Display mode based on App's current state
-
-- [ ] **T2: Add mode detection**
-  - Normal mode: default
-  - Command mode: when command palette is open
-  - Input mode: when in input/template wizard
-
-- [ ] **T3: Add styling**
-  - Breadcrumb: White text, separators in dark gray
-  - Mode indicator: Color-coded by mode
-
-- [ ] **T4: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-
-### Success Criteria
-
-- All 56 tests pass
-- Clippy reports 0 warnings
-- Status bar shows breadcrumb context
-- Status bar shows current mode
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
+
+**Branch**: `feat/status-panel` — **MERGED** (tag: `stable/status-panel-2026-03-04`)
+- Redesigned status bar with breadcrumb and mode indicator
+- Left side: Shows Program > Project > Milestone > Task hierarchy
+- Right side: Shows mode (NORMAL/COMMAND/INPUT) with color coding
+- Empty state shows "No selection"
+- All 56 tests passing, clippy clean
 
 **Branch**: `feat/planning-views` — **MERGED** (tag: `stable/planning-views-2026-03-04`)
 - Implemented Backlog view showing all tasks with parent context
@@ -377,6 +330,8 @@ Implement a **split status bar** with:
 - Parses YAML frontmatter for status and due_date fields
 - All 56 tests passing, clippy clean
 - `views/mod.rs`: +220 lines
+
+---
 
 **Branch**: `feat/domain-model` — **MERGED** (tag: `stable/domain-model-2026-03-04`)
 - Added Program, Project, Milestone, Task structs with serde support
@@ -526,11 +481,11 @@ Implement a **split status bar** with:
 
 4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two?
 
-5. **Status Panel Design**: The current status bar shows the selected file path at the bottom. Need to discuss a more intuitive status display panel. Options include:
-   - Breadcrumb navigation (Program > Project > Milestone > Task)
-   - Context summary (e.g., "3 tasks in milestone")
-   - Current date/time with workspace location
-   - Mode indicator (Normal, Command Palette, Input)
+5. **Status Panel Design** ✅ RESOLVED: Implemented in `feat/status-panel` sprint (2026-03-04).
+   - **Decision**: Split status bar with breadcrumb (left) and mode indicator (right)
+   - Breadcrumb shows: Program > Project > Milestone > Task hierarchy
+   - Mode indicator: NORMAL/COMMAND/INPUT with color coding
+   - See `src/tui/layout.rs::render_status_bar()` for implementation
 
 ## Changelog
 
