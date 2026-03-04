@@ -404,9 +404,10 @@ pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, promp
     f.render_widget(paragraph, area);
 }
 
-/// Renders the template field wizard as a single-page form with CONFIRM/CANCEL buttons.
+/// Renders the template field wizard with inline editing - field names and values on same line.
 pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect, prompt: &str) {
     use crate::tui::WizardFocus;
+    use ratatui::layout::{Constraint, Layout};
 
     let state = match app.template_field_state.as_ref() {
         Some(s) => s,
@@ -420,21 +421,17 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     let field_count = fields.len();
 
     // Calculate available height for fields
-    let header_height = 5u16;
-    let instructions_height = 2u16;
-    let input_height = 3u16;
-    let button_height = 3u16;
-    let available_height = area
-        .height
-        .saturating_sub(header_height + instructions_height + input_height + button_height);
+    let header_height = 3u16; // prompt + blank + instructions
+    let button_height = 2u16; // blank + buttons
+    let available_height = area.height.saturating_sub(header_height + button_height);
 
     // Calculate how many fields can be visible
-    let visible_fields = (available_height / 2) as usize;
+    let visible_fields = available_height as usize;
 
     // Calculate scroll offset based on focused field
     let focused_field_idx = match state.focus {
         WizardFocus::Field(idx) => idx,
-        WizardFocus::ConfirmButton | WizardFocus::CancelButton => field_count, // Scroll to show buttons
+        WizardFocus::ConfirmButton | WizardFocus::CancelButton => field_count,
     };
     let scroll_offset = if focused_field_idx >= visible_fields {
         focused_field_idx - visible_fields + 1
@@ -442,17 +439,37 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
         0
     };
 
-    // Build content
-    let mut lines = vec![
-        prompt.to_string(),
-        String::new(),
-        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel".to_string(),
-        String::new(),
-    ];
+    // Create vertical layout chunks
+    let chunks = Layout::default()
+        .constraints(
+            [
+                Constraint::Length(header_height),
+                Constraint::Min(1),
+                Constraint::Length(button_height),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+
+    // Render header (prompt and instructions)
+    let header_text = format!(
+        "{}\n\n↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
+        prompt
+    );
+    let header = Paragraph::new(header_text).style(Style::default().fg(Color::White));
+    f.render_widget(header, chunks[0]);
+
+    // Render fields in a scrollable area
+    let mut field_lines: Vec<(String, String, bool, bool)> = Vec::new();
 
     // Scroll indicator if needed
     if field_count > visible_fields && scroll_offset > 0 {
-        lines.push(format!("  ↑ {} more fields above...", scroll_offset));
+        field_lines.push((
+            format!("  ↑ {} more fields above...", scroll_offset),
+            String::new(),
+            false,
+            false,
+        ));
     }
 
     // Render visible fields in display_order
@@ -466,38 +483,78 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
         }
 
         let is_focused = matches!(state.focus, WizardFocus::Field(fi) if fi == idx);
-        let prefix = if is_focused { "→ " } else { "  " };
 
-        // Style differently for editable vs prepopulated
-        let value_display = if field.value.is_empty() && field.is_editable {
+        // Create horizontal layout for this field
+        let label_text = format!("{}:", field.label);
+        let value_text = if field.value.is_empty() && field.is_editable {
             format!("<{}>", field.placeholder)
         } else if field.is_editable {
             field.value.clone()
         } else {
-            // Prepopulated field - show value with indicator
             format!("{} (auto)", field.value)
         };
 
-        let field_line = if field.is_editable {
-            format!("{}{}: {}", prefix, field.label, value_display)
-        } else {
-            // Dim style for prepopulated - we'll add gray styling in display
-            format!("{}{}: {} [readonly]", prefix, field.label, value_display)
-        };
-
-        lines.push(field_line);
+        field_lines.push((label_text, value_text, is_focused, field.is_editable));
     }
 
     // Scroll indicator if there are more fields below
     if field_count > visible_fields && scroll_offset + visible_fields < field_count {
-        lines.push(format!(
-            "  ↓ {} more fields below...",
-            field_count - scroll_offset - visible_fields
+        field_lines.push((
+            format!(
+                "  ↓ {} more fields below...",
+                field_count - scroll_offset - visible_fields
+            ),
+            String::new(),
+            false,
+            false,
         ));
     }
 
-    // CONFIRM and CANCEL buttons
-    lines.push(String::new());
+    // Render all field lines with proper styling
+    use ratatui::text::{Line, Span};
+
+    let mut lines_vec: Vec<Line> = Vec::new();
+
+    for (label, value, focused, editable) in &field_lines {
+        if value.is_empty() {
+            // Scroll indicator
+            lines_vec.push(Line::from(Span::styled(
+                format!("  {}", label),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else if *focused && *editable {
+            // Focused editable field - yellow highlight
+            lines_vec.push(Line::from(vec![
+                Span::styled("→ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{}: ", label),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(value, Style::default().fg(Color::Yellow)),
+            ]));
+        } else if *editable {
+            // Non-focused editable field - normal text
+            lines_vec.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(Color::White)),
+                Span::styled(format!("{}: ", label), Style::default().fg(Color::White)),
+                Span::styled(value, Style::default().fg(Color::White)),
+            ]));
+        } else {
+            // Prepopulated field - dimmed/gray
+            lines_vec.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
+                Span::styled(value, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
+
+    let fields_widget = Paragraph::new(lines_vec);
+    f.render_widget(fields_widget, chunks[1]);
+
+    // Render buttons
     let confirm_prefix = if state.focus == WizardFocus::ConfirmButton {
         "→ "
     } else {
@@ -508,38 +565,12 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     } else {
         "  "
     };
-    lines.push(format!(
-        "{}[CONFIRM]     {}[CANCEL]",
+    let buttons_text = format!(
+        "\n{}[CONFIRM]     {}[CANCEL]",
         confirm_prefix, cancel_prefix
-    ));
-    lines.push(String::new());
-
-    // Input area - only show when editing a field
-    if let WizardFocus::Field(idx) = state.focus {
-        if let Some(field) = fields.get(idx) {
-            if field.is_editable {
-                lines.push(format!("Edit {}: {}", field.label, app.input_buffer));
-            } else {
-                lines.push(format!("Viewing: {} (read-only)", field.label));
-            }
-        }
-    } else {
-        lines.push(String::new());
-    }
-
-    // Join all lines
-    let content = lines.join("\n");
-
-    // Render the widget
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title("Template Fields"),
-        );
-    f.render_widget(paragraph, area);
+    );
+    let buttons = Paragraph::new(buttons_text).style(Style::default().fg(Color::White));
+    f.render_widget(buttons, chunks[2]);
 }
 
 pub fn render_placeholder(f: &mut Frame, area: ratatui::layout::Rect, title: &str, message: &str) {
