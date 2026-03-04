@@ -1,5 +1,5 @@
-// TODO: Task and ParseError are domain models for future use in element modification features.
-// Currently the TUI uses DirectoryEntry for all display, but these types will be used
+// TODO: Task is a domain model for future use in element modification features.
+// Currently the TUI uses DirectoryEntry for all display, but this type will be used
 // for structured data manipulation in upcoming sprints.
 
 use chrono::{DateTime, Utc};
@@ -31,18 +31,3 @@ impl Task {
         matches!(self.status.as_deref(), Some("done"))
     }
 }
-
-/// Error type for parsing operations in storage/md.rs.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct ParseError {
-    pub message: String,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}

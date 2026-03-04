@@ -5,7 +5,7 @@ pub mod views;
 
 use std::process::Command;
 
-use anyhow::Result;
+use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,

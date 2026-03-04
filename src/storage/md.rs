@@ -4,10 +4,9 @@
 //! They are used by tests but not yet wired into the TUI.
 //! TODO: Wire up parse_task and task_to_markdown for element modification features.
 
-use anyhow::Result;
+use crate::error::{ModelError, Result};
+use crate::model::Task;
 use chrono::{DateTime, NaiveDate, Utc};
-
-use crate::model::{ParseError, Task};
 
 /// Parse task metadata from markdown content.
 ///
@@ -127,10 +126,7 @@ fn parse_date(input: &str) -> Result<DateTime<Utc>> {
         return Ok(dt.with_timezone(&Utc));
     }
 
-    Err(ParseError {
-        message: format!("Could not parse date: '{}'", input),
-    }
-    .into())
+    Err(ModelError::Parse(format!("Could not parse date: '{}'", input)).into())
 }
 
 /// Generate markdown content from a Task struct

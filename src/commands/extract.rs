@@ -1,6 +1,6 @@
-use anyhow::Result;
+use crate::Result;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Naive extractor: scans journal for lines containing `/todo` and writes backlog tasks.
 pub fn run() -> Result<()> {
