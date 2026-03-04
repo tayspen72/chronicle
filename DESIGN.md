@@ -311,7 +311,71 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `refactor/wire-extracted-functions`
+**Tag**: `stable/pre-function-wire-up-2026-03-04`
+**Goal**: Wire up extracted function implementations to eliminate code duplication.
+
+### Problem
+
+The extracted modules (`command.rs`, `navigation.rs`) contain functions that duplicate App methods:
+
+| Function | mod.rs | Extracted Module |
+|----------|--------|------------------|
+| `get_command_list()` | Line 1595 | `command.rs:117` |
+| `filter_commands()` | Line 1500 (method) | `command.rs:218` (pure fn) |
+| `build_sidebar_items()` | Line 675 (method) | `navigation.rs:153` (pure fn) |
+| `navigate_up()` | Line 409 (method) | `navigation.rs:237` (pure fn) |
+| `navigate_down()` | Line 435 (method) | `navigation.rs:273` (pure fn) |
+
+The extracted functions are **pure** (take parameters), while App methods use internal state.
+
+### Approach
+
+Change App methods to **delegate** to module functions by passing internal state as arguments:
+
+```rust
+// Before (in mod.rs):
+fn navigate_up(&mut self) {
+    // 30 lines of logic...
+}
+
+// After:
+fn navigate_up(&mut self) {
+    self.selected_entry_index = navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
+}
+```
+
+### Tasks
+
+- [ ] **T1: Wire up `get_command_list()`**
+  - Import from `command.rs`
+  - Remove duplicate from `mod.rs`
+
+- [ ] **T2: Wire up `filter_commands()`**
+  - Change App method to delegate to `command::filter_commands()`
+  - Pass `self.command_input`, `self.current_program`, etc.
+
+- [ ] **T3: Wire up `navigate_up()` / `navigate_down()`**
+  - Change App methods to delegate to `navigation::navigate_up/down()`
+  - Pass `&self.sidebar_items`, `self.selected_entry_index`
+
+- [ ] **T4: Wire up `build_sidebar_items()`**
+  - Change App method to delegate to `navigation::build_sidebar_items()`
+  - Pass all required state as parameters
+
+- [ ] **T5: Remove dead code annotations**
+  - Remove `#[allow(dead_code)]` from wired functions in extracted modules
+
+- [ ] **T6: Verify**
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+
+### Success Criteria
+
+- All 50 tests pass
+- Clippy reports 0 warnings
+- `mod.rs` reduced by ~200+ lines
+- Single source of truth for command/navigation logic
 
 ---
 

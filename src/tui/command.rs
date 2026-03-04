@@ -113,7 +113,6 @@ impl CommandPalette {
 }
 
 /// Returns the list of all available commands.
-#[allow(dead_code)]
 pub fn get_command_list() -> Vec<CommandMatch> {
     vec![
         CommandMatch {
@@ -214,7 +213,6 @@ pub fn get_command_list() -> Vec<CommandMatch> {
 ///
 /// # Returns
 /// A filtered list of matching commands.
-#[allow(dead_code)]
 pub fn filter_commands(
     input: &str,
     current_program: Option<&str>,
