@@ -493,6 +493,10 @@ No active sprint. Ready for next task.
 
 2. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
 
+3. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded. Currently the tree lines break when expanding/collapsing items.
+
+4. **Navigation issues when expanding/contracting tree**: There are navigation issues when working through and expanding/contracting the tree, especially while also creating new elements. Selection may jump unexpectedly or not follow expected patterns.
+
 ## Open Questions
 
 1. **Domain Model Expansion**: Should we add proper `Program`, `Project`, `Milestone` structs to `model/mod.rs`, or keep the current approach of treating everything as `DirectoryEntry`? ✅ RESOLVED: Implemented in `feat/domain-model` sprint.
