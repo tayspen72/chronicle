@@ -37,15 +37,35 @@ pub struct FieldInfo {
     pub placeholder: String,
     pub value: String,
     pub is_focused: bool,
+    /// true for user input fields, false for prepopulated keyword fields
+    pub is_editable: bool,
+    /// Position in template (0-based) to preserve order
+    pub display_order: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Focus state for the template field wizard
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardFocus {
+    /// Focused on a field at the given index
+    Field(usize),
+    /// Focused on the CONFIRM button
+    ConfirmButton,
+    /// Focused on the CANCEL button
+    CancelButton,
+}
+
+impl Default for WizardFocus {
+    fn default() -> Self {
+        WizardFocus::Field(0)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TemplateFieldState {
     pub template_name: String,
     pub target_path: Option<std::path::PathBuf>,
     pub fields: Vec<FieldInfo>,
-    pub focused_index: usize,
-    pub confirming: bool,
+    pub focus: WizardFocus,
     pub values: std::collections::HashMap<String, String>,
     pub strip_labels: std::collections::HashSet<String>,
 }
@@ -196,6 +216,18 @@ impl App {
                     self.mode = Mode::Normal;
                     self.command_input.clear();
                     self.command_selection_index = 0;
+                } else if self.current_view == ViewType::InputTemplateField {
+                    // Escape jumps to CANCEL button
+                    if let Some(ref mut state) = self.template_field_state {
+                        // Save current field value first
+                        if let WizardFocus::Field(idx) = state.focus {
+                            if let Some(field) = state.fields.get_mut(idx) {
+                                field.value = self.input_buffer.clone();
+                            }
+                        }
+                        state.focus = WizardFocus::CancelButton;
+                        self.input_buffer.clear();
+                    }
                 } else {
                     self.return_from_view();
                 }
@@ -240,15 +272,34 @@ impl App {
 
     fn navigate_template_field_up(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
-            if state.focused_index > 0 {
-                // Save current value
-                if let Some(field) = state.fields.get_mut(state.focused_index) {
+            // Save current value if on a field
+            if let WizardFocus::Field(idx) = state.focus {
+                if let Some(field) = state.fields.get_mut(idx) {
                     field.value = self.input_buffer.clone();
                 }
-                state.focused_index -= 1;
-                // Load new field value into buffer
-                if let Some(field) = state.fields.get(state.focused_index) {
-                    self.input_buffer = field.value.clone();
+            }
+
+            match state.focus {
+                WizardFocus::CancelButton => {
+                    // From CANCEL, go to CONFIRM
+                    state.focus = WizardFocus::ConfirmButton;
+                }
+                WizardFocus::ConfirmButton => {
+                    // From CONFIRM, go to last field
+                    if !state.fields.is_empty() {
+                        state.focus = WizardFocus::Field(state.fields.len() - 1);
+                        if let Some(field) = state.fields.last() {
+                            self.input_buffer = field.value.clone();
+                        }
+                    }
+                }
+                WizardFocus::Field(idx) => {
+                    if idx > 0 {
+                        state.focus = WizardFocus::Field(idx - 1);
+                        if let Some(field) = state.fields.get(idx - 1) {
+                            self.input_buffer = field.value.clone();
+                        }
+                    }
                 }
             }
         }
@@ -256,16 +307,37 @@ impl App {
 
     fn navigate_template_field_down(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
-            if state.focused_index < state.fields.len() {
-                // Save current value
-                if let Some(field) = state.fields.get_mut(state.focused_index) {
+            // Save current value if on a field
+            if let WizardFocus::Field(idx) = state.focus {
+                if let Some(field) = state.fields.get_mut(idx) {
                     field.value = self.input_buffer.clone();
                 }
-                if state.focused_index < state.fields.len() - 1 {
-                    state.focused_index += 1;
-                    // Load new field value into buffer
-                    if let Some(field) = state.fields.get(state.focused_index) {
-                        self.input_buffer = field.value.clone();
+            }
+
+            match state.focus {
+                WizardFocus::Field(idx) => {
+                    if idx < state.fields.len() - 1 {
+                        state.focus = WizardFocus::Field(idx + 1);
+                        if let Some(field) = state.fields.get(idx + 1) {
+                            self.input_buffer = field.value.clone();
+                        }
+                    } else {
+                        // Last field, move to CONFIRM button
+                        state.focus = WizardFocus::ConfirmButton;
+                        self.input_buffer.clear();
+                    }
+                }
+                WizardFocus::ConfirmButton => {
+                    // From CONFIRM, go to CANCEL
+                    state.focus = WizardFocus::CancelButton;
+                }
+                WizardFocus::CancelButton => {
+                    // From CANCEL, wrap to first field
+                    if !state.fields.is_empty() {
+                        state.focus = WizardFocus::Field(0);
+                        if let Some(field) = state.fields.first() {
+                            self.input_buffer = field.value.clone();
+                        }
                     }
                 }
             }
@@ -710,9 +782,20 @@ impl App {
             ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
-            | ViewType::InputTask
-            | ViewType::InputTemplateField => {
+            | ViewType::InputTask => {
                 self.input_buffer.push(c);
+            }
+            ViewType::InputTemplateField => {
+                // Only allow input when focused on an editable field
+                if let Some(ref state) = self.template_field_state {
+                    if let WizardFocus::Field(idx) = state.focus {
+                        if let Some(field) = state.fields.get(idx) {
+                            if field.is_editable {
+                                self.input_buffer.push(c);
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -723,9 +806,20 @@ impl App {
             ViewType::InputProgram
             | ViewType::InputProject
             | ViewType::InputMilestone
-            | ViewType::InputTask
-            | ViewType::InputTemplateField => {
+            | ViewType::InputTask => {
                 self.input_buffer.pop();
+            }
+            ViewType::InputTemplateField => {
+                // Only allow input when focused on an editable field
+                if let Some(ref state) = self.template_field_state {
+                    if let WizardFocus::Field(idx) = state.focus {
+                        if let Some(field) = state.fields.get(idx) {
+                            if field.is_editable {
+                                self.input_buffer.pop();
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1018,11 +1112,10 @@ impl App {
             "TODAY".to_string(),
             chrono::Local::now().format("%Y-%m-%d").to_string(),
         );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
         if let Some(default_status) = self.config.workflow.first() {
             values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
-
-        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
 
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
@@ -1030,30 +1123,59 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Convert to FieldInfo structures
+        // Keywords that are prepopulated and not editable
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
-            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
             .enumerate()
-            .map(|(i, (label, placeholder, _))| FieldInfo {
-                label,
-                placeholder,
-                value: String::new(),
-                is_focused: i == 0,
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
             })
             .collect();
+
+        // Find first editable field for initial focus
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "program".to_string(),
             target_path: Some(target_path),
             fields,
-            focused_index: 0,
-            confirming: false,
+            focus: initial_focus,
             values,
             strip_labels,
         });
 
-        self.input_buffer.clear();
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
         self.current_view = ViewType::InputTemplateField;
     }
 
@@ -1075,11 +1197,10 @@ impl App {
             "TODAY".to_string(),
             chrono::Local::now().format("%Y-%m-%d").to_string(),
         );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
         if let Some(default_status) = self.config.workflow.first() {
             values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
-
-        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
 
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
@@ -1087,30 +1208,59 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Convert to FieldInfo structures
+        // Keywords that are prepopulated and not editable
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
-            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
             .enumerate()
-            .map(|(i, (label, placeholder, _))| FieldInfo {
-                label,
-                placeholder,
-                value: String::new(),
-                is_focused: i == 0,
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
             })
             .collect();
+
+        // Find first editable field for initial focus
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "project".to_string(),
             target_path: Some(target_path),
             fields,
-            focused_index: 0,
-            confirming: false,
+            focus: initial_focus,
             values,
             strip_labels,
         });
 
-        self.input_buffer.clear();
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
         self.current_view = ViewType::InputTemplateField;
     }
 
@@ -1133,11 +1283,10 @@ impl App {
             "TODAY".to_string(),
             chrono::Local::now().format("%Y-%m-%d").to_string(),
         );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
         if let Some(default_status) = self.config.workflow.first() {
             values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
-
-        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
 
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
@@ -1145,30 +1294,59 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Convert to FieldInfo structures
+        // Keywords that are prepopulated and not editable
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
-            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
             .enumerate()
-            .map(|(i, (label, placeholder, _))| FieldInfo {
-                label,
-                placeholder,
-                value: String::new(),
-                is_focused: i == 0,
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
             })
             .collect();
+
+        // Find first editable field for initial focus
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "milestone".to_string(),
             target_path: Some(target_path),
             fields,
-            focused_index: 0,
-            confirming: false,
+            focus: initial_focus,
             values,
             strip_labels,
         });
 
-        self.input_buffer.clear();
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
         self.current_view = ViewType::InputTemplateField;
     }
 
@@ -1192,11 +1370,10 @@ impl App {
             "TODAY".to_string(),
             chrono::Local::now().format("%Y-%m-%d").to_string(),
         );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
         if let Some(default_status) = self.config.workflow.first() {
             values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
-
-        let prepopulated = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
 
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
@@ -1204,103 +1381,145 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Convert to FieldInfo structures
+        // Keywords that are prepopulated and not editable
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
-            .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
             .enumerate()
-            .map(|(i, (label, placeholder, _))| FieldInfo {
-                label,
-                placeholder,
-                value: String::new(),
-                is_focused: i == 0,
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
             })
             .collect();
+
+        // Find first editable field for initial focus
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "task".to_string(),
             target_path: Some(target_path),
             fields,
-            focused_index: 0,
-            confirming: false,
+            focus: initial_focus,
             values,
             strip_labels,
         });
 
-        self.input_buffer.clear();
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
         self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_template_field(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
-            // If we're at the last field (confirm button), create the element
-            if state.focused_index >= state.fields.len() {
-                // Collect all field values into the values map
-                for field in &state.fields {
-                    state
-                        .values
-                        .insert(field.placeholder.clone(), field.value.clone());
+            match state.focus {
+                WizardFocus::CancelButton => {
+                    // Cancel - return to tree view without creating
+                    self.template_field_state = None;
+                    self.current_view = ViewType::TreeView;
                 }
+                WizardFocus::ConfirmButton => {
+                    // Confirm - collect all field values and create the element
+                    // Save any current field value first
+                    for field in &state.fields {
+                        state
+                            .values
+                            .insert(field.placeholder.clone(), field.value.clone());
+                    }
 
-                // All fields done, create the item
-                let template_name = state.template_name.clone();
-                let program_name = state.values.get("PROGRAM_NAME").cloned();
-                let project_name = state.values.get("PROJECT_NAME").cloned();
-                let milestone_name = state.values.get("MILESTONE_NAME").cloned();
+                    let template_name = state.template_name.clone();
+                    let program_name = state.values.get("PROGRAM_NAME").cloned();
+                    let project_name = state.values.get("PROJECT_NAME").cloned();
+                    let milestone_name = state.values.get("MILESTONE_NAME").cloned();
 
-                if let Some(ref target) = state.target_path {
-                    let _ = self.config.workspace.create_from_template(
-                        &template_name,
-                        target,
-                        &state.values,
-                        &state.strip_labels,
-                    );
+                    if let Some(ref target) = state.target_path {
+                        let _ = self.config.workspace.create_from_template(
+                            &template_name,
+                            target,
+                            &state.values,
+                            &state.strip_labels,
+                        );
+                    }
+
+                    // Clear template state before calling load_tree_view_data
+                    self.template_field_state = None;
+
+                    // Refresh the tree view
+                    self.load_tree_view_data();
+
+                    // Navigate to the new item
+                    match template_name.as_str() {
+                        "program" => {
+                            if let Some(name) = program_name {
+                                self.current_program = Some(name.clone());
+                                self.tree_state.path.push(name);
+                            }
+                        }
+                        "project" => {
+                            if let Some(name) = project_name {
+                                self.current_project = Some(name.clone());
+                                self.tree_state.path.push(name);
+                            }
+                        }
+                        "milestone" => {
+                            if let Some(name) = milestone_name {
+                                self.current_milestone = Some(name.clone());
+                                self.tree_state.path.push(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.current_view = ViewType::TreeView;
                 }
-
-                // Clear template state before calling load_tree_view_data
-                self.template_field_state = None;
-
-                // Refresh the tree view
-                self.load_tree_view_data();
-
-                // Navigate to the new item
-                match template_name.as_str() {
-                    "program" => {
-                        if let Some(name) = program_name {
-                            self.current_program = Some(name.clone());
-                            self.tree_state.path.push(name);
-                        }
+                WizardFocus::Field(idx) => {
+                    // Save current field value
+                    if let Some(field) = state.fields.get_mut(idx) {
+                        field.value = self.input_buffer.clone();
                     }
-                    "project" => {
-                        if let Some(name) = project_name {
-                            self.current_project = Some(name.clone());
-                            self.tree_state.path.push(name);
+
+                    // Find next editable field or move to CONFIRM button
+                    let mut next_idx = idx + 1;
+                    while next_idx < state.fields.len() {
+                        if state.fields[next_idx].is_editable {
+                            state.focus = WizardFocus::Field(next_idx);
+                            if let Some(field) = state.fields.get(next_idx) {
+                                self.input_buffer = field.value.clone();
+                            }
+                            return;
                         }
+                        next_idx += 1;
                     }
-                    "milestone" => {
-                        if let Some(name) = milestone_name {
-                            self.current_milestone = Some(name.clone());
-                            self.tree_state.path.push(name);
-                        }
-                    }
-                    _ => {}
+                    // No more editable fields, move to CONFIRM button
+                    state.focus = WizardFocus::ConfirmButton;
+                    self.input_buffer.clear();
                 }
-                self.current_view = ViewType::TreeView;
-                return;
-            }
-
-            // Save current field value
-            if let Some(field) = state.fields.get_mut(state.focused_index) {
-                field.value = self.input_buffer.clone();
-            }
-
-            // Move to next field or confirm button
-            state.focused_index += 1;
-            self.input_buffer.clear();
-
-            // Load next field value if available
-            if let Some(field) = state.fields.get(state.focused_index) {
-                self.input_buffer = field.value.clone();
             }
         }
     }
