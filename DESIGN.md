@@ -311,53 +311,37 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `refactor/wire-extracted-modules`
-**Tag**: `stable/pre-wire-up-2026-03-04`
-**Goal**: Wire up extracted `command.rs` and `navigation.rs` modules to eliminate code duplication.
-
-### Problem
-
-The `command.rs` and `navigation.rs` modules contain complete implementations with passing tests, but they are marked `#[allow(dead_code)]` and never imported. The `App` struct in `tui/mod.rs` contains duplicate implementations of:
-- `CommandPalette`, `CommandMatch`, `CommandAction` types
-- `filter_commands()`, `get_command_list()` functions
-- `TreeState`, `SidebarItem` types
-- `build_sidebar_items()`, `navigate_up()`, `navigate_down()` functions
-
-This is ~500 lines of duplicate code and two sources of truth for the same logic.
-
-### Tasks
-
-- [ ] **T1: Wire up `navigation.rs` types**
-  - Replace inline `SidebarItem`, `SidebarSection`, `TreeState` in `tui/mod.rs` with imports from `navigation.rs`
-  - Update `build_sidebar_items()` calls to use the module function
-  - Update `navigate_up()`/`navigate_down()` calls
-  - Remove duplicate type definitions from `tui/mod.rs`
-
-- [ ] **T2: Wire up `command.rs` types**
-  - Replace inline `CommandMatch`, `CommandAction` in `tui/mod.rs` with imports from `command.rs`
-  - Replace `App::filter_commands()` with `command::filter_commands()`
-  - Replace inline `get_command_list()` with `command::get_command_list()`
-  - Remove duplicate type definitions from `tui/mod.rs`
-
-- [ ] **T3: Remove dead code annotations**
-  - Remove `#[allow(dead_code)]` from wired-up types in both modules
-  - Ensure all public items are actually used
-
-- [ ] **T4: Verify tests pass**
-  - Run `cargo test` - all existing tests must pass
-  - The extracted modules already have 18 tests between them
-
-### Success Criteria
-
-- `cargo test` passes with 0 failures
-- `cargo clippy` passes with 0 warnings
-- `tui/mod.rs` reduced by ~400-500 lines
-- No `#[allow(dead_code)]` on wired types
-- Single source of truth for command/navigation logic
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
+
+**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
+- Wired up type imports from extracted modules:
+  - `SidebarItem`, `SidebarSection`, `TreeState` from `navigation.rs`
+  - `CommandAction`, `CommandMatch` from `command.rs`
+- Removed duplicate inline type definitions from `tui/mod.rs`
+- Reduced `tui/mod.rs` by ~48 lines
+- All 49 tests passing, clippy clean
+- **Note**: Function wiring (`filter_commands`, `build_sidebar_items`, etc.) remains as future work - the extracted functions have pure signatures while App methods use internal state, requiring more significant refactoring
+
+---
+
+### Future Work (Not Yet Scheduled)
+
+**Function Wiring**: The extracted modules still contain functions that duplicate App methods:
+- `command::filter_commands()` vs `App::filter_commands()`
+- `command::get_command_list()` vs inline function in mod.rs
+- `navigation::build_sidebar_items()` vs `App::build_sidebar_items()`
+- `navigation::navigate_up()`/`navigate_down()` vs App methods
+
+**Challenge**: The extracted functions are designed as pure functions taking parameters, while App methods use internal state. Options:
+1. Refactor App methods to delegate to module functions (passing internal state)
+2. Keep both and accept some duplication (current state)
+3. Redesign the interface
+
+---
 
 **Branch**: `refactor/tree-navigation-dry` — **MERGED** (tag: `stable/tree-navigation-refactor-2026-03-03`)
 - Fixed flat tasks discovery in `tasks/` subdirectory

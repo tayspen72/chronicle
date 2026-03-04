@@ -16,6 +16,8 @@ use std::io::{self, Write};
 
 use crate::config::Config;
 use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage};
+use command::{CommandAction, CommandMatch};
+use navigation::{SidebarItem, SidebarSection, TreeState};
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,25 +29,6 @@ pub enum Mode {
     /// User is inputting data (e.g., creating element)
     #[allow(dead_code)]
     Input, // TODO: Will be used for input mode in future sprint
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SidebarSection {
-    Programs,
-    Planning,
-    Journal,
-}
-
-#[derive(Debug, Clone)]
-pub struct SidebarItem {
-    pub name: String,
-    #[allow(dead_code)]
-    pub section: SidebarSection,
-    pub is_header: bool,
-    pub is_planning_item: Option<String>, // Some("WeeklyPlanning") or Some("Backlog")
-    pub is_journal_item: Option<String>,  // Some("Today") or Some("History")
-    pub indent: usize,
-    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -82,37 +65,6 @@ pub enum ViewType {
     InputMilestone,
     InputTask,
     InputTemplateField,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TreeState {
-    pub path: Vec<String>,
-    #[allow(dead_code)]
-    pub expanded: Vec<String>, // TODO: Will be used for collapsible tree nodes
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum CommandAction {
-    OpenTodayJournal,
-    ShowArchiveList,
-    ShowProgramsList,
-    ShowProjectsList,
-    ShowMilestonesList,
-    ShowTasksList,
-    NewProgram,
-    NewProject,
-    NewMilestone,
-    NewTask,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct CommandMatch {
-    pub label: String,
-    pub view: ViewType,
-    pub exit: bool,
-    pub action: Option<CommandAction>,
 }
 
 pub struct App {

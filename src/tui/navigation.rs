@@ -10,7 +10,6 @@ use crate::storage::DirectoryEntry;
 
 /// Section of the sidebar.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum SidebarSection {
     Programs,
     Planning,
@@ -19,9 +18,9 @@ pub enum SidebarSection {
 
 /// An item in the sidebar navigation tree.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SidebarItem {
     pub name: String,
+    #[allow(dead_code)]
     pub section: SidebarSection,
     pub is_header: bool,
     pub is_planning_item: Option<String>,
@@ -89,9 +88,9 @@ impl SidebarItem {
 
 /// State for tree navigation.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct TreeState {
     pub path: Vec<String>,
+    #[allow(dead_code)]
     pub expanded: Vec<String>,
 }
 
