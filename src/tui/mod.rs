@@ -523,6 +523,12 @@ impl App {
             return;
         }
 
+        // Handle create action items
+        if item.is_create_action && item.name == "+ Create Program..." {
+            self.start_new_program();
+            return;
+        }
+
         if let Some(plan_type) = &item.is_planning_item {
             match plan_type.as_str() {
                 "WeeklyPlanning" => {
@@ -740,6 +746,7 @@ impl App {
                         is_journal_item: None,
                         indent: 4,
                         path: Some(subtask.path.clone()),
+                        is_create_action: false,
                     })
                     .collect();
 

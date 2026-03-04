@@ -27,6 +27,8 @@ pub struct SidebarItem {
     pub is_journal_item: Option<String>,
     pub indent: usize,
     pub path: Option<std::path::PathBuf>,
+    /// If true, this item triggers an action (e.g., "Create Program") rather than navigation
+    pub is_create_action: bool,
 }
 
 impl SidebarItem {
@@ -42,6 +44,7 @@ impl SidebarItem {
             is_journal_item: None,
             indent: 0,
             path: None,
+            is_create_action: false,
         }
     }
 
@@ -82,6 +85,14 @@ impl SidebarItem {
     #[allow(dead_code)]
     pub fn journal_item(mut self, item_type: impl Into<String>) -> Self {
         self.is_journal_item = Some(item_type.into());
+        self
+    }
+
+    /// Marks this as a create action item.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn create_action(mut self) -> Self {
+        self.is_create_action = true;
         self
     }
 }
@@ -163,36 +174,46 @@ pub fn build_sidebar_items(
     // Programs section header
     items.push(SidebarItem::new("Programs", SidebarSection::Programs).header());
 
-    // Programs list
-    for prog in programs {
-        items.push(SidebarItem::new(&prog.name, SidebarSection::Programs).path(prog.path.clone()));
+    // Programs list - show empty state if no programs exist
+    if programs.is_empty() {
+        items.push(
+            SidebarItem::new("+ Create Program...", SidebarSection::Programs)
+                .indent(1)
+                .create_action(),
+        );
+    } else {
+        for prog in programs {
+            items.push(
+                SidebarItem::new(&prog.name, SidebarSection::Programs).path(prog.path.clone()),
+            );
 
-        // Show projects if this program is expanded
-        if current_program == Some(prog.name.as_str()) {
-            for proj in projects {
-                items.push(
-                    SidebarItem::new(&proj.name, SidebarSection::Programs)
-                        .indent(1)
-                        .path(proj.path.clone()),
-                );
+            // Show projects if this program is expanded
+            if current_program == Some(prog.name.as_str()) {
+                for proj in projects {
+                    items.push(
+                        SidebarItem::new(&proj.name, SidebarSection::Programs)
+                            .indent(1)
+                            .path(proj.path.clone()),
+                    );
 
-                // Show milestones if this project is expanded
-                if current_project == Some(proj.name.as_str()) {
-                    for mile in milestones {
-                        items.push(
-                            SidebarItem::new(&mile.name, SidebarSection::Programs)
-                                .indent(2)
-                                .path(mile.path.clone()),
-                        );
+                    // Show milestones if this project is expanded
+                    if current_project == Some(proj.name.as_str()) {
+                        for mile in milestones {
+                            items.push(
+                                SidebarItem::new(&mile.name, SidebarSection::Programs)
+                                    .indent(2)
+                                    .path(mile.path.clone()),
+                            );
 
-                        // Show tasks if this milestone is expanded
-                        if current_milestone == Some(mile.name.as_str()) {
-                            for task in tasks {
-                                items.push(
-                                    SidebarItem::new(&task.name, SidebarSection::Programs)
-                                        .indent(3)
-                                        .path(task.path.clone()),
-                                );
+                            // Show tasks if this milestone is expanded
+                            if current_milestone == Some(mile.name.as_str()) {
+                                for task in tasks {
+                                    items.push(
+                                        SidebarItem::new(&task.name, SidebarSection::Programs)
+                                            .indent(3)
+                                            .path(task.path.clone()),
+                                    );
+                                }
                             }
                         }
                     }
@@ -322,6 +343,10 @@ mod tests {
         assert_eq!(item.name, "Test");
         assert!(item.is_header);
         assert_eq!(item.indent, 2);
+        assert!(!item.is_create_action);
+
+        let create_item = SidebarItem::new("+ Create...", SidebarSection::Programs).create_action();
+        assert!(create_item.is_create_action);
     }
 
     #[test]
@@ -367,5 +392,22 @@ mod tests {
         assert!(items.len() > 5);
         assert!(items[0].is_header);
         assert_eq!(items[0].name, "Programs");
+    }
+
+    #[test]
+    fn test_build_sidebar_items_empty_shows_create() {
+        let programs: Vec<DirectoryEntry> = vec![];
+
+        let items = build_sidebar_items(&programs, &[], &[], &[], None, None, None);
+
+        // Should have: Programs header, "+ Create Program...", spacer, Planning header, 2 items, spacer, Journal header, 2 items
+        assert!(items.len() > 5);
+        assert!(items[0].is_header);
+        assert_eq!(items[0].name, "Programs");
+
+        // Second item should be the create action
+        assert_eq!(items[1].name, "+ Create Program...");
+        assert!(items[1].is_create_action);
+        assert_eq!(items[1].indent, 1);
     }
 }
