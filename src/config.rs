@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
@@ -114,7 +114,7 @@ impl Config {
 
     pub fn load_or_create() -> Result<Self> {
         let config_path = Self::config_path()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+            .ok_or_else(|| ConfigError::NotFound(PathBuf::from("~/.config/chronicle")))?;
 
         if config_path.exists() {
             let contents = fs::read_to_string(&config_path)?;

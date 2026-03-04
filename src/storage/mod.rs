@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::error::{Result, StorageError};
 use chrono::Local;
 
 pub struct JournalEntry {
@@ -710,7 +710,7 @@ impl WorkspaceStorage for PathBuf {
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
             "subtask" => include_str!("../../templates/subtask.md"),
-            _ => return Err(anyhow::anyhow!("Unknown template: {}", template_name)),
+            _ => return Err(StorageError::TemplateNotFound(template_name.to_string()).into()),
         };
 
         let content = resolve_template(template, values, strip_labels);
