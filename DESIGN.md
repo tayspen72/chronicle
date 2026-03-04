@@ -311,71 +311,37 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `refactor/wire-extracted-functions`
-**Tag**: `stable/pre-function-wire-up-2026-03-04`
-**Goal**: Wire up extracted function implementations to eliminate code duplication.
+No active sprint. Ready for next task.
 
-### Problem
+---
 
-The extracted modules (`command.rs`, `navigation.rs`) contain functions that duplicate App methods:
+### Recent Sprints (Completed)
 
-| Function | mod.rs | Extracted Module |
-|----------|--------|------------------|
-| `get_command_list()` | Line 1595 | `command.rs:117` |
-| `filter_commands()` | Line 1500 (method) | `command.rs:218` (pure fn) |
-| `build_sidebar_items()` | Line 675 (method) | `navigation.rs:153` (pure fn) |
-| `navigate_up()` | Line 409 (method) | `navigation.rs:237` (pure fn) |
-| `navigate_down()` | Line 435 (method) | `navigation.rs:273` (pure fn) |
+**Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
+- Wired up `get_command_list()`, `filter_commands()` from command.rs
+- Wired up `navigate_up()`, `navigate_down()`, `build_sidebar_items()` from navigation.rs
+- App methods now delegate to module functions
+- Removed dead code annotations from wired functions
+- `mod.rs`: 1735 → 1411 lines (**324 lines removed**)
+- All 50 tests passing, clippy clean
 
-The extracted functions are **pure** (take parameters), while App methods use internal state.
+**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
+- Fixed command palette context awareness
+- Single-page wizard UI with up/down/tab navigation
+- Updated templates to YAML frontmatter
+- All 50 tests passing, clippy clean
 
-### Approach
+**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
+- Created `src/error.rs` with layered error types
+- Created `src/lib.rs` as crate root
+- Library code uses `thiserror`, only `main.rs` uses `anyhow`
 
-Change App methods to **delegate** to module functions by passing internal state as arguments:
+**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
+- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
+- `layout.rs`: 674 → 272 lines (60% reduction)
 
-```rust
-// Before (in mod.rs):
-fn navigate_up(&mut self) {
-    // 30 lines of logic...
-}
-
-// After:
-fn navigate_up(&mut self) {
-    self.selected_entry_index = navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
-}
-```
-
-### Tasks
-
-- [ ] **T1: Wire up `get_command_list()`**
-  - Import from `command.rs`
-  - Remove duplicate from `mod.rs`
-
-- [ ] **T2: Wire up `filter_commands()`**
-  - Change App method to delegate to `command::filter_commands()`
-  - Pass `self.command_input`, `self.current_program`, etc.
-
-- [ ] **T3: Wire up `navigate_up()` / `navigate_down()`**
-  - Change App methods to delegate to `navigation::navigate_up/down()`
-  - Pass `&self.sidebar_items`, `self.selected_entry_index`
-
-- [ ] **T4: Wire up `build_sidebar_items()`**
-  - Change App method to delegate to `navigation::build_sidebar_items()`
-  - Pass all required state as parameters
-
-- [ ] **T5: Remove dead code annotations**
-  - Remove `#[allow(dead_code)]` from wired functions in extracted modules
-
-- [ ] **T6: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-
-### Success Criteria
-
-- All 50 tests pass
-- Clippy reports 0 warnings
-- `mod.rs` reduced by ~200+ lines
-- Single source of truth for command/navigation logic
+**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
+- Wired up type imports from `navigation.rs` and `command.rs`
 
 ---
 
