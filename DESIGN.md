@@ -311,7 +311,116 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `fix/creation-wizard-v2`
+**Tag**: (to be created)
+**Goal**: Fix element creation wizard to show all fields in template order with CONFIRM/CANCEL buttons.
+
+### Problem
+
+The creation wizard has several issues:
+1. Fields not shown in template order
+2. No distinction between editable vs prepopulated fields
+3. No CONFIRM/CANCEL buttons
+4. OWNER placeholder not supported (should come from config.toml)
+5. DEFAULT_STATUS placeholder not using workflow[0]
+
+### Desired UI (from element_creation_wizard.txt)
+
+```
+Title: <field for title>
+Status: (show entry 1 in config.toml workflow - prepopulated)
+Creation Date: (show today's date - prepopulated)
+Created By: (show owner name from config.toml - prepopulated)
+Assigned To: <field for assigned to>
+Due Date: <field for due date>
+Type: task (prepopulated)
+Description: <field for description>
+
+CONFIRM     CANCEL
+```
+
+### Template Placeholders
+
+Placeholders are variable names that can be dynamically assigned. The system recognizes certain keywords (TODAY, OWNER, DEFAULT_STATUS) that are prepopulated. Any other placeholder becomes an editable user input field.
+
+**Example - Custom Template Override**:
+If a user creates `~/.config/chronicle/templates/task.md` to override the system template:
+```yaml
+---
+title: {{NAME}}
+priority: {{MY_PRIORITY}}
+---
+```
+The wizard will show "Priority" as an editable field. If the user enters "High", the final file becomes:
+```yaml
+priority: High
+```
+
+| Placeholder | Type | Source |
+|-------------|------|--------|
+| NAME | Editable | User input |
+| DEFAULT_STATUS | **Keyword** - Prepopulated | `config.workflow[0]` |
+| TODAY | **Keyword** - Prepopulated | Current date |
+| OWNER | **Keyword** - Prepopulated | `config.owner` (NEW) |
+| ASSIGNED_TO | Editable | User input |
+| DUE_DATE | Editable | User input |
+| DESCRIPTION | Editable | User input |
+| Any other | Editable | User input |
+
+### Navigation Behavior
+
+- **Enter**: Navigate down to next editable field (skip prepopulated)
+- **Escape**: Jump to CANCEL button
+- **On CONFIRM + Enter**: Create file with entered values
+- **On CANCEL + Enter**: Return to tree view without creating
+- **Up/Down arrows**: Navigate between all fields and buttons
+
+### Tasks
+
+- [ ] **T1: Add `owner` field to Config struct**
+  - Add `owner: String` field to `Config` in `config.rs`
+  - Add `fn default_owner() -> String` returning empty string
+  - Add `#[serde(default = "default_owner")]` attribute
+  - Update `Default` impl
+
+- [ ] **T2: Update `FieldInfo` struct**
+  - Add `is_editable: bool` field to distinguish editable vs prepopulated
+  - Add `display_order: usize` to preserve template order
+
+- [ ] **T3: Update placeholder resolution in `storage/mod.rs`**
+  - Handle `OWNER` placeholder in `resolve_template()` using config.owner
+  - Handle `DEFAULT_STATUS` placeholder using config.workflow[0]
+  - Pass config reference to resolve_template
+
+- [ ] **T4: Update field creation in wizard**
+  - Mark fields as editable or prepopulated based on placeholder type
+  - Prepopulate values for TODAY, OWNER, DEFAULT_STATUS
+  - Preserve template order
+
+- [ ] **T5: Update wizard rendering in `views/mod.rs`**
+  - Show all fields in template order
+  - Display prepopulated fields with gray style (read-only appearance)
+  - Add CONFIRM and CANCEL buttons at bottom
+  - Handle navigation (Enter, Escape, Up/Down)
+
+- [ ] **T6: Update `confirm_template_field()` logic**
+  - Enter navigates to next editable field
+  - Escape jumps to CANCEL
+  - Handle CONFIRM/CANCEL button selection
+
+- [ ] **T7: Verify**
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+  - Test wizard with task template
+
+### Success Criteria
+
+- All 56 tests pass
+- Clippy reports 0 warnings
+- Fields shown in template order
+- Prepopulated fields show correct values (TODAY, OWNER, DEFAULT_STATUS)
+- CONFIRM/CANCEL buttons work correctly
+- Enter navigates down, Escape jumps to cancel
 
 ---
 
@@ -471,21 +580,34 @@ No active sprint. Ready for next task.
 **Branch**: `fix/config-toml-parsing` — **MERGED** (tag: `stable/config-toml-fix-2026-03-03`)
 - Fixed TOML config parsing, added missing fields, renamed data_path to workspace
 
+## Open Bugs
+
+1. **"New Program" command not showing when workspace is empty**: The command palette should always show "New Program" when no programs exist, but it's not appearing. The filter_commands logic needs to check if programs list is empty.
+
+2. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
+
 ## Open Questions
 
-1. **Domain Model Expansion**: Should we add proper `Program`, `Project`, `Milestone` structs to `model/mod.rs`, or keep the current approach of treating everything as `DirectoryEntry`?
+1. **Domain Model Expansion**: Should we add proper `Program`, `Project`, `Milestone` structs to `model/mod.rs`, or keep the current approach of treating everything as `DirectoryEntry`? ✅ RESOLVED: Implemented in `feat/domain-model` sprint.
 
-2. **Error Type Migration**: Should we migrate from `anyhow` to layered `thiserror` types in this sprint, or defer to a future sprint?
+2. **Error Type Migration**: Should we migrate from `anyhow` to layered `thiserror` types in this sprint, or defer to a future sprint? ✅ RESOLVED: Implemented in `feat/layered-error-types` sprint.
 
 3. **Async Runtime**: Tokio is a dependency but not used. Should we remove it or plan for async operations (e.g., file watching)?
 
-4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two?
+4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two? ✅ RESOLVED: Implemented in `refactor/wire-extracted-functions` sprint.
 
 5. **Status Panel Design** ✅ RESOLVED: Implemented in `feat/status-panel` sprint (2026-03-04).
-   - **Decision**: Split status bar with breadcrumb (left) and mode indicator (right)
-   - Breadcrumb shows: Program > Project > Milestone > Task hierarchy
-   - Mode indicator: NORMAL/COMMAND/INPUT with color coding
-   - See `src/tui/layout.rs::render_status_bar()` for implementation
+
+6. **Config.toml Creator Wizard**: Instead of hardcoded defaults and first-run CLI prompts, should we have a TUI-based config creator wizard? This would allow users to set owner, workflow statuses, etc. in a more user-friendly way.
+
+7. **Custom Field Selection Lists**: Should we allow custom selection lists for custom placeholders in config.toml? For example, a section like:
+   ```toml
+   [[custom_fields]]
+   field = "priority"
+   placeholder = "MY_PRIORITY"
+   values = ["Low", "Medium", "High"]
+   ```
+   This would present the user with a dropdown/selection list instead of a free-form text field when creating elements with custom templates.
 
 ## Changelog
 
