@@ -311,7 +311,53 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `fix/new-program-empty-workspace`
+**Tag**: `stable/pre-new-program-fix-2026-03-04`
+**Goal**: Fix "New Program" command not showing when workspace is empty.
+
+### Problem
+
+When the workspace has no programs (empty or newly created), the "New Program" command should be prominently available, but users report it's not appearing.
+
+### Analysis
+
+The `filter_commands()` function in `command.rs` correctly returns "New Program" always:
+```rust
+"New Program" => true, // Always available
+```
+
+Tests confirm this works. The issue is likely:
+1. Command palette not accessible when sidebar is empty
+2. Initial state issue when workspace is empty
+3. Rendering issue in command palette
+
+### Tasks
+
+- [ ] **T1: Investigate the bug**
+  - Check if command palette is accessible with empty sidebar
+  - Check if sidebar has minimum content for navigation
+  - Check if there's a special case for empty workspace
+
+- [ ] **T2: Ensure command palette is always accessible**
+  - The `/` key should work regardless of sidebar content
+  - Add empty workspace detection if needed
+
+- [ ] **T3: Ensure "New Program" shows prominently**
+  - Consider showing a welcome message with "New Program" option
+  - Or ensure it's the first/only option when workspace is empty
+
+- [ ] **T4: Verify**
+  - Test with completely empty workspace (no programs directory)
+  - Test with workspace that has programs directory but no programs
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+
+### Success Criteria
+
+- All 56 tests pass
+- Clippy reports 0 warnings
+- "New Program" command accessible when workspace is empty
+- Command palette works with empty sidebar
 
 ---
 
