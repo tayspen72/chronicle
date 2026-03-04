@@ -16,6 +16,7 @@ pub struct JournalEntry {
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
+    #[allow(dead_code)]
     pub is_dir: bool,
 }
 
@@ -24,24 +25,38 @@ pub trait JournalStorage {
     fn today_journal_path(&self) -> PathBuf;
     fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)>;
     fn list_journal_entries(&self) -> Result<Vec<JournalEntry>>;
+    #[allow(dead_code)]
     fn read_journal_entry(&self, path: &Path) -> Result<String>;
+    #[allow(dead_code)]
     fn save_journal_entry(&self, path: &Path, content: &str) -> Result<()>;
 }
 
+// TODO: WorkspaceStorage trait defines a complete API for element manipulation.
+// Many methods are not yet used by the TUI but are implemented for future features.
+// When wiring up element modification commands, these methods will be used.
 pub trait WorkspaceStorage {
     fn programs_dir(&self) -> PathBuf;
     fn list_programs(&self) -> Result<Vec<DirectoryEntry>>;
+    #[allow(dead_code)]
     fn read_program(&self, name: &str) -> Result<String>;
+    #[allow(dead_code)]
     fn save_program(&self, name: &str, content: &str) -> Result<()>;
+    #[allow(dead_code)]
     fn create_program(&self, name: &str, description: &str) -> Result<PathBuf>;
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
+    #[allow(dead_code)]
     fn read_project(&self, program: &str, name: &str) -> Result<String>;
+    #[allow(dead_code)]
     fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()>;
+    #[allow(dead_code)]
     fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf>;
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
+    #[allow(dead_code)]
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String>;
+    #[allow(dead_code)]
     fn save_milestone(&self, program: &str, project: &str, name: &str, content: &str)
         -> Result<()>;
+    #[allow(dead_code)]
     fn create_milestone(
         &self,
         program: &str,
@@ -55,6 +70,7 @@ pub trait WorkspaceStorage {
         project: &str,
         milestone: &str,
     ) -> Result<Vec<DirectoryEntry>>;
+    #[allow(dead_code)]
     fn read_task(
         &self,
         program: &str,
@@ -62,6 +78,7 @@ pub trait WorkspaceStorage {
         milestone: &str,
         name: &str,
     ) -> Result<String>;
+    #[allow(dead_code)]
     fn save_task(
         &self,
         program: &str,
@@ -70,6 +87,7 @@ pub trait WorkspaceStorage {
         name: &str,
         content: &str,
     ) -> Result<()>;
+    #[allow(dead_code)]
     fn create_task(
         &self,
         program: &str,
@@ -78,6 +96,7 @@ pub trait WorkspaceStorage {
         name: &str,
         description: &str,
     ) -> Result<PathBuf>;
+    #[allow(dead_code)]
     fn get_task_path(&self, program: &str, project: &str, milestone: &str, task: &str) -> PathBuf;
     fn read_md_file(&self, path: &Path) -> Result<String>;
     fn create_from_template(

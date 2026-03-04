@@ -1,5 +1,5 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
-use crate::tui::{App, DateInputPart, ViewType};
+use crate::tui::{App, DateInputPart, Mode, ViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Command bar
-    let command_text = if app.command_palette_open {
+    let command_text = if matches!(app.mode, Mode::CommandPalette) {
         format!("/{}", app.command_input)
     } else {
         "Commands: /".to_string()
@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, app: &App) {
     render_content(f, app, main_chunks[1]);
 
     // Command palette overlay
-    if app.command_palette_open {
+    if matches!(app.mode, Mode::CommandPalette) {
         render_command_palette(f, app);
     }
 
@@ -66,7 +66,7 @@ fn calculate_sidebar_width(app: &App) -> u16 {
         max_len = max_len.max(len);
     }
 
-    (max_len + 4).min(60).max(15) as u16
+    (max_len + 4).clamp(15, 60) as u16
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -80,9 +80,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let is_selected = i == idx;
             let indent_str = "    ".repeat(item.indent);
 
-            let prefix = if item.is_header {
-                item.name.clone()
-            } else if item.indent == 0 {
+            let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
                 let is_last = app
@@ -244,8 +242,7 @@ fn render_content_viewer(f: &mut Frame, app: &App, area: Rect) {
 
     let content = app
         .current_content_text
-        .as_ref()
-        .map(|t| t.clone())
+        .clone()
         .unwrap_or_else(|| "No content".to_string());
 
     let block = Block::default()
@@ -300,6 +297,10 @@ fn render_journal_today(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+// TODO: These render functions are extracted for future dedicated list views.
+// Currently the tree view handles all navigation, but these will be useful
+// when implementing separate list views for each tier.
+#[allow(dead_code)]
 fn render_programs_list(f: &mut Frame, app: &App, area: Rect) {
     let title = "Programs";
 
@@ -337,6 +338,7 @@ fn render_programs_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+#[allow(dead_code)]
 fn render_projects_list(f: &mut Frame, app: &App, area: Rect) {
     let title = if let Some(ref program) = app.current_program {
         format!("Projects - {}", program)
@@ -390,6 +392,7 @@ fn render_projects_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+#[allow(dead_code)]
 fn render_milestones_list(f: &mut Frame, app: &App, area: Rect) {
     let title = if let (Some(ref program), Some(ref project)) =
         (&app.current_program, &app.current_project)
@@ -445,6 +448,7 @@ fn render_milestones_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+#[allow(dead_code)]
 fn render_tasks_list(f: &mut Frame, app: &App, area: Rect) {
     let title = if let (Some(ref program), Some(ref project), Some(ref milestone)) = (
         &app.current_program,

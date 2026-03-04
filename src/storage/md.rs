@@ -1,3 +1,9 @@
+//! Markdown parsing utilities.
+//!
+//! These functions parse task metadata from markdown files.
+//! They are used by tests but not yet wired into the TUI.
+//! TODO: Wire up parse_task and task_to_markdown for element modification features.
+
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -18,6 +24,7 @@ use crate::model::{ParseError, Task};
 /// ## Details
 /// The task description goes here...
 /// ```
+#[allow(dead_code)]
 pub fn parse_task(content: &str) -> Result<Task> {
     let mut task = Task::new();
     let mut details_lines = Vec::new();
@@ -84,6 +91,7 @@ pub fn parse_task(content: &str) -> Result<Task> {
 }
 
 /// Parse tags from a space-separated string like "#task #backend #project:auth"
+#[allow(dead_code)]
 fn parse_tags(input: &str) -> Vec<String> {
     input
         .split_whitespace()
@@ -104,6 +112,7 @@ fn parse_tags(input: &str) -> Vec<String> {
 /// Supports formats:
 /// - YYYY-MM-DD
 /// - YYYY-MM-DDTHH:MM:SSZ
+#[allow(dead_code)]
 fn parse_date(input: &str) -> Result<DateTime<Utc>> {
     let trimmed = input.trim();
 
@@ -125,6 +134,7 @@ fn parse_date(input: &str) -> Result<DateTime<Utc>> {
 }
 
 /// Generate markdown content from a Task struct
+#[allow(dead_code)]
 pub fn task_to_markdown(task: &Task) -> String {
     let mut lines = Vec::new();
 
