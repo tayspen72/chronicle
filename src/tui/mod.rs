@@ -31,23 +31,23 @@ pub enum Mode {
     Input, // TODO: Will be used for input mode in future sprint
 }
 
+#[derive(Debug, Clone)]
+pub struct FieldInfo {
+    pub label: String,
+    pub placeholder: String,
+    pub value: String,
+    pub is_focused: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TemplateFieldState {
     pub template_name: String,
     pub target_path: Option<std::path::PathBuf>,
-    pub fields: Vec<(String, String, bool)>, // (display_label, placeholder, strip_label)
-    pub current_index: usize,
+    pub fields: Vec<FieldInfo>,
+    pub focused_index: usize,
+    pub confirming: bool,
     pub values: std::collections::HashMap<String, String>,
-    pub strip_labels: std::collections::HashSet<String>, // placeholders whose labels should be stripped
-    pub date_part: Option<DateInputPart>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DateInputPart {
-    #[allow(dead_code)]
-    Year,
-    Month,
-    Day,
+    pub strip_labels: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,13 +207,26 @@ impl App {
                 self.navigate_left();
             }
             KeyCode::Up => {
-                self.navigate_up();
+                if self.current_view == ViewType::InputTemplateField {
+                    self.navigate_template_field_up();
+                } else {
+                    self.navigate_up();
+                }
             }
             KeyCode::Down => {
-                self.navigate_down();
+                if self.current_view == ViewType::InputTemplateField {
+                    self.navigate_template_field_down();
+                } else {
+                    self.navigate_down();
+                }
             }
             KeyCode::Enter => {
                 self.handle_enter();
+            }
+            KeyCode::Tab => {
+                if self.current_view == ViewType::InputTemplateField {
+                    self.navigate_template_field_down();
+                }
             }
             KeyCode::Char(c) => {
                 self.handle_input_char(c);
@@ -222,6 +235,40 @@ impl App {
                 self.handle_input_backspace();
             }
             _ => {}
+        }
+    }
+
+    fn navigate_template_field_up(&mut self) {
+        if let Some(ref mut state) = self.template_field_state {
+            if state.focused_index > 0 {
+                // Save current value
+                if let Some(field) = state.fields.get_mut(state.focused_index) {
+                    field.value = self.input_buffer.clone();
+                }
+                state.focused_index -= 1;
+                // Load new field value into buffer
+                if let Some(field) = state.fields.get(state.focused_index) {
+                    self.input_buffer = field.value.clone();
+                }
+            }
+        }
+    }
+
+    fn navigate_template_field_down(&mut self) {
+        if let Some(ref mut state) = self.template_field_state {
+            if state.focused_index < state.fields.len() {
+                // Save current value
+                if let Some(field) = state.fields.get_mut(state.focused_index) {
+                    field.value = self.input_buffer.clone();
+                }
+                if state.focused_index < state.fields.len() - 1 {
+                    state.focused_index += 1;
+                    // Load new field value into buffer
+                    if let Some(field) = state.fields.get(state.focused_index) {
+                        self.input_buffer = field.value.clone();
+                    }
+                }
+            }
         }
     }
 
@@ -1139,19 +1186,27 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        let fields: Vec<_> = all_fields
+        // Convert to FieldInfo structures
+        let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| FieldInfo {
+                label,
+                placeholder,
+                value: String::new(),
+                is_focused: i == 0,
+            })
             .collect();
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "program".to_string(),
             target_path: Some(target_path),
             fields,
-            current_index: 0,
+            focused_index: 0,
+            confirming: false,
             values,
             strip_labels,
-            date_part: None,
         });
 
         self.input_buffer.clear();
@@ -1188,19 +1243,27 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        let fields: Vec<_> = all_fields
+        // Convert to FieldInfo structures
+        let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| FieldInfo {
+                label,
+                placeholder,
+                value: String::new(),
+                is_focused: i == 0,
+            })
             .collect();
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "project".to_string(),
             target_path: Some(target_path),
             fields,
-            current_index: 0,
+            focused_index: 0,
+            confirming: false,
             values,
             strip_labels,
-            date_part: None,
         });
 
         self.input_buffer.clear();
@@ -1238,19 +1301,27 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        let fields: Vec<_> = all_fields
+        // Convert to FieldInfo structures
+        let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| FieldInfo {
+                label,
+                placeholder,
+                value: String::new(),
+                is_focused: i == 0,
+            })
             .collect();
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "milestone".to_string(),
             target_path: Some(target_path),
             fields,
-            current_index: 0,
+            focused_index: 0,
+            confirming: false,
             values,
             strip_labels,
-            date_part: None,
         });
 
         self.input_buffer.clear();
@@ -1289,19 +1360,27 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        let fields: Vec<_> = all_fields
+        // Convert to FieldInfo structures
+        let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .filter(|(_, placeholder, _)| !prepopulated.contains(&placeholder.as_str()))
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| FieldInfo {
+                label,
+                placeholder,
+                value: String::new(),
+                is_focused: i == 0,
+            })
             .collect();
 
         self.template_field_state = Some(TemplateFieldState {
             template_name: "task".to_string(),
             target_path: Some(target_path),
             fields,
-            current_index: 0,
+            focused_index: 0,
+            confirming: false,
             values,
             strip_labels,
-            date_part: None,
         });
 
         self.input_buffer.clear();
@@ -1310,61 +1389,15 @@ impl App {
 
     fn confirm_template_field(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
-            // Store current input value
-            if let Some((_, placeholder, _)) = state.fields.get(state.current_index) {
-                if placeholder.contains("DATE") {
-                    // For date fields, accumulate the parts
-                    let part = state.date_part.take();
-                    if let Some(ref p) = part {
-                        let key = format!(
-                            "{}_{}",
-                            placeholder,
-                            match p {
-                                DateInputPart::Year => "year",
-                                DateInputPart::Month => "month",
-                                DateInputPart::Day => "day",
-                            }
-                        );
-                        state.values.insert(key, self.input_buffer.clone());
-                    }
-                    // Check if we need more parts for date
-                    if state.values.contains_key(&format!("{}_year", placeholder))
-                        && !state.values.contains_key(&format!("{}_month", placeholder))
-                    {
-                        state.date_part = Some(DateInputPart::Month);
-                        self.input_buffer.clear();
-                        return;
-                    }
-                    if state.values.contains_key(&format!("{}_year", placeholder))
-                        && state.values.contains_key(&format!("{}_month", placeholder))
-                        && !state.values.contains_key(&format!("{}_day", placeholder))
-                    {
-                        state.date_part = Some(DateInputPart::Day);
-                        self.input_buffer.clear();
-                        return;
-                    }
-                    // All date parts collected, combine them
-                    if let (Some(year), Some(month), Some(day)) = (
-                        state.values.get(&format!("{}_year", placeholder)),
-                        state.values.get(&format!("{}_month", placeholder)),
-                        state.values.get(&format!("{}_day", placeholder)),
-                    ) {
-                        let date_str = format!("{}-{:0>2}-{:0>2}", year, month, day);
-                        state.values.insert(placeholder.clone(), date_str);
-                    }
-                } else {
+            // If we're at the last field (confirm button), create the element
+            if state.focused_index >= state.fields.len() {
+                // Collect all field values into the values map
+                for field in &state.fields {
                     state
                         .values
-                        .insert(placeholder.clone(), self.input_buffer.clone());
+                        .insert(field.placeholder.clone(), field.value.clone());
                 }
-            }
 
-            // Advance to next field
-            state.current_index += 1;
-            self.input_buffer.clear();
-
-            // Check if more fields to process
-            if state.current_index >= state.fields.len() {
                 // All fields done, create the item
                 let template_name = state.template_name.clone();
                 let program_name = state.values.get("PROGRAM_NAME").cloned();
@@ -1411,8 +1444,21 @@ impl App {
                 self.current_view = ViewType::TreeView;
                 return;
             }
+
+            // Save current field value
+            if let Some(field) = state.fields.get_mut(state.focused_index) {
+                field.value = self.input_buffer.clone();
+            }
+
+            // Move to next field or confirm button
+            state.focused_index += 1;
+            self.input_buffer.clear();
+
+            // Load next field value if available
+            if let Some(field) = state.fields.get(state.focused_index) {
+                self.input_buffer = field.value.clone();
+            }
         }
-        self.input_buffer.clear();
     }
 
     // TODO: These methods are helpers for future keyboard shortcuts for quick navigation
@@ -1453,7 +1499,7 @@ impl App {
 
     fn filter_commands(&mut self) {
         let input = self.command_input.to_lowercase();
-        let depth = self.tree_state.path.len();
+        let has_programs = !self.programs.is_empty();
 
         if input.starts_with("journal") || input.starts_with("/journal") {
             let remainder = input
@@ -1502,66 +1548,38 @@ impl App {
                 .filter(|cmd| {
                     let matches_input = cmd.label.to_lowercase().contains(&input);
 
-                    if depth == 0 {
-                        matches_input
-                            && matches!(
-                                cmd.label.as_str(),
-                                "New Program"
-                                    | "New Project"
-                                    | "Programs"
-                                    | "Journal"
-                                    | "Backlog"
-                                    | "Weekly Planning"
-                                    | "Open Today's Journal"
-                                    | "Journal History"
-                                    | "Exit"
-                            )
-                    } else if depth == 1 {
-                        matches_input
-                            && matches!(
-                                cmd.label.as_str(),
-                                "New Project"
-                                    | "Programs"
-                                    | "Projects"
-                                    | "Journal"
-                                    | "Backlog"
-                                    | "Weekly Planning"
-                                    | "Open Today's Journal"
-                                    | "Journal History"
-                                    | "Exit"
-                            )
-                    } else if depth == 2 {
-                        matches_input
-                            && matches!(
-                                cmd.label.as_str(),
-                                "New Milestone"
-                                    | "Programs"
-                                    | "Projects"
-                                    | "Milestones"
-                                    | "Journal"
-                                    | "Backlog"
-                                    | "Weekly Planning"
-                                    | "Open Today's Journal"
-                                    | "Journal History"
-                                    | "Exit"
-                            )
-                    } else {
-                        matches_input
-                            && matches!(
-                                cmd.label.as_str(),
-                                "New Task"
-                                    | "Programs"
-                                    | "Projects"
-                                    | "Milestones"
-                                    | "Tasks"
-                                    | "Journal"
-                                    | "Backlog"
-                                    | "Weekly Planning"
-                                    | "Open Today's Journal"
-                                    | "Journal History"
-                                    | "Exit"
-                            )
-                    }
+                    // Context-based command availability
+                    // - "New Program" ALWAYS available (especially when no programs exist)
+                    // - "New Project" available when current_program is set
+                    // - "New Milestone" available when current_program AND current_project are set
+                    // - "New Task" available when current_program, current_project, AND current_milestone are set
+                    let is_context_valid = match cmd.label.as_str() {
+                        "New Program" => true, // Always available
+                        "New Project" => self.current_program.is_some(),
+                        "New Milestone" => {
+                            self.current_program.is_some() && self.current_project.is_some()
+                        }
+                        "New Task" => {
+                            self.current_program.is_some()
+                                && self.current_project.is_some()
+                                && self.current_milestone.is_some()
+                        }
+                        // Navigation commands - always available
+                        "Programs"
+                        | "Journal"
+                        | "Backlog"
+                        | "Weekly Planning"
+                        | "Open Today's Journal"
+                        | "Journal History"
+                        | "Exit" => true,
+                        // Tier-specific navigation - context-based
+                        "Projects" => self.current_program.is_some() || has_programs,
+                        "Milestones" => self.current_project.is_some(),
+                        "Tasks" => self.current_milestone.is_some(),
+                        _ => true, // Allow other commands to show
+                    };
+
+                    matches_input && is_context_valid
                 })
                 .collect();
         }

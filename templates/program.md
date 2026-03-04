@@ -1,8 +1,8 @@
-# Details
-#Title: {{NAME}}
-#Status: {{DEFAULT_STATUS}}
-#Creation Date: {{TODAY}}
+---
+title: {{NAME}}
+status: {{DEFAULT_STATUS}}
+tags: program
+---
 
-# Description
-#Description! {{DESCRIPTION}}
-
+# DESCRIPTION
+{{DESCRIPTION}}
