@@ -311,7 +311,59 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `feat/domain-model`
+**Tag**: `stable/pre-domain-model-2026-03-04`
+**Goal**: Expand domain model with Program, Project, Milestone structs and YAML frontmatter parsing.
+
+### Problem
+
+The domain model (`model/mod.rs`) only has a `Task` struct. The codebase needs:
+1. Structs for Program, Project, Milestone to match the template structure
+2. A unified `Element` enum to represent any element type
+3. YAML frontmatter parsing (templates now use `---` delimited format)
+
+### Current Template Fields
+
+**Program**: title, status, tags, description
+**Project**: title, status, creation_date, created_by, assigned_to, due_date, type, description
+**Milestone**: title, status, creation_date, created_by, assigned_to, due_date, type, description
+**Task**: title, status, creation_date, created_by, assigned_to, due_date, type, description, tags
+
+### Tasks
+
+- [ ] **T1: Add domain structs to `model/mod.rs`**
+  - `Program` struct with title, status, tags, description
+  - `Project` struct with common fields
+  - `Milestone` struct with common fields
+  - Update `Task` to match template fields (add type, created_by)
+  - Add `ElementKind` enum (Program, Project, Milestone, Task, Subtask)
+  - Add `Element` enum that can hold any element type
+
+- [ ] **T2: Add YAML frontmatter parsing to `storage/md.rs`**
+  - Add `parse_element(content: &str) -> Result<Element>` function
+  - Parse YAML frontmatter between `---` delimiters
+  - Parse markdown body as description/details
+  - Keep existing `parse_task` for backward compatibility
+
+- [ ] **T3: Add serialization functions**
+  - Add `element_to_markdown(element: &Element) -> String`
+  - Generate YAML frontmatter + body
+
+- [ ] **T4: Add tests**
+  - Test parsing each element type
+  - Test roundtrip (parse → serialize → parse)
+
+- [ ] **T5: Verify**
+  - Run `cargo test` - all tests must pass
+  - Run `cargo clippy -- -D warnings`
+
+### Success Criteria
+
+- All tests pass (existing + new)
+- Clippy reports 0 warnings
+- Domain model has Program, Project, Milestone, Task structs
+- Element enum unifies all types
+- YAML frontmatter parsing works
 
 ---
 
