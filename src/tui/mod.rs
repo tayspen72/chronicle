@@ -492,9 +492,16 @@ impl App {
             };
 
             if is_dir {
+                let current_idx = self.selected_entry_index;
                 self.tree_state.path.push(item.name.clone());
-                self.selected_entry_index = 0;
                 self.load_tree_view_data();
+                // Select the first child item (one position after the expanded parent)
+                // After rebuild, parent is at same index, children follow immediately
+                self.selected_entry_index = current_idx + 1;
+                // Clamp to valid range
+                if self.selected_entry_index >= self.sidebar_items.len() {
+                    self.selected_entry_index = self.sidebar_items.len().saturating_sub(1);
+                }
             } else {
                 self.open_content(&entry);
             }
@@ -568,8 +575,9 @@ impl App {
             }
             _ => {}
         }
-        self.selected_entry_index = 0;
         self.build_sidebar_items();
+        // Select first non-header item (skip "Programs" header at index 0)
+        self.selected_entry_index = if self.sidebar_items.len() > 1 { 1 } else { 0 };
     }
 
     fn build_sidebar_items(&mut self) {
