@@ -188,17 +188,29 @@ impl WorkspaceStorage for PathBuf {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 let name = path.file_name()?.to_str()?.to_string();
-                let is_md = name.ends_with(".md");
 
-                if is_md {
-                    Some(DirectoryEntry {
+                // Structure 1: Flat .md file (programs/MyProgram.md)
+                if name.ends_with(".md") {
+                    return Some(DirectoryEntry {
                         name: name.trim_end_matches(".md").to_string(),
                         path,
                         is_dir: false,
-                    })
-                } else {
-                    None
+                    });
                 }
+
+                // Structure 2: Nested (programs/MyProgram/MyProgram.md)
+                if path.is_dir() {
+                    let nested_md = path.join(format!("{}.md", name));
+                    if nested_md.exists() {
+                        return Some(DirectoryEntry {
+                            name,
+                            path: nested_md,
+                            is_dir: true,
+                        });
+                    }
+                }
+
+                None
             })
             .collect();
 
@@ -241,24 +253,67 @@ impl WorkspaceStorage for PathBuf {
             return Ok(vec![]);
         }
 
+        // The program's own .md file (which we should exclude)
+        let program_md_name = format!("{}.md", program);
+
         let mut entries: Vec<DirectoryEntry> = fs::read_dir(&program_dir)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 let name = path.file_name()?.to_str()?.to_string();
-                let is_md = name.ends_with(".md");
 
-                if is_md {
-                    Some(DirectoryEntry {
+                // Structure 1: Flat .md file (program/MyProject.md)
+                // Exclude the program's own .md file
+                if name.ends_with(".md") && name != program_md_name {
+                    return Some(DirectoryEntry {
                         name: name.trim_end_matches(".md").to_string(),
                         path,
                         is_dir: false,
-                    })
-                } else {
-                    None
+                    });
                 }
+
+                // Structure 2: Nested in program directory (program/MyProject/MyProject.md)
+                if path.is_dir() && name != "projects" {
+                    let nested_md = path.join(format!("{}.md", name));
+                    if nested_md.exists() {
+                        return Some(DirectoryEntry {
+                            name,
+                            path: nested_md,
+                            is_dir: true,
+                        });
+                    }
+                }
+
+                None
             })
             .collect();
+
+        // Also check for projects in program/projects/ subdirectory (nested structure)
+        let projects_subdir = program_dir.join("projects");
+        if projects_subdir.exists() {
+            let nested_entries: Vec<DirectoryEntry> = fs::read_dir(&projects_subdir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?.to_string();
+
+                    // Nested: program/projects/MyProject/MyProject.md
+                    if path.is_dir() {
+                        let nested_md = path.join(format!("{}.md", name));
+                        if nested_md.exists() {
+                            return Some(DirectoryEntry {
+                                name,
+                                path: nested_md,
+                                is_dir: true,
+                            });
+                        }
+                    }
+
+                    None
+                })
+                .collect();
+            entries.extend(nested_entries);
+        }
 
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
@@ -302,30 +357,142 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>> {
-        let project_dir = self.programs_dir().join(program).join(project);
+        let mut entries: Vec<DirectoryEntry> = Vec::new();
 
-        if !project_dir.exists() {
-            return Ok(vec![]);
+        // The project's own .md file (which we should exclude)
+        let project_md_name = format!("{}.md", project);
+
+        // Check flat structure: programs/program/project/
+        let project_dir = self.programs_dir().join(program).join(project);
+        if project_dir.exists() {
+            let flat_entries: Vec<DirectoryEntry> = fs::read_dir(&project_dir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?.to_string();
+
+                    // Structure 1: Flat .md file (project/MyMilestone.md)
+                    // Exclude the project's own .md file
+                    if name.ends_with(".md") && name != project_md_name {
+                        return Some(DirectoryEntry {
+                            name: name.trim_end_matches(".md").to_string(),
+                            path,
+                            is_dir: false,
+                        });
+                    }
+
+                    // Structure 2: Nested in project directory (project/MyMilestone/MyMilestone.md)
+                    if path.is_dir() && name != "milestones" {
+                        let nested_md = path.join(format!("{}.md", name));
+                        if nested_md.exists() {
+                            return Some(DirectoryEntry {
+                                name,
+                                path: nested_md,
+                                is_dir: true,
+                            });
+                        }
+                    }
+
+                    None
+                })
+                .collect();
+            entries.extend(flat_entries);
+
+            // Check for milestones in project/milestones/ subdirectory
+            let milestones_subdir = project_dir.join("milestones");
+            if milestones_subdir.exists() {
+                let nested_entries: Vec<DirectoryEntry> = fs::read_dir(&milestones_subdir)?
+                    .filter_map(|entry| {
+                        let entry = entry.ok()?;
+                        let path = entry.path();
+                        let name = path.file_name()?.to_str()?.to_string();
+
+                        // Nested: project/milestones/MyMilestone/MyMilestone.md
+                        if path.is_dir() {
+                            let nested_md = path.join(format!("{}.md", name));
+                            if nested_md.exists() {
+                                return Some(DirectoryEntry {
+                                    name,
+                                    path: nested_md,
+                                    is_dir: true,
+                                });
+                            }
+                        }
+
+                        None
+                    })
+                    .collect();
+                entries.extend(nested_entries);
+            }
         }
 
-        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&project_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                let name = path.file_name()?.to_str()?.to_string();
-                let is_md = name.ends_with(".md");
+        // Check nested structure: programs/program/projects/project/
+        let nested_project_dir = self
+            .programs_dir()
+            .join(program)
+            .join("projects")
+            .join(project);
+        if nested_project_dir.exists() {
+            let nested_flat_entries: Vec<DirectoryEntry> = fs::read_dir(&nested_project_dir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?.to_string();
 
-                if is_md {
-                    Some(DirectoryEntry {
-                        name: name.trim_end_matches(".md").to_string(),
-                        path,
-                        is_dir: false,
-                    })
-                } else {
+                    // Nested flat: projects/project/MyMilestone.md
+                    if name.ends_with(".md") && name != project_md_name {
+                        return Some(DirectoryEntry {
+                            name: name.trim_end_matches(".md").to_string(),
+                            path,
+                            is_dir: false,
+                        });
+                    }
+
+                    // Nested in project directory: projects/project/MyMilestone/MyMilestone.md
+                    if path.is_dir() && name != "milestones" {
+                        let nested_md = path.join(format!("{}.md", name));
+                        if nested_md.exists() {
+                            return Some(DirectoryEntry {
+                                name,
+                                path: nested_md,
+                                is_dir: true,
+                            });
+                        }
+                    }
+
                     None
-                }
-            })
-            .collect();
+                })
+                .collect();
+            entries.extend(nested_flat_entries);
+
+            // Check for milestones in projects/project/milestones/ subdirectory
+            let nested_milestones_subdir = nested_project_dir.join("milestones");
+            if nested_milestones_subdir.exists() {
+                let deeply_nested_entries: Vec<DirectoryEntry> =
+                    fs::read_dir(&nested_milestones_subdir)?
+                        .filter_map(|entry| {
+                            let entry = entry.ok()?;
+                            let path = entry.path();
+                            let name = path.file_name()?.to_str()?.to_string();
+
+                            // Deeply nested: projects/project/milestones/MyMilestone/MyMilestone.md
+                            if path.is_dir() {
+                                let nested_md = path.join(format!("{}.md", name));
+                                if nested_md.exists() {
+                                    return Some(DirectoryEntry {
+                                        name,
+                                        path: nested_md,
+                                        is_dir: true,
+                                    });
+                                }
+                            }
+
+                            None
+                        })
+                        .collect();
+                entries.extend(deeply_nested_entries);
+            }
+        }
 
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
@@ -389,38 +556,150 @@ impl WorkspaceStorage for PathBuf {
         project: &str,
         milestone: &str,
     ) -> Result<Vec<DirectoryEntry>> {
-        let tasks_dir = self
+        let mut entries: Vec<DirectoryEntry> = Vec::new();
+
+        // The milestone's own .md file (which we should exclude)
+        let milestone_md_name = format!("{}.md", milestone);
+
+        // Check flat structure: programs/program/project/milestone/
+        let milestone_dir = self
             .programs_dir()
             .join(program)
             .join(project)
             .join(milestone);
 
-        if !tasks_dir.exists() {
-            return Ok(vec![]);
+        if milestone_dir.exists() {
+            let flat_entries: Vec<DirectoryEntry> = fs::read_dir(&milestone_dir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?.to_string();
+
+                    // Structure 1: Flat .md file (milestone/MyTask.md)
+                    // Exclude the milestone's own .md file
+                    if name.ends_with(".md") && name != milestone_md_name {
+                        return Some(DirectoryEntry {
+                            name: name.trim_end_matches(".md").to_string(),
+                            path,
+                            is_dir: false,
+                        });
+                    }
+
+                    // Structure 2: Nested in milestone directory (milestone/MyTask/MyTask.md)
+                    if path.is_dir() && name != "tasks" {
+                        let nested_md = path.join(format!("{}.md", name));
+                        if nested_md.exists() {
+                            return Some(DirectoryEntry {
+                                name,
+                                path: nested_md,
+                                is_dir: true,
+                            });
+                        }
+                    }
+
+                    None
+                })
+                .collect();
+            entries.extend(flat_entries);
+
+            // Check for tasks in milestone/tasks/ subdirectory
+            let tasks_subdir = milestone_dir.join("tasks");
+            if tasks_subdir.exists() {
+                let nested_entries: Vec<DirectoryEntry> = fs::read_dir(&tasks_subdir)?
+                    .filter_map(|entry| {
+                        let entry = entry.ok()?;
+                        let path = entry.path();
+                        let name = path.file_name()?.to_str()?.to_string();
+
+                        // Nested: milestone/tasks/MyTask/MyTask.md
+                        if path.is_dir() {
+                            let nested_md = path.join(format!("{}.md", name));
+                            if nested_md.exists() {
+                                return Some(DirectoryEntry {
+                                    name,
+                                    path: nested_md,
+                                    is_dir: true,
+                                });
+                            }
+                        }
+
+                        None
+                    })
+                    .collect();
+                entries.extend(nested_entries);
+            }
         }
 
-        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&tasks_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                let name = path.file_name()?.to_str()?.to_string();
-                let is_md = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == "md")
-                    .unwrap_or(false);
+        // Check nested structure: programs/program/projects/project/milestones/milestone/
+        let nested_milestone_dir = self
+            .programs_dir()
+            .join(program)
+            .join("projects")
+            .join(project)
+            .join("milestones")
+            .join(milestone);
 
-                if is_md {
-                    Some(DirectoryEntry {
-                        name: name.trim_end_matches(".md").to_string(),
-                        path,
-                        is_dir: false,
-                    })
-                } else {
+        if nested_milestone_dir.exists() {
+            let nested_flat_entries: Vec<DirectoryEntry> = fs::read_dir(&nested_milestone_dir)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?.to_string();
+
+                    // Nested flat: milestones/milestone/MyTask.md
+                    if name.ends_with(".md") && name != milestone_md_name {
+                        return Some(DirectoryEntry {
+                            name: name.trim_end_matches(".md").to_string(),
+                            path,
+                            is_dir: false,
+                        });
+                    }
+
+                    // Nested in milestone directory: milestones/milestone/MyTask/MyTask.md
+                    if path.is_dir() && name != "tasks" {
+                        let nested_md = path.join(format!("{}.md", name));
+                        if nested_md.exists() {
+                            return Some(DirectoryEntry {
+                                name,
+                                path: nested_md,
+                                is_dir: true,
+                            });
+                        }
+                    }
+
                     None
-                }
-            })
-            .collect();
+                })
+                .collect();
+            entries.extend(nested_flat_entries);
+
+            // Check for tasks in projects/project/milestones/milestone/tasks/ subdirectory
+            let nested_tasks_subdir = nested_milestone_dir.join("tasks");
+            if nested_tasks_subdir.exists() {
+                let deeply_nested_entries: Vec<DirectoryEntry> =
+                    fs::read_dir(&nested_tasks_subdir)?
+                        .filter_map(|entry| {
+                            let entry = entry.ok()?;
+                            let path = entry.path();
+                            let name = path.file_name()?.to_str()?.to_string();
+
+                            // Deeply nested: milestones/milestone/tasks/MyTask/MyTask.md
+                            if path.is_dir() {
+                                let nested_md = path.join(format!("{}.md", name));
+                                if nested_md.exists() {
+                                    return Some(DirectoryEntry {
+                                        name,
+                                        path: nested_md,
+                                        is_dir: true,
+                                    });
+                                }
+                            }
+
+                            None
+                        })
+                        .collect();
+                entries.extend(deeply_nested_entries);
+            }
+        }
 
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
@@ -580,4 +859,327 @@ pub fn resolve_template(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_flat_program(temp_dir: &Path, name: &str) {
+        let programs_dir = temp_dir.join("programs");
+        fs::create_dir_all(&programs_dir).unwrap();
+        fs::write(programs_dir.join(format!("{}.md", name)), "# Flat Program").unwrap();
+    }
+
+    fn create_nested_program(temp_dir: &Path, name: &str) {
+        let program_dir = temp_dir.join("programs").join(name);
+        fs::create_dir_all(&program_dir).unwrap();
+        fs::write(program_dir.join(format!("{}.md", name)), "# Nested Program").unwrap();
+    }
+
+    fn create_flat_project(temp_dir: &Path, program: &str, name: &str) {
+        let program_dir = temp_dir.join("programs").join(program);
+        fs::create_dir_all(&program_dir).unwrap();
+        fs::write(program_dir.join(format!("{}.md", name)), "# Flat Project").unwrap();
+    }
+
+    fn create_nested_project(temp_dir: &Path, program: &str, name: &str) {
+        let project_dir = temp_dir
+            .join("programs")
+            .join(program)
+            .join("projects")
+            .join(name);
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join(format!("{}.md", name)), "# Nested Project").unwrap();
+    }
+
+    fn create_flat_milestone(temp_dir: &Path, program: &str, project: &str, name: &str) {
+        let project_dir = temp_dir.join("programs").join(program).join(project);
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join(format!("{}.md", name)), "# Flat Milestone").unwrap();
+    }
+
+    fn create_nested_milestone(temp_dir: &Path, program: &str, project: &str, name: &str) {
+        let milestone_dir = temp_dir
+            .join("programs")
+            .join(program)
+            .join("projects")
+            .join(project)
+            .join("milestones")
+            .join(name);
+        fs::create_dir_all(&milestone_dir).unwrap();
+        fs::write(
+            milestone_dir.join(format!("{}.md", name)),
+            "# Nested Milestone",
+        )
+        .unwrap();
+    }
+
+    fn create_flat_task(
+        temp_dir: &Path,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+    ) {
+        let milestone_dir = temp_dir
+            .join("programs")
+            .join(program)
+            .join(project)
+            .join(milestone);
+        fs::create_dir_all(&milestone_dir).unwrap();
+        fs::write(milestone_dir.join(format!("{}.md", name)), "# Flat Task").unwrap();
+    }
+
+    fn create_nested_task(
+        temp_dir: &Path,
+        program: &str,
+        project: &str,
+        milestone: &str,
+        name: &str,
+    ) {
+        let task_dir = temp_dir
+            .join("programs")
+            .join(program)
+            .join("projects")
+            .join(project)
+            .join("milestones")
+            .join(milestone)
+            .join("tasks")
+            .join(name);
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join(format!("{}.md", name)), "# Nested Task").unwrap();
+    }
+
+    #[test]
+    fn test_list_programs_flat() {
+        let temp_dir = TempDir::new().unwrap();
+        create_flat_program(temp_dir.path(), "FlatProgram");
+
+        let programs = temp_dir.path().to_path_buf().list_programs().unwrap();
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].name, "FlatProgram");
+        assert!(!programs[0].is_dir);
+    }
+
+    #[test]
+    fn test_list_programs_nested() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "NestedProgram");
+
+        let programs = temp_dir.path().to_path_buf().list_programs().unwrap();
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].name, "NestedProgram");
+        assert!(programs[0].is_dir);
+    }
+
+    #[test]
+    fn test_list_programs_mixed() {
+        let temp_dir = TempDir::new().unwrap();
+        create_flat_program(temp_dir.path(), "FlatProgram");
+        create_nested_program(temp_dir.path(), "NestedProgram");
+
+        let programs = temp_dir.path().to_path_buf().list_programs().unwrap();
+        assert_eq!(programs.len(), 2);
+        let names: Vec<&str> = programs.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"FlatProgram"));
+        assert!(names.contains(&"NestedProgram"));
+    }
+
+    #[test]
+    fn test_list_projects_flat() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_flat_project(temp_dir.path(), "MyProgram", "FlatProject");
+
+        let projects = temp_dir
+            .path()
+            .to_path_buf()
+            .list_projects("MyProgram")
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "FlatProject");
+    }
+
+    #[test]
+    fn test_list_projects_nested_in_subdir() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "NestedProject");
+
+        let projects = temp_dir
+            .path()
+            .to_path_buf()
+            .list_projects("MyProgram")
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "NestedProject");
+    }
+
+    #[test]
+    fn test_list_projects_mixed() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_flat_project(temp_dir.path(), "MyProgram", "FlatProject");
+        create_nested_project(temp_dir.path(), "MyProgram", "NestedProject");
+
+        let projects = temp_dir
+            .path()
+            .to_path_buf()
+            .list_projects("MyProgram")
+            .unwrap();
+        assert_eq!(projects.len(), 2);
+        let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"FlatProject"));
+        assert!(names.contains(&"NestedProject"));
+    }
+
+    #[test]
+    fn test_list_milestones_flat() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_flat_milestone(temp_dir.path(), "MyProgram", "MyProject", "FlatMilestone");
+
+        let milestones = temp_dir
+            .path()
+            .to_path_buf()
+            .list_milestones("MyProgram", "MyProject")
+            .unwrap();
+        assert_eq!(milestones.len(), 1);
+        assert_eq!(milestones[0].name, "FlatMilestone");
+    }
+
+    #[test]
+    fn test_list_milestones_nested_in_subdir() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "NestedMilestone");
+
+        let milestones = temp_dir
+            .path()
+            .to_path_buf()
+            .list_milestones("MyProgram", "MyProject")
+            .unwrap();
+        assert_eq!(milestones.len(), 1);
+        assert_eq!(milestones[0].name, "NestedMilestone");
+    }
+
+    #[test]
+    fn test_list_milestones_mixed() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_flat_milestone(temp_dir.path(), "MyProgram", "MyProject", "FlatMilestone");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "NestedMilestone");
+
+        let milestones = temp_dir
+            .path()
+            .to_path_buf()
+            .list_milestones("MyProgram", "MyProject")
+            .unwrap();
+        assert_eq!(milestones.len(), 2);
+        let names: Vec<&str> = milestones.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"FlatMilestone"));
+        assert!(names.contains(&"NestedMilestone"));
+    }
+
+    #[test]
+    fn test_list_tasks_flat() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "MyMilestone");
+        create_flat_task(
+            temp_dir.path(),
+            "MyProgram",
+            "MyProject",
+            "MyMilestone",
+            "FlatTask",
+        );
+
+        let tasks = temp_dir
+            .path()
+            .to_path_buf()
+            .list_tasks("MyProgram", "MyProject", "MyMilestone")
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "FlatTask");
+    }
+
+    #[test]
+    fn test_list_tasks_nested_in_subdir() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "MyMilestone");
+        create_nested_task(
+            temp_dir.path(),
+            "MyProgram",
+            "MyProject",
+            "MyMilestone",
+            "NestedTask",
+        );
+
+        let tasks = temp_dir
+            .path()
+            .to_path_buf()
+            .list_tasks("MyProgram", "MyProject", "MyMilestone")
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "NestedTask");
+    }
+
+    #[test]
+    fn test_list_tasks_mixed() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "MyMilestone");
+        create_flat_task(
+            temp_dir.path(),
+            "MyProgram",
+            "MyProject",
+            "MyMilestone",
+            "FlatTask",
+        );
+        create_nested_task(
+            temp_dir.path(),
+            "MyProgram",
+            "MyProject",
+            "MyMilestone",
+            "NestedTask",
+        );
+
+        let tasks = temp_dir
+            .path()
+            .to_path_buf()
+            .list_tasks("MyProgram", "MyProject", "MyMilestone")
+            .unwrap();
+        assert_eq!(tasks.len(), 2);
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"FlatTask"));
+        assert!(names.contains(&"NestedTask"));
+    }
+
+    #[test]
+    fn test_list_programs_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let programs = temp_dir.path().to_path_buf().list_programs().unwrap();
+        assert!(programs.is_empty());
+    }
+
+    #[test]
+    fn test_list_projects_empty_program() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        let projects = temp_dir
+            .path()
+            .to_path_buf()
+            .list_projects("MyProgram")
+            .unwrap();
+        assert!(projects.is_empty());
+    }
 }
