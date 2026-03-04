@@ -317,87 +317,27 @@ No active sprint. Ready for next task.
 
 ## Current Sprint
 
-**Branch**: `fix/wizard-inline-edit`
-**Tag**: `stable/pre-wizard-inline-edit-2026-03-04`
-**Goal**: Fix wizard layout to show field values inline with field names.
-
-### Problem
-
-The current wizard shows field names with values, but editing happens in a separate input area at the bottom. Users want to see all fields and their entered values in one glance, with inline editing.
-
-### Current Layout
-
-```
-Title: <NAME>
-Status: New (auto)
-Creation Date: 2026-03-04 (auto)
-...
-
-[Separate input area at bottom]
-> <user types here>
-
-CONFIRM    CANCEL
-```
-
-### Desired Layout
-
-```
-Title: <this is where you enter the title>
-Status: New (auto)
-Creation Date: 2026-03-04 (auto)
-Created By: Tsp (auto)
-Assigned To: <enter assigned to>
-Due Date: <enter due date>
-Description: <the description value entered here>
-
-CONFIRM    CANCEL
-```
-
-### Requirements
-
-1. **Field name on left, value/input on right** - All on same line
-2. **All fields visible at once** - No separate input area
-3. **Values persist visibly** - See what you've entered as you navigate
-4. **Prepopulated fields show value** - e.g., "New (auto)" for status
-5. **Editable fields show current value** - Empty or with entered text
-6. **Focus indicator** - Highlight which field is currently being edited
-
-### Tasks
-
-- [ ] **T1: Redesign wizard rendering in `views/mod.rs`**
-  - Remove separate input area at bottom
-  - Show field name and value on same line
-  - Use columns: label (left) | value/input (right)
-  - Highlight focused field
-
-- [ ] **T2: Update input handling in `mod.rs`**
-  - When field is focused, typing updates the value directly
-  - No separate input_buffer for wizard - use field's value directly
-  - Backspace deletes from field's value
-
-- [ ] **T3: Style prepopulated vs editable fields**
-  - Prepopulated: show value with "(auto)" suffix, dimmed style
-  - Editable: show value or placeholder, normal style when focused
-
-- [ ] **T4: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-  - Test wizard visually
-
-### Success Criteria
-
-- All 59 tests pass
-- Clippy reports 0 warnings
-- Field names and values on same line
-- All fields visible at once
-- Values persist as you type
-- Prepopulated fields clearly marked
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `fix/wizard-inline-edit` — **MERGED** (tag: `stable/wizard-inline-edit-2026-03-04`)
+- Redesigned wizard with inline editing
+- Field names and values on same line
+- All fields visible at once (no separate input area)
+- Prepopulated fields show "(auto)" suffix with dimmed style
+- Focused editable fields have yellow highlight
+- Added `test_inline_editing_updates_field_value`
+- All 60 tests passing, clippy clean
+
 **Branch**: `fix/sidebar-empty-programs` — **MERGED** (tag: `stable/sidebar-empty-state-2026-03-04`)
+- Added `is_create_action` field to `SidebarItem` struct
+- Show "+ Create Program..." in sidebar when programs list is empty
+- All 59 tests passing, clippy clean
+
+---
 - Added `is_create_action` field to `SidebarItem` struct
 - Show "+ Create Program..." in sidebar when programs list is empty
 - Handle create action selection to trigger program creation wizard
