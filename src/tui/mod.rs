@@ -277,6 +277,16 @@ impl App {
 
     fn navigate_left(&mut self) {
         if self.current_view == ViewType::TreeView && !self.tree_state.path.is_empty() {
+            // Remember the parent we're navigating back to (the one that will remain in path after pop)
+            // If path is ["Program", "Project"], after pop it's ["Program"], so "Program" is the target
+            let target_name = if self.tree_state.path.len() > 1 {
+                // After pop, the target is the second-to-last element (which becomes the last)
+                self.tree_state.path[self.tree_state.path.len() - 2].clone()
+            } else {
+                // We're at depth 1, navigating to root - select first program after header
+                String::new() // Empty string means "select first non-header item"
+            };
+
             self.tree_state.path.pop();
             let new_depth = self.tree_state.path.len();
             match new_depth {
@@ -302,8 +312,21 @@ impl App {
                 }
                 _ => {}
             }
-            self.selected_entry_index = 0;
+
             self.load_tree_view_data();
+
+            // Find and select the target item
+            if target_name.is_empty() {
+                // At root level, select first non-header item
+                self.selected_entry_index = if self.sidebar_items.len() > 1 { 1 } else { 0 };
+            } else {
+                // Find the item with matching name
+                self.selected_entry_index = self
+                    .sidebar_items
+                    .iter()
+                    .position(|item| item.name == target_name)
+                    .unwrap_or(if self.sidebar_items.len() > 1 { 1 } else { 0 });
+            }
         }
     }
 
