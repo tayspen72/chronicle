@@ -130,10 +130,12 @@ pub struct App {
     pub current_program: Option<String>,
     pub current_project: Option<String>,
     pub current_milestone: Option<String>,
+    pub current_task: Option<String>,
     pub programs: Vec<DirectoryEntry>,
     pub projects: Vec<DirectoryEntry>,
     pub milestones: Vec<DirectoryEntry>,
     pub tasks: Vec<DirectoryEntry>,
+    pub subtasks: Vec<DirectoryEntry>,
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
@@ -160,10 +162,12 @@ impl App {
             current_program: None,
             current_project: None,
             current_milestone: None,
+            current_task: None,
             programs: Vec::new(),
             projects: Vec::new(),
             milestones: Vec::new(),
             tasks: Vec::new(),
+            subtasks: Vec::new(),
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
@@ -294,21 +298,31 @@ impl App {
                     self.current_program = None;
                     self.current_project = None;
                     self.current_milestone = None;
+                    self.current_task = None;
                 }
                 1 => {
                     self.current_program = Some(self.tree_state.path[0].clone());
                     self.current_project = None;
                     self.current_milestone = None;
+                    self.current_task = None;
                 }
                 2 => {
                     self.current_program = Some(self.tree_state.path[0].clone());
                     self.current_project = Some(self.tree_state.path[1].clone());
                     self.current_milestone = None;
+                    self.current_task = None;
                 }
                 3 => {
                     self.current_program = Some(self.tree_state.path[0].clone());
                     self.current_project = Some(self.tree_state.path[1].clone());
                     self.current_milestone = Some(self.tree_state.path[2].clone());
+                    self.current_task = None;
+                }
+                4 => {
+                    self.current_program = Some(self.tree_state.path[0].clone());
+                    self.current_project = Some(self.tree_state.path[1].clone());
+                    self.current_milestone = Some(self.tree_state.path[2].clone());
+                    self.current_task = Some(self.tree_state.path[3].clone());
                 }
                 _ => {}
             }
@@ -349,21 +363,31 @@ impl App {
                             self.current_program = None;
                             self.current_project = None;
                             self.current_milestone = None;
+                            self.current_task = None;
                         }
                         1 => {
                             self.current_program = Some(self.tree_state.path[0].clone());
                             self.current_project = None;
                             self.current_milestone = None;
+                            self.current_task = None;
                         }
                         2 => {
                             self.current_program = Some(self.tree_state.path[0].clone());
                             self.current_project = Some(self.tree_state.path[1].clone());
                             self.current_milestone = None;
+                            self.current_task = None;
                         }
                         3 => {
                             self.current_program = Some(self.tree_state.path[0].clone());
                             self.current_project = Some(self.tree_state.path[1].clone());
                             self.current_milestone = Some(self.tree_state.path[2].clone());
+                            self.current_task = None;
+                        }
+                        4 => {
+                            self.current_program = Some(self.tree_state.path[0].clone());
+                            self.current_project = Some(self.tree_state.path[1].clone());
+                            self.current_milestone = Some(self.tree_state.path[2].clone());
+                            self.current_task = Some(self.tree_state.path[3].clone());
                         }
                         _ => {}
                     }
@@ -489,7 +513,10 @@ impl App {
                 "History" => {
                     match self.config.workspace.list_journal_entries() {
                         Ok(entries) => self.journal_entries = entries,
-                        Err(_) => self.journal_entries.clear(),
+                        Err(e) => {
+                            eprintln!("Failed to list journal entries: {}", e);
+                            self.journal_entries.clear();
+                        }
                     }
                     self.current_view = ViewType::JournalArchiveList;
                 }
@@ -510,7 +537,15 @@ impl App {
                 0 => true,
                 1 => self.projects.iter().any(|p| p.name == item.name),
                 2 => self.milestones.iter().any(|m| m.name == item.name),
-                3 => self.tasks.iter().any(|t| t.name == item.name),
+                3 => {
+                    // A task is expandable if we can find subtasks for it
+                    // This is true whether the task is a directory or a flat .md file
+                    self.tasks.iter().any(|t| t.name == item.name)
+                }
+                4 => self
+                    .subtasks
+                    .iter()
+                    .any(|s| s.name == item.name && s.is_dir),
                 _ => false,
             };
 
@@ -539,6 +574,7 @@ impl App {
             1 => &self.projects,
             2 => &self.milestones,
             3 => &self.tasks,
+            4 => &self.subtasks,
             _ => &self.programs,
         }
     }
@@ -556,18 +592,25 @@ impl App {
             0 => {
                 match self.config.workspace.list_programs() {
                     Ok(entries) => self.programs = entries,
-                    Err(_) => self.programs.clear(),
+                    Err(e) => {
+                        tracing::warn!("Failed to list programs: {}", e);
+                        self.programs.clear();
+                    }
                 }
                 self.current_program = None;
                 self.current_project = None;
                 self.current_milestone = None;
+                self.current_task = None;
             }
             1 => {
                 let program = &self.tree_state.path[0];
                 self.current_program = Some(program.clone());
                 match self.config.workspace.list_projects(program) {
                     Ok(entries) => self.projects = entries,
-                    Err(_) => self.projects.clear(),
+                    Err(e) => {
+                        tracing::warn!("Failed to list projects: {}", e);
+                        self.projects.clear();
+                    }
                 }
             }
             2 => {
@@ -577,7 +620,10 @@ impl App {
                 self.current_project = Some(project.clone());
                 match self.config.workspace.list_milestones(program, project) {
                     Ok(entries) => self.milestones = entries,
-                    Err(_) => self.milestones.clear(),
+                    Err(e) => {
+                        tracing::warn!("Failed to list milestones: {}", e);
+                        self.milestones.clear();
+                    }
                 }
             }
             3 => {
@@ -593,7 +639,31 @@ impl App {
                     .list_tasks(program, project, milestone)
                 {
                     Ok(entries) => self.tasks = entries,
-                    Err(_) => self.tasks.clear(),
+                    Err(e) => {
+                        tracing::warn!("Failed to list tasks: {}", e);
+                        self.tasks.clear();
+                    }
+                }
+            }
+            4 => {
+                let program = &self.tree_state.path[0];
+                let project = &self.tree_state.path[1];
+                let milestone = &self.tree_state.path[2];
+                let task = &self.tree_state.path[3];
+                self.current_program = Some(program.clone());
+                self.current_project = Some(project.clone());
+                self.current_milestone = Some(milestone.clone());
+                self.current_task = Some(task.clone());
+                match self
+                    .config
+                    .workspace
+                    .list_subtasks(program, project, milestone, task)
+                {
+                    Ok(entries) => self.subtasks = entries,
+                    Err(e) => {
+                        tracing::warn!("Failed to list subtasks: {}", e);
+                        self.subtasks.clear();
+                    }
                 }
             }
             _ => {}
@@ -662,6 +732,20 @@ impl App {
                                         indent: 3,
                                         path: Some(task.path.clone()),
                                     });
+
+                                    if self.current_task.as_ref() == Some(&task.name) {
+                                        for subtask in &self.subtasks {
+                                            self.sidebar_items.push(SidebarItem {
+                                                name: subtask.name.clone(),
+                                                section: SidebarSection::Programs,
+                                                is_header: false,
+                                                is_planning_item: None,
+                                                is_journal_item: None,
+                                                indent: 4,
+                                                path: Some(subtask.path.clone()),
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
