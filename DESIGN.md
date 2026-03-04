@@ -204,16 +204,18 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `fix/selection-on-navigate` — **MERGED** (tag: `stable/selection-fix-2026-03-03`)
-
-### Completed
-
-- [x] On initial load, first program is selected (not header)
-- [x] On navigate right, selection moves to first child item
+No active sprint. Ready for next task.
 
 ---
 
-### Previous Sprint (Completed)
+### Recent Sprints (Completed)
+
+**Branch**: `fix/collapse-on-navigate-left` — **MERGED** (tag: `stable/navigate-left-fix-2026-03-03`)
+- Navigate left now selects parent item instead of header
+
+**Branch**: `fix/selection-on-navigate` — **MERGED** (tag: `stable/selection-fix-2026-03-03`)
+- On initial load, first program is selected
+- On navigate right, selection moves to first child item
 
 **Branch**: `fix/storage-discovery` — **MERGED** (tag: `stable/storage-discovery-2026-03-03`)
 
