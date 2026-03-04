@@ -404,8 +404,10 @@ pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, promp
     f.render_widget(paragraph, area);
 }
 
-/// Renders the template field wizard as a single-page form with navigation.
+/// Renders the template field wizard as a single-page form with CONFIRM/CANCEL buttons.
 pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect, prompt: &str) {
+    use crate::tui::WizardFocus;
+
     let state = match app.template_field_state.as_ref() {
         Some(s) => s,
         None => {
@@ -415,9 +417,7 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     };
 
     let fields = &state.fields;
-    let focused_index = state.focused_index;
     let field_count = fields.len();
-    let is_confirming = state.confirming;
 
     // Calculate available height for fields
     let header_height = 5u16;
@@ -430,8 +430,14 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
 
     // Calculate how many fields can be visible
     let visible_fields = (available_height / 2) as usize;
-    let scroll_offset = if focused_index >= visible_fields {
-        focused_index - visible_fields + 1
+
+    // Calculate scroll offset based on focused field
+    let focused_field_idx = match state.focus {
+        WizardFocus::Field(idx) => idx,
+        WizardFocus::ConfirmButton | WizardFocus::CancelButton => field_count, // Scroll to show buttons
+    };
+    let scroll_offset = if focused_field_idx >= visible_fields {
+        focused_field_idx - visible_fields + 1
     } else {
         0
     };
@@ -440,33 +446,46 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     let mut lines = vec![
         prompt.to_string(),
         String::new(),
-        "Use ↑/↓ to navigate | Enter to edit field | Tab for next | Esc to cancel".to_string(),
+        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel".to_string(),
         String::new(),
     ];
 
     // Scroll indicator if needed
     if field_count > visible_fields && scroll_offset > 0 {
-        lines.push(format!(
-            "  ↑ {} more fields above...",
-            field_count - scroll_offset
-        ));
+        lines.push(format!("  ↑ {} more fields above...", scroll_offset));
     }
 
-    // Render visible fields
-    for (i, field) in fields.iter().enumerate() {
-        if i < scroll_offset || i >= scroll_offset + visible_fields {
+    // Render visible fields in display_order
+    let mut sorted_fields: Vec<_> = fields.iter().enumerate().collect();
+    sorted_fields.sort_by_key(|(_, f)| f.display_order);
+
+    for (i, field) in sorted_fields.iter() {
+        let idx = *i;
+        if idx < scroll_offset || idx >= scroll_offset + visible_fields {
             continue;
         }
 
-        let is_focused = i == focused_index;
+        let is_focused = matches!(state.focus, WizardFocus::Field(fi) if fi == idx);
         let prefix = if is_focused { "→ " } else { "  " };
-        let value_display = if field.value.is_empty() {
-            &field.placeholder
+
+        // Style differently for editable vs prepopulated
+        let value_display = if field.value.is_empty() && field.is_editable {
+            format!("<{}>", field.placeholder)
+        } else if field.is_editable {
+            field.value.clone()
         } else {
-            &field.value
+            // Prepopulated field - show value with indicator
+            format!("{} (auto)", field.value)
         };
 
-        lines.push(format!("{}{}: {}", prefix, field.label, value_display));
+        let field_line = if field.is_editable {
+            format!("{}{}: {}", prefix, field.label, value_display)
+        } else {
+            // Dim style for prepopulated - we'll add gray styling in display
+            format!("{}{}: {} [readonly]", prefix, field.label, value_display)
+        };
+
+        lines.push(field_line);
     }
 
     // Scroll indicator if there are more fields below
@@ -477,17 +496,36 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
         ));
     }
 
-    // Confirm button
+    // CONFIRM and CANCEL buttons
     lines.push(String::new());
-    if is_confirming {
-        lines.push("→ [Confirm and Create]".to_string());
+    let confirm_prefix = if state.focus == WizardFocus::ConfirmButton {
+        "→ "
     } else {
-        lines.push("  [Confirm]".to_string());
-    }
+        "  "
+    };
+    let cancel_prefix = if state.focus == WizardFocus::CancelButton {
+        "→ "
+    } else {
+        "  "
+    };
+    lines.push(format!(
+        "{}[CONFIRM]     {}[CANCEL]",
+        confirm_prefix, cancel_prefix
+    ));
     lines.push(String::new());
 
-    // Input area
-    lines.push(format!("> {}", app.input_buffer));
+    // Input area - only show when editing a field
+    if let WizardFocus::Field(idx) = state.focus {
+        if let Some(field) = fields.get(idx) {
+            if field.is_editable {
+                lines.push(format!("Edit {}: {}", field.label, app.input_buffer));
+            } else {
+                lines.push(format!("Viewing: {} (read-only)", field.label));
+            }
+        }
+    } else {
+        lines.push(String::new());
+    }
 
     // Join all lines
     let content = lines.join("\n");

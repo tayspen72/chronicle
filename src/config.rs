@@ -63,6 +63,10 @@ fn default_down() -> char {
     'j'
 }
 
+fn default_owner() -> String {
+    String::new()
+}
+
 /// User configuration for Chronicle
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -70,6 +74,9 @@ pub struct Config {
     pub workspace: PathBuf,
     /// Editor command for opening files
     pub editor: String,
+    /// Owner name for created elements
+    #[serde(default = "default_owner")]
+    pub owner: String,
     /// Workflow status values
     #[serde(default = "default_workflow")]
     pub workflow: Vec<String>,
@@ -93,6 +100,7 @@ impl Default for Config {
         Config {
             workspace: home.join("chronicle").join("workspace"),
             editor: "hx".to_string(),
+            owner: default_owner(),
             workflow: default_workflow(),
             navigator_width: 60,
             planning_duration: "biweekly".to_string(),
@@ -174,6 +182,13 @@ impl Config {
             editor_input
         };
 
+        print!("Your name (for created_by field) []: ");
+        io::stdout().flush()?;
+
+        let mut owner_input = String::new();
+        io::stdin().read_line(&mut owner_input)?;
+        let owner = owner_input.trim().to_string();
+
         println!("\n=== Setup Complete ===\n");
         println!("Workspace directory: {}", workspace.display());
         println!("Editor: {}", editor);
@@ -183,6 +198,7 @@ impl Config {
         Ok(Config {
             workspace,
             editor,
+            owner,
             workflow: default_workflow(),
             navigator_width: 60,
             planning_duration: "biweekly".to_string(),
@@ -200,6 +216,7 @@ mod tests {
         let toml_content = r#"
 workspace = "/home/user/chronicle"
 editor = "helix"
+owner = "Test User"
 navigator_width = 60
 planning_duration = "biweekly"
 
@@ -215,6 +232,7 @@ down = "j"
 
         assert_eq!(config.workspace, PathBuf::from("/home/user/chronicle"));
         assert_eq!(config.editor, "helix");
+        assert_eq!(config.owner, "Test User");
         assert_eq!(config.navigator_width, 60);
         assert_eq!(config.planning_duration, "biweekly");
         assert_eq!(
@@ -245,6 +263,7 @@ editor = "vim"
         assert_eq!(config.workspace, PathBuf::from("/home/user/chronicle"));
         assert_eq!(config.editor, "vim");
         // Check defaults are applied
+        assert_eq!(config.owner, "");
         assert_eq!(config.navigator_width, 60);
         assert_eq!(config.planning_duration, "biweekly");
         assert_eq!(
@@ -271,6 +290,7 @@ editor = "vim"
         assert!(config.workspace.to_string_lossy().contains("chronicle"));
         assert!(config.workspace.to_string_lossy().contains("workspace"));
         assert_eq!(config.editor, "hx");
+        assert_eq!(config.owner, "");
         assert_eq!(config.navigator_width, 60);
         assert_eq!(config.planning_duration, "biweekly");
         assert_eq!(
@@ -301,6 +321,7 @@ editor = "vim"
         let config = Config {
             workspace: PathBuf::from("/test/path"),
             editor: "code".to_string(),
+            owner: "Test User".to_string(),
             workflow: vec!["todo".to_string(), "done".to_string()],
             navigator_width: 80,
             planning_duration: "weekly".to_string(),
@@ -316,6 +337,7 @@ editor = "vim"
 
         assert!(toml_str.contains("workspace = \"/test/path\""));
         assert!(toml_str.contains("editor = \"code\""));
+        assert!(toml_str.contains("owner = \"Test User\""));
         assert!(toml_str.contains("navigator_width = 80"));
         assert!(toml_str.contains("planning_duration = \"weekly\""));
         assert!(toml_str.contains("left = \"a\""));
