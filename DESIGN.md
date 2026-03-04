@@ -311,150 +311,38 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `fix/creation-wizard-v2`
-**Tag**: (to be created)
-**Goal**: Fix element creation wizard to show all fields in template order with CONFIRM/CANCEL buttons.
-
-### Problem
-
-The creation wizard has several issues:
-1. Fields not shown in template order
-2. No distinction between editable vs prepopulated fields
-3. No CONFIRM/CANCEL buttons
-4. OWNER placeholder not supported (should come from config.toml)
-5. DEFAULT_STATUS placeholder not using workflow[0]
-
-### Desired UI (from element_creation_wizard.txt)
-
-```
-Title: <field for title>
-Status: (show entry 1 in config.toml workflow - prepopulated)
-Creation Date: (show today's date - prepopulated)
-Created By: (show owner name from config.toml - prepopulated)
-Assigned To: <field for assigned to>
-Due Date: <field for due date>
-Type: task (prepopulated)
-Description: <field for description>
-
-CONFIRM     CANCEL
-```
-
-### Template Placeholders
-
-Placeholders are variable names that can be dynamically assigned. The system recognizes certain keywords (TODAY, OWNER, DEFAULT_STATUS) that are prepopulated. Any other placeholder becomes an editable user input field.
-
-**Example - Custom Template Override**:
-If a user creates `~/.config/chronicle/templates/task.md` to override the system template:
-```yaml
----
-title: {{NAME}}
-priority: {{MY_PRIORITY}}
----
-```
-The wizard will show "Priority" as an editable field. If the user enters "High", the final file becomes:
-```yaml
-priority: High
-```
-
-| Placeholder | Type | Source |
-|-------------|------|--------|
-| NAME | Editable | User input |
-| DEFAULT_STATUS | **Keyword** - Prepopulated | `config.workflow[0]` |
-| TODAY | **Keyword** - Prepopulated | Current date |
-| OWNER | **Keyword** - Prepopulated | `config.owner` (NEW) |
-| ASSIGNED_TO | Editable | User input |
-| DUE_DATE | Editable | User input |
-| DESCRIPTION | Editable | User input |
-| Any other | Editable | User input |
-
-### Navigation Behavior
-
-- **Enter**: Navigate down to next editable field (skip prepopulated)
-- **Escape**: Jump to CANCEL button
-- **On CONFIRM + Enter**: Create file with entered values
-- **On CANCEL + Enter**: Return to tree view without creating
-- **Up/Down arrows**: Navigate between all fields and buttons
-
-### Tasks
-
-- [ ] **T1: Add `owner` field to Config struct**
-  - Add `owner: String` field to `Config` in `config.rs`
-  - Add `fn default_owner() -> String` returning empty string
-  - Add `#[serde(default = "default_owner")]` attribute
-  - Update `Default` impl
-
-- [ ] **T2: Update `FieldInfo` struct**
-  - Add `is_editable: bool` field to distinguish editable vs prepopulated
-  - Add `display_order: usize` to preserve template order
-
-- [ ] **T3: Update placeholder resolution in `storage/mod.rs`**
-  - Handle `OWNER` placeholder in `resolve_template()` using config.owner
-  - Handle `DEFAULT_STATUS` placeholder using config.workflow[0]
-  - Pass config reference to resolve_template
-
-- [ ] **T4: Update field creation in wizard**
-  - Mark fields as editable or prepopulated based on placeholder type
-  - Prepopulate values for TODAY, OWNER, DEFAULT_STATUS
-  - Preserve template order
-
-- [ ] **T5: Update wizard rendering in `views/mod.rs`**
-  - Show all fields in template order
-  - Display prepopulated fields with gray style (read-only appearance)
-  - Add CONFIRM and CANCEL buttons at bottom
-  - Handle navigation (Enter, Escape, Up/Down)
-
-- [ ] **T6: Update `confirm_template_field()` logic**
-  - Enter navigates to next editable field
-  - Escape jumps to CANCEL
-  - Handle CONFIRM/CANCEL button selection
-
-- [ ] **T7: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-  - Test wizard with task template
-
-### Success Criteria
-
-- All 56 tests pass
-- Clippy reports 0 warnings
-- Fields shown in template order
-- Prepopulated fields show correct values (TODAY, OWNER, DEFAULT_STATUS)
-- CONFIRM/CANCEL buttons work correctly
-- Enter navigates down, Escape jumps to cancel
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `fix/creation-wizard-v2` — **MERGED** (tag: `stable/creation-wizard-v2-2026-03-04`)
+- Added `owner` field to Config struct
+- Added `is_editable` and `display_order` to FieldInfo struct
+- Added `WizardFocus` enum for field/button navigation
+- Keywords (TODAY, OWNER, DEFAULT_STATUS, NAME) prepopulated and non-editable
+- Custom placeholders are editable user input fields
+- Template order preserved with display_order
+- CONFIRM button creates file, CANCEL returns to tree view
+- Escape jumps to CANCEL, Enter navigates to next editable field
+- All 56 tests passing, clippy clean
+
 **Branch**: `feat/status-panel` — **MERGED** (tag: `stable/status-panel-2026-03-04`)
 - Redesigned status bar with breadcrumb and mode indicator
 - Left side: Shows Program > Project > Milestone > Task hierarchy
 - Right side: Shows mode (NORMAL/COMMAND/INPUT) with color coding
-- Empty state shows "No selection"
-- All 56 tests passing, clippy clean
 
 **Branch**: `feat/planning-views` — **MERGED** (tag: `stable/planning-views-2026-03-04`)
 - Implemented Backlog view showing all tasks with parent context
 - Implemented WeeklyPlanning view with week range and task statistics
-- Parses YAML frontmatter for status and due_date fields
-- All 56 tests passing, clippy clean
-- `views/mod.rs`: +220 lines
-
----
 
 **Branch**: `feat/domain-model` — **MERGED** (tag: `stable/domain-model-2026-03-04`)
 - Added Program, Project, Milestone, Task structs with serde support
-- Added ElementKind enum with Display/FromStr
-- Added Element enum to unify all element types
 - Added `parse_element()` for YAML frontmatter parsing
-- 6 new tests, all 56 tests passing, clippy clean
-
----
-- `model/mod.rs`: +200 lines, `storage/md.rs`: +249 lines
 
 **Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
-- Wired up `get_command_list()`, `filter_commands()` from command.rs
-- Wired up `navigate_up()`, `navigate_down()`, `build_sidebar_items()` from navigation.rs
+- Wired up functions from command.rs and navigation.rs
 - `mod.rs`: 1735 → 1411 lines (**324 lines removed**)
 
 **Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
