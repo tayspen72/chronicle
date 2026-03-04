@@ -317,80 +317,24 @@ No active sprint. Ready for next task.
 
 ## Current Sprint
 
-**Branch**: `fix/sidebar-empty-programs`
-**Tag**: `stable/pre-sidebar-empty-state-2026-03-04`
-**Goal**: Show "Create Program" option in sidebar when workspace has no programs.
-
-### Problem
-
-When the workspace has no programs, the sidebar shows:
-```
-Programs
-  (empty - nothing here)
-  
-Planning
-  Weekly Planning
-  Backlog
-  
-Journal
-  Today
-  History
-```
-
-The user sees an empty Programs section with no way to create a program from the sidebar. They must use the command palette (`/`) to access "New Program".
-
-### Desired Behavior
-
-When programs list is empty, show a prompt to create:
-```
-Programs
-  + Create Program...
-  
-Planning
-  Weekly Planning
-  Backlog
-  
-Journal
-  Today
-  History
-```
-
-Clicking/navigating to "+ Create Program..." and pressing Enter should trigger the program creation wizard.
-
-### Tasks
-
-- [ ] **T1: Add empty state item in `build_sidebar_items()`**
-  - When `programs.is_empty()`, add a "+ Create Program..." item
-  - Mark it as a special item that triggers program creation
-
-- [ ] **T2: Handle selection in `open_tree_item()`**
-  - Detect when the special "Create Program" item is selected
-  - Trigger the program creation wizard (same as `CommandAction::NewProgram`)
-
-- [ ] **T3: Style the empty state item**
-  - Use dimmed/italic style to indicate it's an action, not a program
-
-- [ ] **T4: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-  - Test with empty workspace
-
-### Success Criteria
-
-- All 58 tests pass
-- Clippy reports 0 warnings
-- Sidebar shows "+ Create Program..." when workspace is empty
-- Pressing Enter on it triggers program creation wizard
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `fix/sidebar-empty-programs` — **MERGED** (tag: `stable/sidebar-empty-state-2026-03-04`)
+- Added `is_create_action` field to `SidebarItem` struct
+- Show "+ Create Program..." in sidebar when programs list is empty
+- Handle create action selection to trigger program creation wizard
+- Styled with cyan italic text
+- Added test `test_build_sidebar_items_empty_shows_create`
+- All 59 tests passing, clippy clean
+
 **Branch**: `fix/new-program-empty-workspace` — **MERGED** (tag: `stable/new-program-tests-2026-03-04`)
 - Investigated bug report: "New Program" not showing in empty workspace
-- **Finding**: Command palette works correctly, but SIDEBAR shows empty Programs section
+- **Finding**: Command palette works correctly; sidebar issue addressed in next sprint
 - Added tests for command palette behavior
-- **Note**: This sprint addressed command palette; sidebar issue addressed in `fix/sidebar-empty-programs`
 
 **Branch**: `fix/creation-wizard-v2` — **MERGED** (tag: `stable/creation-wizard-v2-2026-03-04`)
 - Added `owner` field to Config struct
@@ -545,7 +489,7 @@ Clicking/navigating to "+ Create Program..." and pressing Enter should trigger t
 
 ## Open Bugs
 
-1. ~~**"New Program" command not showing when workspace is empty**~~: ✅ **NOT A BUG** - Investigation found the code is correct. "New Program" is always available via `filter_commands()`. Added tests to prevent regression (tag: `stable/new-program-tests-2026-03-04`).
+1. ~~**"New Program" command not showing when workspace is empty**~~: ✅ **FIXED** - Sidebar now shows "+ Create Program..." when programs list is empty (tag: `stable/sidebar-empty-state-2026-03-04`). Command palette also works correctly.
 
 2. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
 
