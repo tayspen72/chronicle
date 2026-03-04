@@ -794,11 +794,13 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref state) = self.template_field_state {
+                if let Some(ref mut state) = self.template_field_state {
                     if let WizardFocus::Field(idx) = state.focus {
-                        if let Some(field) = state.fields.get(idx) {
+                        if let Some(field) = state.fields.get_mut(idx) {
                             if field.is_editable {
+                                // Update both input_buffer and field.value for inline editing
                                 self.input_buffer.push(c);
+                                field.value.push(c);
                             }
                         }
                     }
@@ -818,11 +820,13 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref state) = self.template_field_state {
+                if let Some(ref mut state) = self.template_field_state {
                     if let WizardFocus::Field(idx) = state.focus {
-                        if let Some(field) = state.fields.get(idx) {
+                        if let Some(field) = state.fields.get_mut(idx) {
                             if field.is_editable {
+                                // Update both input_buffer and field.value for inline editing
                                 self.input_buffer.pop();
+                                field.value.pop();
                             }
                         }
                     }
@@ -1687,6 +1691,63 @@ mod tests {
         if let Some(idx) = new_program_idx {
             app.command_selection_index = idx;
             assert_eq!(app.command_matches[idx].label, "New Program");
+        }
+    }
+
+    #[test]
+    fn test_inline_editing_updates_field_value() {
+        let config = crate::config::Config::default();
+        let mut app = App::new(config);
+
+        // Set up template field state for testing
+        let fields = vec![
+            FieldInfo {
+                label: "Title".to_string(),
+                placeholder: "TITLE".to_string(),
+                value: String::new(),
+                is_focused: true,
+                is_editable: true,
+                display_order: 0,
+            },
+            FieldInfo {
+                label: "Status".to_string(),
+                placeholder: "DEFAULT_STATUS".to_string(),
+                value: "New".to_string(),
+                is_focused: false,
+                is_editable: false,
+                display_order: 1,
+            },
+        ];
+
+        app.template_field_state = Some(TemplateFieldState {
+            template_name: "test".to_string(),
+            target_path: None,
+            fields,
+            focus: WizardFocus::Field(0),
+            values: std::collections::HashMap::new(),
+            strip_labels: std::collections::HashSet::new(),
+        });
+        app.current_view = ViewType::InputTemplateField;
+        app.input_buffer.clear();
+
+        // Type some characters
+        app.handle_key(KeyCode::Char('H'));
+        app.handle_key(KeyCode::Char('e'));
+        app.handle_key(KeyCode::Char('l'));
+        app.handle_key(KeyCode::Char('l'));
+        app.handle_key(KeyCode::Char('o'));
+
+        // Verify both input_buffer and field.value are updated
+        assert_eq!(app.input_buffer, "Hello");
+        if let Some(state) = &app.template_field_state {
+            assert_eq!(state.fields[0].value, "Hello");
+        }
+
+        // Test backspace
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(app.input_buffer, "Hell");
+        if let Some(state) = &app.template_field_state {
+            assert_eq!(state.fields[0].value, "Hell");
         }
     }
 }
