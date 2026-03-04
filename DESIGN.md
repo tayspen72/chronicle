@@ -311,7 +311,87 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `refactor/extract-views-module`
+**Tag**: `stable/pre-views-extract-2026-03-04`
+**Goal**: Extract view-specific render functions from `layout.rs` into `views/mod.rs` to improve code organization.
+
+### Problem
+
+`layout.rs` is 674 lines and contains two concerns mixed together:
+1. **Layout primitives**: `render()`, sidebar/content splitting, status bar, command palette overlay
+2. **View-specific rendering**: tree view, journal views, input forms, content viewer
+
+View-specific functions should live in `views/` module, leaving `layout.rs` focused on layout.
+
+### Current Structure
+
+```
+layout.rs (674 lines):
+  - render() - main entry
+  - calculate_sidebar_width()
+  - render_sidebar()
+  - render_content() - dispatcher
+  - render_status_bar()
+  - render_command_palette()
+  - render_tree_view() ← view-specific
+  - render_journal_welcome() ← view-specific
+  - render_journal_today() ← view-specific
+  - render_archive_list() ← view-specific
+  - render_content_viewer() ← view-specific
+  - render_input() ← view-specific
+  - render_placeholder() ← view-specific
+  - render_programs_list() ← dead code, view-specific
+  - render_projects_list() ← dead code, view-specific
+  - render_milestones_list() ← dead code, view-specific
+  - render_tasks_list() ← dead code, view-specific
+```
+
+### Target Structure
+
+```
+layout.rs (~200 lines):
+  - render() - main entry
+  - calculate_sidebar_width()
+  - render_sidebar()
+  - render_content() - dispatcher (calls views::*)
+  - render_status_bar()
+  - render_command_palette()
+
+views/mod.rs (~470 lines):
+  - render_tree_view()
+  - render_journal_welcome()
+  - render_journal_today()
+  - render_archive_list()
+  - render_content_viewer()
+  - render_input()
+  - render_placeholder()
+  - render_*_list() functions (dead code, keep for future)
+```
+
+### Tasks
+
+- [ ] **T1: Create views/mod.rs with view functions**
+  - Move all `render_*` view functions from `layout.rs` to `views/mod.rs`
+  - Add necessary imports (App, ViewType, DateInputPart, storage traits, ratatui types)
+  - Make functions `pub fn` so `layout.rs` can call them
+
+- [ ] **T2: Update layout.rs to use views module**
+  - Add `use super::views;` import
+  - Update `render_content()` to call `views::render_*` functions
+  - Remove moved functions from `layout.rs`
+  - Keep layout primitives (render, sidebar, status bar, command palette)
+
+- [ ] **T3: Verify tests pass**
+  - Run `cargo test` - all existing tests must pass
+  - Run `cargo clippy -- -D warnings` - no warnings
+
+### Success Criteria
+
+- `cargo test` passes with 0 failures
+- `cargo clippy` passes with 0 warnings
+- `layout.rs` reduced from 674 to ~200 lines
+- `views/mod.rs` contains ~470 lines of view-specific rendering
+- No behavior changes
 
 ---
 
