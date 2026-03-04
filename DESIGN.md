@@ -10,13 +10,13 @@ Chronicle is a Markdown-native planner and journal with a terminal UI (TUI). It 
 
 ```
 src/
-├── main.rs           # Entry point, calls tui::App::new().run()
+├── main.rs           # Entry point: config::Config::load_or_create() → tui::App::new().run()
 ├── config.rs         # Config loading from ~/.config/chronicle/config.toml
 ├── model/
-│   └── mod.rs        # Task struct (minimal)
+│   └── mod.rs        # Task struct, ParseError (minimal domain model)
 ├── storage/
 │   ├── mod.rs        # JournalStorage, WorkspaceStorage traits + impls
-│   └── md.rs         # Markdown parsing utilities
+│   └── md.rs         # parse_task(), task_to_markdown() (not wired up)
 ├── commands/
 │   ├── mod.rs        # CLI command exports
 │   ├── init.rs       # `chronicle init` - create workspace
@@ -24,12 +24,12 @@ src/
 │   ├── jot.rs        # `chronicle jot` - quick journal entry
 │   └── extract.rs    # `chronicle extract` - extract content
 └── tui/
-    ├── mod.rs        # App struct (MONOLITHIC - 1580 lines)
-    ├── command.rs    # EMPTY STUB
-    ├── navigation.rs # EMPTY STUB
-    ├── layout.rs     # Rendering layout
+    ├── mod.rs        # App struct (MONOLITHIC - 1430+ lines)
+    ├── command.rs    # CommandPalette, CommandMatch, CommandAction (NOT WIRED UP)
+    ├── navigation.rs # SidebarItem, TreeState, navigation helpers (NOT WIRED UP)
+    ├── layout.rs     # Rendering functions (all views)
     └── views/
-        └── mod.rs    # View rendering
+        └── mod.rs    # Placeholder comment only
 ```
 
 ### Key Types
@@ -37,29 +37,35 @@ src/
 | Type | Location | Purpose |
 |------|----------|---------|
 | `App` | tui/mod.rs | Main TUI application state and event loop |
+| `Mode` | tui/mod.rs | Interaction mode enum (Normal, CommandPalette, Input) |
 | `ViewType` | tui/mod.rs | Enum of all views (TreeView, Journal, Input*, etc.) |
 | `CommandMatch` | tui/mod.rs | Command palette item with label, view, action |
 | `CommandAction` | tui/mod.rs | Actions commands can trigger |
-| `Config` | config.rs | User configuration |
-| `Task` | model/mod.rs | Minimal task data structure |
+| `Config` | config.rs | User configuration (workspace, editor, workflow, keys) |
+| `Task` | model/mod.rs | Task data structure (title, status, priority, etc.) |
 | `SidebarItem` | tui/mod.rs | Tree view item for sidebar |
+| `DirectoryEntry` | storage/mod.rs | File system entry with name, path, is_dir |
+| `JournalEntry` | storage/mod.rs | Journal file entry |
 
 ## Current Implementation Status
 
 ### ✅ Working Features
 
 - **Command Palette**: `/` opens, typing filters, Up/Down navigates, Enter executes
-- **Navigation**: Arrow keys work, tree expansion, hierarchy traversal
+- **Navigation**: Arrow keys work, tree expansion, hierarchy traversal (4 levels deep)
 - **Element Creation**: Template-based wizard for Programs/Projects/Milestones/Tasks
 - **Journal**: Open today's journal, browse history
-- **Tree View**: Programs → Projects → Milestones → Tasks hierarchy
+- **Tree View**: Programs → Projects → Milestones → Tasks → Subtasks hierarchy
 - **External Editor**: Launches configured editor, restores TUI after
+- **Mode Enum**: Proper `Mode` enum exists (Normal, CommandPalette, Input)
 
 ### ⚠️ Needs Improvement
 
-- **Monolithic App**: 1580 lines in single file, hard to maintain
-- **Empty Modules**: `command.rs` and `navigation.rs` are stubs
-- **Implicit Modes**: Uses `command_palette_open` bool + `ViewType` instead of explicit Mode enum
+- **Monolithic App**: 1430+ lines in `tui/mod.rs`, hard to maintain
+- **Duplicate Types**: `command.rs` and `navigation.rs` have full implementations but are NOT WIRED UP
+  - `tui/mod.rs` defines its own inline `SidebarItem`, `TreeState`, `CommandMatch`, `CommandAction`
+  - Extracted modules have `#[allow(dead_code)]` on everything
+- **Template Wizard Inline**: All template field handling is in App, not extracted
 - **Minimal Domain Model**: Only Task struct, no Program/Project/Milestone types
 - **No Archive**: Design calls for `.archive/` but not implemented
 
@@ -69,27 +75,50 @@ src/
 - **Status/Assignee Commands**: No way to modify existing elements
 - **Fuzzy Search**: Substring match only
 - **Markdown Rendering**: Content shown as raw text
+- **views/mod.rs**: Only contains placeholder comment
 
 ## Module Contracts
 
 ### config.rs
 
 ```rust
+pub struct NavigationKeys {
+    pub left: char,   // default 'h'
+    pub right: char,  // default 'l'
+    pub up: char,     // default 'k'
+    pub down: char,   // default 'j'
+}
+
 pub struct Config {
-    pub data_path: PathBuf,      // Workspace directory
-    pub editor: String,          // Editor command
-    pub workflow: Vec<String>,   // Status workflow (e.g., ["todo", "doing", "done"])
+    pub workspace: PathBuf,           // Workspace directory
+    pub editor: String,               // Editor command (default "hx")
+    pub workflow: Vec<String>,        // Status workflow
+    pub navigator_width: u16,         // Sidebar width (default 60)
+    pub planning_duration: String,    // "biweekly"
+    pub navigation_keys: NavigationKeys,
 }
 
 impl Config {
     pub fn load_or_create() -> Result<Self>;
     pub fn config_path() -> Option<PathBuf>;
+    pub fn config_dir() -> Option<PathBuf>;
 }
 ```
 
 ### storage/mod.rs
 
 ```rust
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+pub struct JournalEntry {
+    pub filename: String,
+    pub path: PathBuf,
+}
+
 pub trait JournalStorage {
     fn journal_dir(&self) -> PathBuf;
     fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)>;
@@ -102,29 +131,56 @@ pub trait WorkspaceStorage {
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
     fn list_tasks(&self, program: &str, project: &str, milestone: &str) -> Result<Vec<DirectoryEntry>>;
-    fn create_from_template(&self, template_name: &str, target: &Path, values: &HashMap<String, String>, strip_labels: &HashSet<String>) -> Result<()>;
+    fn list_subtasks(&self, program: &str, project: &str, milestone: &str, task: &str) -> Result<Vec<DirectoryEntry>>;
+    fn create_from_template(&self, template_name: &str, target: &Path, values: &HashMap<String, String>, strip_labels: &HashSet<String>) -> Result<PathBuf>;
 }
 
 pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)>;
+pub fn resolve_template(template: &str, values: &HashMap<String, String>, strip_labels: &HashSet<String>) -> String;
 ```
 
 ### tui/mod.rs (Current - needs refactoring)
 
 ```rust
+pub enum Mode {
+    Normal,
+    CommandPalette,
+    Input,  // TODO: Will be used for input mode
+}
+
+pub enum ViewType {
+    TreeView,
+    Journal,
+    JournalArchiveList,
+    JournalToday,       // TODO
+    Backlog,
+    WeeklyPlanning,
+    ViewingContent,
+    InputProgram,
+    InputProject,
+    InputMilestone,
+    InputTask,
+    InputTemplateField,
+}
+
 pub struct App {
     // Configuration
     pub config: Config,
     
     // View state
     pub current_view: ViewType,
-    pub command_palette_open: bool,  // Should become Mode enum
+    pub mode: Mode,  // Good: proper enum exists
     
-    // Navigation
+    // Navigation (duplicates types in navigation.rs)
     pub tree_state: TreeState,
     pub sidebar_items: Vec<SidebarItem>,
     pub selected_entry_index: usize,
+    pub current_program: Option<String>,
+    pub current_project: Option<String>,
+    pub current_milestone: Option<String>,
+    pub current_task: Option<String>,
     
-    // Command palette
+    // Command palette (duplicates types in command.rs)
     pub command_input: String,
     pub command_matches: Vec<CommandMatch>,
     pub command_selection_index: usize,
@@ -134,6 +190,7 @@ pub struct App {
     pub projects: Vec<DirectoryEntry>,
     pub milestones: Vec<DirectoryEntry>,
     pub tasks: Vec<DirectoryEntry>,
+    pub subtasks: Vec<DirectoryEntry>,
     pub journal_entries: Vec<JournalEntry>,
     
     // Input handling
@@ -150,6 +207,46 @@ pub struct App {
 }
 ```
 
+### tui/command.rs (NOT WIRED UP - all #[allow(dead_code)])
+
+```rust
+pub struct CommandPalette {
+    pub input: String,
+    pub matches: Vec<CommandMatch>,
+    pub selection_index: usize,
+}
+
+impl CommandPalette {
+    pub fn new() -> Self;
+    pub fn handle_input(&mut self, code: KeyCode) -> Option<CommandMatch>;
+    pub fn open(&mut self);
+    pub fn close(&mut self);
+}
+
+pub fn get_command_list() -> Vec<CommandMatch>;
+pub fn filter_commands(input: &str, depth: usize) -> Vec<CommandMatch>;
+```
+
+### tui/navigation.rs (NOT WIRED UP - all #[allow(dead_code)])
+
+```rust
+pub struct TreeState {
+    pub path: Vec<String>,
+    pub expanded: Vec<String>,
+}
+
+impl TreeState {
+    pub fn depth(&self) -> usize;
+    pub fn is_root(&self) -> bool;
+    pub fn push(&mut self, name: impl Into<String>);
+    pub fn pop(&mut self) -> Option<String>;
+}
+
+pub fn build_sidebar_items(...) -> Vec<SidebarItem>;
+pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize;
+pub fn navigate_down(items: &[SidebarItem], current_index: usize) -> usize;
+```
+
 ## Data Flow
 
 ### Application Startup
@@ -158,16 +255,17 @@ pub struct App {
 graph TD
     A[main.rs] --> B[Config::load_or_create]
     B --> C[App::new]
-    C --> D[App::run]
-    D --> E{Event Loop}
-    E --> F[Poll event]
-    F --> G{command_palette_open?}
-    G -->|Yes| H[handle_command_input]
-    G -->|No| I[handle_key]
-    H --> J[filter_commands]
-    I --> K[Navigate/Action]
-    J --> E
-    K --> E
+    C --> D[load_tree_view_data]
+    D --> E[App::run]
+    E --> F{Event Loop}
+    F --> G[Poll event]
+    G --> H{mode?}
+    H -->|CommandPalette| I[handle_command_input]
+    H -->|Normal| J[handle_key]
+    I --> K[filter_commands]
+    J --> L[Navigate/Action]
+    K --> F
+    L --> F
 ```
 
 ### Element Creation Flow
@@ -177,8 +275,8 @@ graph TD
     A[Command: New Program] --> B[ViewType::InputProgram]
     B --> C[User types name]
     C --> D[Enter: confirm_create_program]
-    D --> E[Load template]
-    E --> F[Parse template fields]
+    D --> E[Load template from disk]
+    E --> F[parse_template_fields]
     F --> G[ViewType::InputTemplateField]
     G --> H[For each field]
     H --> I[User input]
@@ -196,11 +294,20 @@ graph TD
 **Finding**: The original sprint plan ("App Modes & Command Palette") was based on outdated analysis. The command palette is already fully implemented.
 
 **Decision**: Revised sprint to focus on:
-1. Refactoring the monolithic `tui/mod.rs` (1580 lines)
-2. Adding explicit `Mode` enum for cleaner state management
-3. Populating the empty `command.rs` and `navigation.rs` modules
+1. Refactoring the monolithic `tui/mod.rs` (1430+ lines)
+2. Wiring up the extracted `command.rs` and `navigation.rs` modules
+3. Removing duplicate type definitions
 
-**Rationale**: The codebase is functional but unmaintainable in its current structure. Before adding new features, we need to organize the existing code.
+**Rationale**: The codebase is functional but has significant duplication. The extracted modules exist but are not used.
+
+### 2026-03-04: Architecture Assessment
+
+**Finding**: The `command.rs` and `navigation.rs` modules are NOT empty stubs - they contain complete implementations with tests. However, they are marked `#[allow(dead_code)]` and the `App` struct defines duplicate types inline.
+
+**Next Steps**:
+1. Wire up `CommandPalette` from `command.rs` to replace inline command handling in App
+2. Wire up `TreeState` and navigation functions from `navigation.rs`
+3. Remove duplicate type definitions from `tui/mod.rs`
 
 ## Current Sprint
 
@@ -209,6 +316,32 @@ No active sprint. Ready for next task.
 ---
 
 ### Recent Sprints (Completed)
+
+**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
+- Wired up type imports from extracted modules:
+  - `SidebarItem`, `SidebarSection`, `TreeState` from `navigation.rs`
+  - `CommandAction`, `CommandMatch` from `command.rs`
+- Removed duplicate inline type definitions from `tui/mod.rs`
+- Reduced `tui/mod.rs` by ~48 lines
+- All 49 tests passing, clippy clean
+- **Note**: Function wiring (`filter_commands`, `build_sidebar_items`, etc.) remains as future work - the extracted functions have pure signatures while App methods use internal state, requiring more significant refactoring
+
+---
+
+### Future Work (Not Yet Scheduled)
+
+**Function Wiring**: The extracted modules still contain functions that duplicate App methods:
+- `command::filter_commands()` vs `App::filter_commands()`
+- `command::get_command_list()` vs inline function in mod.rs
+- `navigation::build_sidebar_items()` vs `App::build_sidebar_items()`
+- `navigation::navigate_up()`/`navigate_down()` vs App methods
+
+**Challenge**: The extracted functions are designed as pure functions taking parameters, while App methods use internal state. Options:
+1. Refactor App methods to delegate to module functions (passing internal state)
+2. Keep both and accept some duplication (current state)
+3. Redesign the interface
+
+---
 
 **Branch**: `refactor/tree-navigation-dry` — **MERGED** (tag: `stable/tree-navigation-refactor-2026-03-03`)
 - Fixed flat tasks discovery in `tasks/` subdirectory
@@ -225,52 +358,10 @@ No active sprint. Ready for next task.
 - On navigate right, selection moves to first child item
 
 **Branch**: `fix/storage-discovery` — **MERGED** (tag: `stable/storage-discovery-2026-03-03`)
-
-Fix the storage discovery functions to handle both flat and nested element structures.
-
-### Problem
-
-The `list_programs()`, `list_projects()`, `list_milestones()`, and `list_tasks()` functions in `src/storage/mod.rs` only discover elements in a "flat" structure:
-
-**Expected (flat):**
-```
-programs/
-  MyProgram.md           ← .md directly in programs/
-  MyProgram/             ← contents directory
-    MyProject.md         ← .md directly in program/
-    MyProject/
-      MyMilestone.md
-```
-
-**Actual (nested - user's workspace):**
-```
-programs/
-  MyProgram/
-    MyProgram.md         ← .md inside directory
-    projects/
-      MyProject/
-        MyProject.md     ← .md inside projects/ subdir
-        milestones/
-          ...
-```
-
-### Tasks
-
-- [x] **T1: Fix `list_programs()`** - Discover programs in both structures
-- [x] **T2: Fix `list_projects()`** - Discover projects in both structures
-- [x] **T3: Fix `list_milestones()`** - Discover milestones in both structures
-- [x] **T4: Fix `list_tasks()`** - Discover tasks in both structures
-- [x] **T5: Add tests** for both discovery patterns (13 new tests)
-
-**Sprint Complete!** Merged to master (tag: `stable/storage-discovery-2026-03-03`)
-
----
-
-### Previous Sprint (Completed)
+- Fix storage discovery to handle both flat and nested element structures
 
 **Branch**: `fix/config-toml-parsing` — **MERGED** (tag: `stable/config-toml-fix-2026-03-03`)
-
-Fixed TOML config parsing, added missing fields, renamed data_path to workspace.
+- Fixed TOML config parsing, added missing fields, renamed data_path to workspace
 
 ## Open Questions
 
@@ -280,10 +371,13 @@ Fixed TOML config parsing, added missing fields, renamed data_path to workspace.
 
 3. **Async Runtime**: Tokio is a dependency but not used. Should we remove it or plan for async operations (e.g., file watching)?
 
+4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two?
+
 ## Changelog
 
 | Date | Event |
 |------|-------|
+| 2026-03-04 | Corrected architecture assessment - command.rs and navigation.rs are NOT empty |
 | 2026-03-03 | Created DESIGN.md with actual codebase assessment |
 | 2026-03-03 | Created branch `feat/app-modes` |
 | 2026-03-03 | Tagged `stable/pre-app-modes-2026-03-03` |

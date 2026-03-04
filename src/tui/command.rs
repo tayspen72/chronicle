@@ -12,7 +12,6 @@ use super::ViewType;
 
 /// Actions that can be triggered by commands.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum CommandAction {
     OpenTodayJournal,
     ShowArchiveList,
@@ -28,7 +27,6 @@ pub enum CommandAction {
 
 /// A matched command with its label, target view, and optional action.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CommandMatch {
     pub label: String,
     pub view: ViewType,
