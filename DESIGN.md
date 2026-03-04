@@ -204,61 +204,72 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `fix/config-toml-parsing`
+**Branch**: `fix/storage-discovery`
 
 ### Goal
 
-Fix the config system to properly parse TOML files and include all expected fields.
+Fix the storage discovery functions to handle both flat and nested element structures.
 
 ### Problem
 
-The `Config` struct in `src/config.rs` has three issues:
+The `list_programs()`, `list_projects()`, `list_milestones()`, and `list_tasks()` functions in `src/storage/mod.rs` only discover elements in a "flat" structure:
 
-1. **Wrong parser**: Uses `serde_yaml::from_str()` to parse a `.toml` file (line 51)
-2. **Missing fields**: Config file has `workspace`, `navigator_width`, `planning_duration`, `navigation_keys` but struct only has `version`, `data_path`, `editor`, `workflow`
-3. **Field name mismatch**: Config file uses `workspace` but struct uses `data_path`
+**Expected (flat):**
+```
+programs/
+  MyProgram.md           ← .md directly in programs/
+  MyProgram/             ← contents directory
+    MyProject.md         ← .md directly in program/
+    MyProject/
+      MyMilestone.md
+```
+
+**Actual (nested - user's workspace):**
+```
+programs/
+  MyProgram/
+    MyProgram.md         ← .md inside directory
+    projects/
+      MyProject/
+        MyProject.md     ← .md inside projects/ subdir
+        milestones/
+          ...
+```
 
 ### Tasks
 
-- [x] **T1: Add toml dependency** to `Cargo.toml` (already present, just verify)
-- [x] **T2: Fix Config struct** to include all fields from the config file format
-- [x] **T3: Replace YAML parser with TOML parser** in `load_or_create()` and `prompt_first_run()`
-- [x] **T4: Update tests** to ensure config parsing works
-- [x] **T5: Verify** with `cargo run` that existing config loads correctly
+- [ ] **T1: Fix `list_programs()`** - Discover programs in both structures:
+  - Flat: `programs/MyProgram.md`
+  - Nested: `programs/MyProgram/MyProgram.md`
 
-**Sprint Complete!** Merged to master (tag: `stable/config-toml-fix-2026-03-03`)
+- [ ] **T2: Fix `list_projects()`** - Discover projects in both structures:
+  - Flat: `programs/MyProgram/MyProject.md`
+  - Nested: `programs/MyProgram/projects/MyProject/MyProject.md`
 
-### Target Config Structure
+- [ ] **T3: Fix `list_milestones()`** - Discover milestones in both structures:
+  - Flat: `programs/MyProgram/MyProject/MyMilestone.md`
+  - Nested: `programs/MyProgram/projects/MyProject/milestones/MyMilestone/MyMilestone.md`
 
-```toml
-workspace = "/home/user/chronicle"
-editor = "helix"
-navigator_width = 60
-planning_duration = "biweekly"
+- [ ] **T4: Fix `list_tasks()`** - Discover tasks in both structures:
+  - Flat: `programs/MyProgram/MyProject/MyMilestone/MyTask.md`
+  - Nested: `programs/MyProgram/projects/MyProject/milestones/MyMilestone/tasks/MyTask/MyTask.md`
 
-workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
-
-[navigation_keys]
-left = "h"
-right = "l"
-up = "k"
-down = "j"
-```
+- [ ] **T5: Add tests** for both discovery patterns
 
 ### Verification
 
 ```bash
 cargo test    # All tests pass
-cargo run     # Config loads without error
+cargo run     # Should show "Raspberry Pi Action Camera" program
 ```
 
 ---
 
 ### Previous Sprint (Completed)
 
-**Branch**: `feat/app-modes` — **MERGED** (tag: `stable/app-modes-2026-03-03`)
+**Branch**: `fix/config-toml-parsing` — **MERGED** (tag: `stable/config-toml-fix-2026-03-03`)
 
-All phases completed: Mode enum, CommandPalette extraction, Navigation extraction, tests, cleanup.
+Fixed TOML config parsing, added missing fields, renamed data_path to workspace.
 
 ## Open Questions
 
