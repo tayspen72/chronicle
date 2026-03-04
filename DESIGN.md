@@ -311,72 +311,27 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `feat/planning-views`
-**Tag**: `stable/pre-planning-views-2026-03-04`
-**Goal**: Implement basic Backlog and WeeklyPlanning views.
-
-### Problem
-
-The Backlog and WeeklyPlanning views currently show placeholder messages. Per design_requirements.md:
-> "Planning will have two entries: iteration planning and backlog. Ultimately these two will be created and show reports of statistics and statuses of tasks. For now, nothing. A simple placeholder can be shown (in development) until this is fully thought through."
-
-However, basic useful functionality can be added:
-
-### Planned Implementation
-
-**Backlog View**:
-- Show all tasks in a flat list (across all programs/projects/milestones)
-- Display task name and parent path
-- Allow navigation and selection
-- Press Enter to jump to task in tree view
-
-**WeeklyPlanning View**:
-- Show current week date range
-- Display tasks with due dates in the current week (if parseable)
-- Show task counts and status summary
-- Placeholder message for future features
-
-### Tasks
-
-- [ ] **T1: Implement Backlog view**
-  - Add `render_backlog()` function in `views/mod.rs`
-  - Show all tasks as a flat list
-  - Display parent context (Program > Project > Milestone)
-  - Update `render_content()` dispatcher in layout.rs
-
-- [ ] **T2: Implement WeeklyPlanning view**
-  - Add `render_weekly_planning()` function in `views/mod.rs`
-  - Show current week date range
-  - Display basic task statistics
-  - Update `render_content()` dispatcher in layout.rs
-
-- [ ] **T3: Add data loading for views**
-  - App may need to load all tasks for backlog view
-  - Consider caching strategy
-
-- [ ] **T4: Verify**
-  - Run `cargo test` - all tests must pass
-  - Run `cargo clippy -- -D warnings`
-
-### Success Criteria
-
-- All 56 tests pass
-- Clippy reports 0 warnings
-- Backlog view shows all tasks
-- WeeklyPlanning view shows week info and statistics
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `feat/planning-views` — **MERGED** (tag: `stable/planning-views-2026-03-04`)
+- Implemented Backlog view showing all tasks with parent context
+- Implemented WeeklyPlanning view with week range and task statistics
+- Parses YAML frontmatter for status and due_date fields
+- All 56 tests passing, clippy clean
+- `views/mod.rs`: +220 lines
+
 **Branch**: `feat/domain-model` — **MERGED** (tag: `stable/domain-model-2026-03-04`)
 - Added Program, Project, Milestone, Task structs with serde support
 - Added ElementKind enum with Display/FromStr
 - Added Element enum to unify all element types
-- Added LegacyTask for backward compatibility
 - Added `parse_element()` for YAML frontmatter parsing
-- Added `element_to_markdown()` for serialization
 - 6 new tests, all 56 tests passing, clippy clean
+
+---
 - `model/mod.rs`: +200 lines, `storage/md.rs`: +249 lines
 
 **Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
