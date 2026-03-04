@@ -16,7 +16,7 @@ use std::io::{self, Write};
 
 use crate::config::Config;
 use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage};
-use command::{CommandAction, CommandMatch};
+use command::{get_command_list, CommandAction, CommandMatch};
 use navigation::{SidebarItem, SidebarSection, TreeState};
 
 /// Application interaction mode
@@ -407,51 +407,13 @@ impl App {
     }
 
     fn navigate_up(&mut self) {
-        if self.sidebar_items.is_empty() {
-            return;
-        }
-
-        let mut new_index = self.selected_entry_index;
-        loop {
-            if new_index == 0 {
-                new_index = self.sidebar_items.len() - 1;
-            } else {
-                new_index -= 1;
-            }
-
-            let item = &self.sidebar_items[new_index];
-            if !item.is_header && !item.name.is_empty() {
-                break;
-            }
-
-            if new_index == self.selected_entry_index {
-                break;
-            }
-        }
-
-        self.selected_entry_index = new_index;
+        self.selected_entry_index =
+            navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
     }
 
     fn navigate_down(&mut self) {
-        if self.sidebar_items.is_empty() {
-            return;
-        }
-
-        let mut new_index = self.selected_entry_index;
-        loop {
-            new_index = (new_index + 1) % self.sidebar_items.len();
-
-            let item = &self.sidebar_items[new_index];
-            if !item.is_header && !item.name.is_empty() {
-                break;
-            }
-
-            if new_index == self.selected_entry_index {
-                break;
-            }
-        }
-
-        self.selected_entry_index = new_index;
+        self.selected_entry_index =
+            navigation::navigate_down(&self.sidebar_items, self.selected_entry_index);
     }
 
     // TODO: These helper methods are extracted for future use in pagination/scrolling.
@@ -673,165 +635,47 @@ impl App {
     }
 
     fn build_sidebar_items(&mut self) {
-        self.sidebar_items.clear();
+        self.sidebar_items = navigation::build_sidebar_items(
+            &self.programs,
+            &self.projects,
+            &self.milestones,
+            &self.tasks,
+            self.current_program.as_deref(),
+            self.current_project.as_deref(),
+            self.current_milestone.as_deref(),
+        );
 
-        self.sidebar_items.push(SidebarItem {
-            name: "Programs".to_string(),
-            section: SidebarSection::Programs,
-            is_header: true,
-            is_planning_item: None,
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        for prog in self.programs.iter() {
-            self.sidebar_items.push(SidebarItem {
-                name: prog.name.clone(),
-                section: SidebarSection::Programs,
-                is_header: false,
-                is_planning_item: None,
-                is_journal_item: None,
-                indent: 0,
-                path: Some(prog.path.clone()),
-            });
-
-            if self.current_program.as_ref() == Some(&prog.name) {
-                for proj in &self.projects {
-                    self.sidebar_items.push(SidebarItem {
-                        name: proj.name.clone(),
+        // Handle subtasks separately since the extracted function doesn't include them
+        // TODO: Architect to decide if subtasks should be added to navigation::build_sidebar_items
+        if let (Some(_current_milestone), Some(current_task)) =
+            (self.current_milestone.as_ref(), self.current_task.as_ref())
+        {
+            // Find the index of the current task and add subtasks after it
+            let task_idx = self
+                .sidebar_items
+                .iter()
+                .position(|i| i.name == *current_task && i.indent == 3);
+            if let Some(idx) = task_idx {
+                // Insert subtasks after the task
+                let subtask_items: Vec<SidebarItem> = self
+                    .subtasks
+                    .iter()
+                    .map(|subtask| SidebarItem {
+                        name: subtask.name.clone(),
                         section: SidebarSection::Programs,
                         is_header: false,
                         is_planning_item: None,
                         is_journal_item: None,
-                        indent: 1,
-                        path: Some(proj.path.clone()),
-                    });
+                        indent: 4,
+                        path: Some(subtask.path.clone()),
+                    })
+                    .collect();
 
-                    if self.current_project.as_ref() == Some(&proj.name) {
-                        for mile in &self.milestones {
-                            self.sidebar_items.push(SidebarItem {
-                                name: mile.name.clone(),
-                                section: SidebarSection::Programs,
-                                is_header: false,
-                                is_planning_item: None,
-                                is_journal_item: None,
-                                indent: 2,
-                                path: Some(mile.path.clone()),
-                            });
-
-                            if self.current_milestone.as_ref() == Some(&mile.name) {
-                                for task in &self.tasks {
-                                    self.sidebar_items.push(SidebarItem {
-                                        name: task.name.clone(),
-                                        section: SidebarSection::Programs,
-                                        is_header: false,
-                                        is_planning_item: None,
-                                        is_journal_item: None,
-                                        indent: 3,
-                                        path: Some(task.path.clone()),
-                                    });
-
-                                    if self.current_task.as_ref() == Some(&task.name) {
-                                        for subtask in &self.subtasks {
-                                            self.sidebar_items.push(SidebarItem {
-                                                name: subtask.name.clone(),
-                                                section: SidebarSection::Programs,
-                                                is_header: false,
-                                                is_planning_item: None,
-                                                is_journal_item: None,
-                                                indent: 4,
-                                                path: Some(subtask.path.clone()),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                for (offset, item) in subtask_items.into_iter().enumerate() {
+                    self.sidebar_items.insert(idx + 1 + offset, item);
                 }
             }
         }
-
-        self.sidebar_items.push(SidebarItem {
-            name: "".to_string(),
-            section: SidebarSection::Planning,
-            is_header: false,
-            is_planning_item: None,
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "Planning".to_string(),
-            section: SidebarSection::Planning,
-            is_header: true,
-            is_planning_item: None,
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "Weekly Planning".to_string(),
-            section: SidebarSection::Planning,
-            is_header: false,
-            is_planning_item: Some("WeeklyPlanning".to_string()),
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "Backlog".to_string(),
-            section: SidebarSection::Planning,
-            is_header: false,
-            is_planning_item: Some("Backlog".to_string()),
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "".to_string(),
-            section: SidebarSection::Journal,
-            is_header: false,
-            is_planning_item: None,
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "Journal".to_string(),
-            section: SidebarSection::Journal,
-            is_header: true,
-            is_planning_item: None,
-            is_journal_item: None,
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "Today".to_string(),
-            section: SidebarSection::Journal,
-            is_header: false,
-            is_planning_item: None,
-            is_journal_item: Some("Today".to_string()),
-            indent: 0,
-            path: None,
-        });
-
-        self.sidebar_items.push(SidebarItem {
-            name: "History".to_string(),
-            section: SidebarSection::Journal,
-            is_header: false,
-            is_planning_item: None,
-            is_journal_item: Some("History".to_string()),
-            indent: 0,
-            path: None,
-        });
     }
 
     fn handle_enter(&mut self) {
@@ -1498,187 +1342,19 @@ impl App {
     }
 
     fn filter_commands(&mut self) {
-        let input = self.command_input.to_lowercase();
-        let has_programs = !self.programs.is_empty();
-
-        if input.starts_with("journal") || input.starts_with("/journal") {
-            let remainder = input
-                .trim_start_matches('/')
-                .trim_start_matches("journal")
-                .trim();
-
-            if remainder.is_empty() {
-                self.command_matches = vec![
-                    CommandMatch {
-                        label: "Open Today's Journal".to_string(),
-                        view: ViewType::Journal,
-                        exit: false,
-                        action: Some(CommandAction::OpenTodayJournal),
-                    },
-                    CommandMatch {
-                        label: "Journal History".to_string(),
-                        view: ViewType::Journal,
-                        exit: false,
-                        action: Some(CommandAction::ShowArchiveList),
-                    },
-                ];
-            } else {
-                self.command_matches = vec![
-                    CommandMatch {
-                        label: "Open Today's Journal".to_string(),
-                        view: ViewType::Journal,
-                        exit: false,
-                        action: Some(CommandAction::OpenTodayJournal),
-                    },
-                    CommandMatch {
-                        label: "Journal History".to_string(),
-                        view: ViewType::Journal,
-                        exit: false,
-                        action: Some(CommandAction::ShowArchiveList),
-                    },
-                ]
-                .into_iter()
-                .filter(|cmd| cmd.label.to_lowercase().contains(remainder))
-                .collect();
-            }
-        } else {
-            let all_commands = get_command_list();
-            self.command_matches = all_commands
-                .into_iter()
-                .filter(|cmd| {
-                    let matches_input = cmd.label.to_lowercase().contains(&input);
-
-                    // Context-based command availability
-                    // - "New Program" ALWAYS available (especially when no programs exist)
-                    // - "New Project" available when current_program is set
-                    // - "New Milestone" available when current_program AND current_project are set
-                    // - "New Task" available when current_program, current_project, AND current_milestone are set
-                    let is_context_valid = match cmd.label.as_str() {
-                        "New Program" => true, // Always available
-                        "New Project" => self.current_program.is_some(),
-                        "New Milestone" => {
-                            self.current_program.is_some() && self.current_project.is_some()
-                        }
-                        "New Task" => {
-                            self.current_program.is_some()
-                                && self.current_project.is_some()
-                                && self.current_milestone.is_some()
-                        }
-                        // Navigation commands - always available
-                        "Programs"
-                        | "Journal"
-                        | "Backlog"
-                        | "Weekly Planning"
-                        | "Open Today's Journal"
-                        | "Journal History"
-                        | "Exit" => true,
-                        // Tier-specific navigation - context-based
-                        "Projects" => self.current_program.is_some() || has_programs,
-                        "Milestones" => self.current_project.is_some(),
-                        "Tasks" => self.current_milestone.is_some(),
-                        _ => true, // Allow other commands to show
-                    };
-
-                    matches_input && is_context_valid
-                })
-                .collect();
-        }
-
+        self.command_matches = command::filter_commands(
+            &self.command_input,
+            self.current_program.as_deref(),
+            self.current_project.as_deref(),
+            self.current_milestone.as_deref(),
+            !self.programs.is_empty(),
+        );
         self.command_selection_index = 0;
     }
 
     fn draw(&self, f: &mut Frame) {
         layout::render(f, self);
     }
-}
-
-fn get_command_list() -> Vec<CommandMatch> {
-    vec![
-        CommandMatch {
-            label: "Programs".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowProgramsList),
-        },
-        CommandMatch {
-            label: "Projects".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowProjectsList),
-        },
-        CommandMatch {
-            label: "Milestones".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowMilestonesList),
-        },
-        CommandMatch {
-            label: "Tasks".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowTasksList),
-        },
-        CommandMatch {
-            label: "Journal".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "Backlog".to_string(),
-            view: ViewType::Backlog,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "Weekly Planning".to_string(),
-            view: ViewType::WeeklyPlanning,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "New Program".to_string(),
-            view: ViewType::InputProgram,
-            exit: false,
-            action: Some(CommandAction::NewProgram),
-        },
-        CommandMatch {
-            label: "New Project".to_string(),
-            view: ViewType::InputProject,
-            exit: false,
-            action: Some(CommandAction::NewProject),
-        },
-        CommandMatch {
-            label: "New Milestone".to_string(),
-            view: ViewType::InputMilestone,
-            exit: false,
-            action: Some(CommandAction::NewMilestone),
-        },
-        CommandMatch {
-            label: "New Task".to_string(),
-            view: ViewType::InputTask,
-            exit: false,
-            action: Some(CommandAction::NewTask),
-        },
-        CommandMatch {
-            label: "Open Today's Journal".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: Some(CommandAction::OpenTodayJournal),
-        },
-        CommandMatch {
-            label: "Journal History".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: Some(CommandAction::ShowArchiveList),
-        },
-        CommandMatch {
-            label: "Exit".to_string(),
-            view: ViewType::Journal,
-            exit: true,
-            action: None,
-        },
-    ]
 }
 
 #[cfg(test)]

@@ -149,7 +149,6 @@ impl TreeState {
 /// # Returns
 /// A vector of sidebar items to display.
 #[must_use]
-#[allow(dead_code)]
 pub fn build_sidebar_items(
     programs: &[DirectoryEntry],
     projects: &[DirectoryEntry],
@@ -233,7 +232,6 @@ pub fn build_sidebar_items(
 /// # Returns
 /// The next selectable index (wrapping around).
 #[must_use]
-#[allow(dead_code)]
 pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize {
     if items.is_empty() {
         return 0;
@@ -269,7 +267,6 @@ pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize {
 /// # Returns
 /// The next selectable index (wrapping around).
 #[must_use]
-#[allow(dead_code)]
 pub fn navigate_down(items: &[SidebarItem], current_index: usize) -> usize {
     if items.is_empty() {
         return 0;
