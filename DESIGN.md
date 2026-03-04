@@ -238,30 +238,13 @@ programs/
 
 ### Tasks
 
-- [ ] **T1: Fix `list_programs()`** - Discover programs in both structures:
-  - Flat: `programs/MyProgram.md`
-  - Nested: `programs/MyProgram/MyProgram.md`
+- [x] **T1: Fix `list_programs()`** - Discover programs in both structures
+- [x] **T2: Fix `list_projects()`** - Discover projects in both structures
+- [x] **T3: Fix `list_milestones()`** - Discover milestones in both structures
+- [x] **T4: Fix `list_tasks()`** - Discover tasks in both structures
+- [x] **T5: Add tests** for both discovery patterns (13 new tests)
 
-- [ ] **T2: Fix `list_projects()`** - Discover projects in both structures:
-  - Flat: `programs/MyProgram/MyProject.md`
-  - Nested: `programs/MyProgram/projects/MyProject/MyProject.md`
-
-- [ ] **T3: Fix `list_milestones()`** - Discover milestones in both structures:
-  - Flat: `programs/MyProgram/MyProject/MyMilestone.md`
-  - Nested: `programs/MyProgram/projects/MyProject/milestones/MyMilestone/MyMilestone.md`
-
-- [ ] **T4: Fix `list_tasks()`** - Discover tasks in both structures:
-  - Flat: `programs/MyProgram/MyProject/MyMilestone/MyTask.md`
-  - Nested: `programs/MyProgram/projects/MyProject/milestones/MyMilestone/tasks/MyTask/MyTask.md`
-
-- [ ] **T5: Add tests** for both discovery patterns
-
-### Verification
-
-```bash
-cargo test    # All tests pass
-cargo run     # Should show "Raspberry Pi Action Camera" program
-```
+**Sprint Complete!** Merged to master (tag: `stable/storage-discovery-2026-03-03`)
 
 ---
 
