@@ -405,4 +405,16 @@ mod tests {
         let commands = filter_commands("", Some("MyProgram"), None, None, false);
         assert!(commands.iter().any(|c| c.label == "New Program"));
     }
+
+    #[test]
+    fn test_filter_commands_empty_workspace() {
+        // When workspace has no programs and nothing is selected, "New Program" should be available
+        let commands = filter_commands("", None, None, None, false);
+        assert!(commands.iter().any(|c| c.label == "New Program"));
+
+        // Also verify that basic navigation commands are available
+        assert!(commands.iter().any(|c| c.label == "Programs"));
+        assert!(commands.iter().any(|c| c.label == "Journal"));
+        assert!(commands.iter().any(|c| c.label == "Exit"));
+    }
 }
