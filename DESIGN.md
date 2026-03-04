@@ -210,6 +210,13 @@ No active sprint. Ready for next task.
 
 ### Recent Sprints (Completed)
 
+**Branch**: `refactor/tree-navigation-dry` — **MERGED** (tag: `stable/tree-navigation-refactor-2026-03-03`)
+- Fixed flat tasks discovery in `tasks/` subdirectory
+- Added subtasks support (depth 4 navigation)
+- Added `discover_elements()` helper to reduce code duplication
+- Added tracing for error logging
+- 49 tests passing
+
 **Branch**: `fix/collapse-on-navigate-left` — **MERGED** (tag: `stable/navigate-left-fix-2026-03-03`)
 - Navigate left now selects parent item instead of header
 
