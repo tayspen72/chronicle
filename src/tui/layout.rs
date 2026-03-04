@@ -101,6 +101,18 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
             let style = if item.is_header {
                 Style::default().fg(Color::DarkGray)
+            } else if item.is_create_action {
+                // Style create action items with dimmed cyan to indicate it's an action
+                if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                } else {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                }
             } else if is_selected {
                 Style::default()
                     .fg(Color::Black)
