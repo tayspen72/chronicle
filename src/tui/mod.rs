@@ -17,6 +17,18 @@ use std::io::{self, Write};
 use crate::config::Config;
 use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage};
 
+/// Application interaction mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Normal navigation and interaction
+    Normal,
+    /// Command palette is open, typing filters commands
+    CommandPalette,
+    /// User is inputting data (e.g., creating element)
+    #[allow(dead_code)]
+    Input, // TODO: Will be used for input mode in future sprint
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SidebarSection {
     Programs,
@@ -27,6 +39,7 @@ pub enum SidebarSection {
 #[derive(Debug, Clone)]
 pub struct SidebarItem {
     pub name: String,
+    #[allow(dead_code)]
     pub section: SidebarSection,
     pub is_header: bool,
     pub is_planning_item: Option<String>, // Some("WeeklyPlanning") or Some("Backlog")
@@ -48,6 +61,7 @@ pub struct TemplateFieldState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DateInputPart {
+    #[allow(dead_code)]
     Year,
     Month,
     Day,
@@ -58,7 +72,8 @@ pub enum ViewType {
     TreeView,
     Journal,
     JournalArchiveList,
-    JournalToday,
+    #[allow(dead_code)]
+    JournalToday, // TODO: Reserved for future inline journal editing
     Backlog,
     WeeklyPlanning,
     ViewingContent,
@@ -72,7 +87,8 @@ pub enum ViewType {
 #[derive(Debug, Clone, Default)]
 pub struct TreeState {
     pub path: Vec<String>,
-    pub expanded: Vec<String>,
+    #[allow(dead_code)]
+    pub expanded: Vec<String>, // TODO: Will be used for collapsible tree nodes
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +119,7 @@ pub struct App {
     pub config: Config,
     pub current_view: ViewType,
     pub tree_state: TreeState,
-    pub command_palette_open: bool,
+    pub mode: Mode,
     pub command_input: String,
     pub command_matches: Vec<CommandMatch>,
     pub should_exit: bool,
@@ -133,7 +149,7 @@ impl App {
             config,
             current_view: ViewType::TreeView,
             tree_state: TreeState::default(),
-            command_palette_open: false,
+            mode: Mode::Normal,
             command_input: String::new(),
             command_matches,
             should_exit: false,
@@ -193,7 +209,7 @@ impl App {
             if event::poll(std::time::Duration::from_millis(16))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        if self.command_palette_open {
+                        if matches!(self.mode, Mode::CommandPalette) {
                             self.handle_command_input(key.code);
                         } else {
                             self.handle_key(key.code);
@@ -215,13 +231,13 @@ impl App {
     fn handle_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('/') => {
-                self.command_palette_open = true;
+                self.mode = Mode::CommandPalette;
                 self.command_input.clear();
                 self.filter_commands();
             }
             KeyCode::Esc => {
-                if self.command_palette_open {
-                    self.command_palette_open = false;
+                if matches!(self.mode, Mode::CommandPalette) {
+                    self.mode = Mode::Normal;
                     self.command_input.clear();
                     self.command_selection_index = 0;
                 } else {
@@ -254,48 +270,40 @@ impl App {
     }
 
     fn navigate_right(&mut self) {
-        match self.current_view {
-            ViewType::TreeView => {
-                self.open_tree_item();
-            }
-            _ => {}
+        if self.current_view == ViewType::TreeView {
+            self.open_tree_item();
         }
     }
 
     fn navigate_left(&mut self) {
-        match self.current_view {
-            ViewType::TreeView => {
-                if !self.tree_state.path.is_empty() {
-                    self.tree_state.path.pop();
-                    let new_depth = self.tree_state.path.len();
-                    match new_depth {
-                        0 => {
-                            self.current_program = None;
-                            self.current_project = None;
-                            self.current_milestone = None;
-                        }
-                        1 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = None;
-                            self.current_milestone = None;
-                        }
-                        2 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = Some(self.tree_state.path[1].clone());
-                            self.current_milestone = None;
-                        }
-                        3 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = Some(self.tree_state.path[1].clone());
-                            self.current_milestone = Some(self.tree_state.path[2].clone());
-                        }
-                        _ => {}
-                    }
-                    self.selected_entry_index = 0;
-                    self.load_tree_view_data();
+        if self.current_view == ViewType::TreeView && !self.tree_state.path.is_empty() {
+            self.tree_state.path.pop();
+            let new_depth = self.tree_state.path.len();
+            match new_depth {
+                0 => {
+                    self.current_program = None;
+                    self.current_project = None;
+                    self.current_milestone = None;
                 }
+                1 => {
+                    self.current_program = Some(self.tree_state.path[0].clone());
+                    self.current_project = None;
+                    self.current_milestone = None;
+                }
+                2 => {
+                    self.current_program = Some(self.tree_state.path[0].clone());
+                    self.current_project = Some(self.tree_state.path[1].clone());
+                    self.current_milestone = None;
+                }
+                3 => {
+                    self.current_program = Some(self.tree_state.path[0].clone());
+                    self.current_project = Some(self.tree_state.path[1].clone());
+                    self.current_milestone = Some(self.tree_state.path[2].clone());
+                }
+                _ => {}
             }
-            _ => {}
+            self.selected_entry_index = 0;
+            self.load_tree_view_data();
         }
     }
 
@@ -400,10 +408,13 @@ impl App {
         self.selected_entry_index = new_index;
     }
 
+    // TODO: These helper methods are extracted for future use in pagination/scrolling.
+    #[allow(dead_code)]
     fn get_current_tier_start_index(&self) -> usize {
         0
     }
 
+    #[allow(dead_code)]
     fn get_current_tier_item_count(&self) -> usize {
         self.sidebar_items
             .iter()
@@ -411,6 +422,7 @@ impl App {
             .count()
     }
 
+    #[allow(dead_code)]
     fn get_visible_item_count(&self) -> usize {
         self.sidebar_items
             .iter()
@@ -489,6 +501,8 @@ impl App {
         }
     }
 
+    // TODO: Helper for getting current tier's items, useful for future keyboard shortcuts
+    #[allow(dead_code)]
     fn get_current_tree_items(&self) -> &Vec<DirectoryEntry> {
         match self.tree_state.path.len() {
             0 => &self.programs,
@@ -759,6 +773,8 @@ impl App {
         }
     }
 
+    // TODO: These methods are helpers for future keyboard shortcuts for quick element creation
+    #[allow(dead_code)]
     fn select_program_for_new_project(&mut self) {
         if let Some(entry) = self.programs.get(self.selected_entry_index) {
             self.current_program = Some(entry.name.clone());
@@ -767,6 +783,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn select_project_for_new_milestone(&mut self) {
         if let Some(entry) = self.projects.get(self.selected_entry_index) {
             self.current_project = Some(entry.name.clone());
@@ -775,6 +792,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn select_milestone_for_new_task(&mut self) {
         if let Some(entry) = self.milestones.get(self.selected_entry_index) {
             self.current_milestone = Some(entry.name.clone());
@@ -796,7 +814,7 @@ impl App {
                 self.filter_commands();
             }
             KeyCode::Esc => {
-                self.command_palette_open = false;
+                self.mode = Mode::Normal;
                 self.command_input.clear();
                 self.command_selection_index = 0;
             }
@@ -808,7 +826,7 @@ impl App {
                 {
                     self.execute_command(&cmd);
                 }
-                self.command_palette_open = false;
+                self.mode = Mode::Normal;
                 self.command_input.clear();
                 self.command_selection_index = 0;
             }
@@ -1243,22 +1261,16 @@ impl App {
                         state.values.insert(key, self.input_buffer.clone());
                     }
                     // Check if we need more parts for date
-                    if state.values.get(&format!("{}_year", placeholder)).is_some()
-                        && state
-                            .values
-                            .get(&format!("{}_month", placeholder))
-                            .is_none()
+                    if state.values.contains_key(&format!("{}_year", placeholder))
+                        && !state.values.contains_key(&format!("{}_month", placeholder))
                     {
                         state.date_part = Some(DateInputPart::Month);
                         self.input_buffer.clear();
                         return;
                     }
-                    if state.values.get(&format!("{}_year", placeholder)).is_some()
-                        && state
-                            .values
-                            .get(&format!("{}_month", placeholder))
-                            .is_some()
-                        && state.values.get(&format!("{}_day", placeholder)).is_none()
+                    if state.values.contains_key(&format!("{}_year", placeholder))
+                        && state.values.contains_key(&format!("{}_month", placeholder))
+                        && !state.values.contains_key(&format!("{}_day", placeholder))
                     {
                         state.date_part = Some(DateInputPart::Day);
                         self.input_buffer.clear();
@@ -1336,6 +1348,8 @@ impl App {
         self.input_buffer.clear();
     }
 
+    // TODO: These methods are helpers for future keyboard shortcuts for quick navigation
+    #[allow(dead_code)]
     fn select_program(&mut self) {
         if let Some(entry) = self.programs.get(self.selected_entry_index) {
             self.current_program = Some(entry.name.clone());
@@ -1345,6 +1359,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn select_project(&mut self) {
         if let Some(entry) = self.projects.get(self.selected_entry_index) {
             self.current_project = Some(entry.name.clone());
@@ -1353,6 +1368,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn select_milestone(&mut self) {
         if let Some(entry) = self.milestones.get(self.selected_entry_index) {
             self.current_milestone = Some(entry.name.clone());
@@ -1360,6 +1376,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn open_selected_task(&mut self) {
         if let Some(entry) = self.tasks.get(self.selected_entry_index) {
             let path = entry.path.clone();
@@ -1577,4 +1594,57 @@ fn get_command_list() -> Vec<CommandMatch> {
             action: None,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_initial_mode_is_normal() {
+        let config = crate::config::Config::default();
+        let app = App::new(config);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn test_slash_enters_command_palette_mode() {
+        let config = crate::config::Config::default();
+        let mut app = App::new(config);
+
+        // Simulate pressing '/'
+        app.handle_key(KeyCode::Char('/'));
+
+        assert!(matches!(app.mode, Mode::CommandPalette));
+    }
+
+    #[test]
+    fn test_esc_exits_command_palette_mode() {
+        let config = crate::config::Config::default();
+        let mut app = App::new(config);
+
+        // First enter command palette mode
+        app.handle_key(KeyCode::Char('/'));
+        assert!(matches!(app.mode, Mode::CommandPalette));
+
+        // Then press Esc to exit (from command input handler since mode is CommandPalette)
+        app.handle_command_input(KeyCode::Esc);
+
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn test_enter_returns_to_normal_mode() {
+        let config = crate::config::Config::default();
+        let mut app = App::new(config);
+
+        // Enter command palette mode
+        app.handle_key(KeyCode::Char('/'));
+        assert!(matches!(app.mode, Mode::CommandPalette));
+
+        // Press Enter (should execute command and return to normal)
+        app.handle_command_input(KeyCode::Enter);
+
+        assert!(matches!(app.mode, Mode::Normal));
+    }
 }
