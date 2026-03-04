@@ -311,72 +311,35 @@ graph TD
 
 ## Current Sprint
 
-**Branch**: `fix/creation-wizard`
-**Tag**: `stable/pre-creation-wizard-fix-2026-03-04`
-**Goal**: Fix creation wizard issues - context-aware commands, template field detection, single-page wizard UI.
-
-### Issues Reported
-
-1. **Command palette not context-aware**: Commands should be available based on what parent elements can be inferred, not just tree depth. "New Program" should always be available (especially when no programs exist).
-
-2. **Template field detection incomplete**: Only detects `#Label! {{PLACEHOLDER}}` and standalone `{{PLACEHOLDER}}`. Inline placeholders in YAML frontmatter (e.g., `due_date: {{DUE_DATE}}`) are not detected.
-
-3. **Wizard is page-by-page**: Should show all prompts on one page with up/down navigation, Enter for next field, Escape for cancel confirmation, and final "Confirm" step.
-
-4. **Empty state not handled**: "New Program" should be prominently shown when no programs exist.
-
-5. **Status panel discussion**: Future discussion about more intuitive status display.
-
-### Tasks
-
-- [ ] **T1: Fix command palette context awareness**
-  - Change `filter_commands` to use App state (current_program/project/milestone/task) instead of just depth
-  - "New Program" ALWAYS available (check if programs Vec is empty)
-  - "New Project" available when current_program is set OR can be inferred
-  - "New Milestone" available when current_program + current_project set
-  - "New Task" available when current_program + current_project + current_milestone set
-
-- [ ] **T2: Fix template field detection**
-  - Add regex for inline `{{PLACEHOLDER}}` in `parse_template_fields`
-  - Ensure all placeholders are detected regardless of format
-  - Dedupe results
-
-- [ ] **T3: Update templates to YAML frontmatter** (already done in working dir)
-  - Convert `#Field: {{VALUE}}` to proper YAML `field: {{VALUE}}`
-  - Commit existing template changes
-
-- [ ] **T4: Redesign wizard to single-page UI**
-  - Show all fields on one page
-  - Up/down arrows + j/k vim keys navigate between fields
-  - Enter moves to next field
-  - Escape shows cancel confirmation dialog
-  - Final "Confirm" prompt before creating file
-  - Empty values allowed (replaces placeholder with blank)
-
-- [ ] **T5: Verify**
-  - Test creation wizard with various templates
-  - Test command palette at different tree depths
-  - Test empty workspace state
-  - Run `cargo test` and `cargo clippy`
-
-### Success Criteria
-
-- All 49 tests pass
-- Clippy reports 0 warnings
-- Command palette shows context-appropriate commands
-- Template wizard detects ALL `{{PLACEHOLDER}}` fields
-- Wizard shows all fields on one page with navigation
-- "New Program" always available
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
 
+**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
+- Fixed command palette context awareness (uses current_program/project/milestone instead of depth)
+- "New Program" always available (especially when no programs exist)
+- Implemented single-page wizard UI with up/down/tab navigation
+- All template fields shown at once with scroll support
+- Removed obsolete DateInputPart enum
+- Updated templates to proper YAML frontmatter format
+- All 50 tests passing, clippy clean
+
 **Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
-- Created `src/error.rs` with layered error types (Error, ConfigError, StorageError, ModelError)
-- Created `src/lib.rs` as crate root exporting all modules
-- Updated all library modules to use `crate::Result`
-- Only `main.rs` uses `anyhow` (binary entry point)
+- Created `src/error.rs` with layered error types
+- Created `src/lib.rs` as crate root
+- Library code uses `thiserror`, only `main.rs` uses `anyhow`
+- All 49 tests passing, clippy clean
+
+**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
+- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
+- `layout.rs`: 674 → 272 lines (60% reduction)
+
+**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
+- Wired up type imports from `navigation.rs` and `command.rs`
+
+---
 - Fixed pre-existing bug in `new_task.rs` (unterminated char literal)
 - All 49 tests passing, clippy clean
 
@@ -436,6 +399,12 @@ graph TD
 3. **Async Runtime**: Tokio is a dependency but not used. Should we remove it or plan for async operations (e.g., file watching)?
 
 4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two?
+
+5. **Status Panel Design**: The current status bar shows the selected file path at the bottom. Need to discuss a more intuitive status display panel. Options include:
+   - Breadcrumb navigation (Program > Project > Milestone > Task)
+   - Context summary (e.g., "3 tasks in milestone")
+   - Current date/time with workspace location
+   - Mode indicator (Normal, Command Palette, Input)
 
 ## Changelog
 
