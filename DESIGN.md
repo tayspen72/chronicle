@@ -317,95 +317,25 @@ No active sprint. Ready for next task.
 
 ## Current Sprint
 
-**Branch**: `fix/wizard-ui-polish`
-**Tag**: `stable/pre-wizard-ui-polish-2026-03-04`
-**Goal**: Polish wizard UI formatting and behavior.
-
-### Issues to Fix
-
-1. **Title prompt in separate window** - Title field shows in different screen than other fields (at least for Project). Should all be on same screen.
-
-2. **Formatting**:
-   - Prompt: **Bold**
-   - Entry: Regular
-   - Separator: `::` between prompt and entry
-   - Empty field: Show "empty" in soft/subtle color instead of `<PLACEHOLDER>`
-   - When entry placed: Regular styling
-
-3. **Field order** - Description should be last (as in template file)
-
-4. **Auto-filled entries**:
-   - Same formatting as manual entries (bold prompt, regular entry)
-   - Suffix: "(auto-filled)" instead of "(auto)"
-
-5. **Buttons** - Remove square brackets from CONFIRM and CANCEL
-
-6. **Selection highlighting**:
-   - Highlight selected field like navigator (background highlight)
-   - Remove arrow pointer
-   - CONFIRM/CANCEL buttons highlight when selected
-
-### Desired Layout
-
-```
-**Title**:: My Task Title
-**Status**:: New (auto-filled)
-**Creation Date**:: 2026-03-04 (auto-filled)
-**Created By**:: Tsp (auto-filled)
-**Assigned To**:: empty
-**Due Date**:: empty
-**Description**:: Some description here
-
-  CONFIRM     CANCEL
-```
-
-When field is selected, highlight entire row. When button is selected, highlight the button text.
-
-### Tasks
-
-- [ ] **T1: Fix title prompt appearing separately**
-  - Ensure all fields including title appear on same screen
-  - Check `confirm_create_program/project/milestone/task` functions
-
-- [ ] **T2: Update field formatting**
-  - Prompt in bold
-  - Separator `::`
-  - "empty" in soft color for empty fields (not `<PLACEHOLDER>`)
-
-- [ ] **T3: Ensure template order preserved**
-  - Description should be last
-  - Check parse_template_fields order
-
-- [ ] **T4: Update auto-filled formatting**
-  - Change "(auto)" to "(auto-filled)"
-  - Same bold/regular styling as manual entries
-
-- [ ] **T5: Remove button brackets**
-  - Show "CONFIRM" and "CANCEL" without `[ ]`
-
-- [ ] **T6: Update selection highlighting**
-  - Remove `→` arrow
-  - Use background highlight like navigator
-  - Highlight buttons when selected
-
-- [ ] **T7: Verify**
-  - Run `cargo test`
-  - Run `cargo clippy -- -D warnings`
-
-### Success Criteria
-
-- All 60 tests pass
-- Clippy clean
-- All fields on same screen
-- Bold prompts with `::` separator
-- "empty" for unfilled fields
-- "(auto-filled)" suffix
-- No brackets on buttons
-- Navigator-style highlighting
+No active sprint. Ready for next task.
 
 ---
 
 ### Recent Sprints (Completed)
+
+**Branch**: `fix/wizard-ui-polish` — **MERGED** (tag: `stable/wizard-ui-polish-2026-03-04`)
+- Bold prompts with `::` separator
+- "empty" for unfilled fields
+- "(auto-filled)" suffix for auto-populated fields
+- Removed brackets from buttons
+- Background highlight instead of arrow for selection
+- Fixed title appearing in separate window
+- All 60 tests passing, clippy clean
+
+**Branch**: `fix/wizard-inline-edit` — **MERGED** (tag: `stable/wizard-inline-edit-2026-03-04`)
+- Redesigned wizard with inline editing
+- Field names and values on same line
+- All 60 tests passing, clippy clean
 
 **Branch**: `fix/wizard-inline-edit` — **MERGED** (tag: `stable/wizard-inline-edit-2026-03-04`)
 - Redesigned wizard with inline editing
