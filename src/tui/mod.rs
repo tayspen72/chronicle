@@ -285,21 +285,32 @@ impl App {
                     state.focus = WizardFocus::ConfirmButton;
                 }
                 WizardFocus::ConfirmButton => {
-                    // From CONFIRM, go to last field
+                    // From CONFIRM, go to last EDITABLE field
                     if !state.fields.is_empty() {
-                        state.focus = WizardFocus::Field(state.fields.len() - 1);
-                        if let Some(field) = state.fields.last() {
-                            self.input_buffer = field.value.clone();
+                        // Find last editable field
+                        let last_editable = state.fields.iter().rposition(|f| f.is_editable);
+                        if let Some(idx) = last_editable {
+                            state.focus = WizardFocus::Field(idx);
+                            if let Some(field) = state.fields.get(idx) {
+                                self.input_buffer = field.value.clone();
+                            }
                         }
                     }
                 }
                 WizardFocus::Field(idx) => {
-                    if idx > 0 {
-                        state.focus = WizardFocus::Field(idx - 1);
-                        if let Some(field) = state.fields.get(idx - 1) {
-                            self.input_buffer = field.value.clone();
+                    // Find previous editable field
+                    let mut prev_idx = idx;
+                    while prev_idx > 0 {
+                        prev_idx -= 1;
+                        if state.fields[prev_idx].is_editable {
+                            state.focus = WizardFocus::Field(prev_idx);
+                            if let Some(field) = state.fields.get(prev_idx) {
+                                self.input_buffer = field.value.clone();
+                            }
+                            return;
                         }
                     }
+                    // No previous editable field, stay on current
                 }
             }
         }
@@ -316,27 +327,36 @@ impl App {
 
             match state.focus {
                 WizardFocus::Field(idx) => {
-                    if idx < state.fields.len() - 1 {
-                        state.focus = WizardFocus::Field(idx + 1);
-                        if let Some(field) = state.fields.get(idx + 1) {
-                            self.input_buffer = field.value.clone();
+                    // Find next editable field
+                    let mut next_idx = idx;
+                    while next_idx < state.fields.len() - 1 {
+                        next_idx += 1;
+                        if state.fields[next_idx].is_editable {
+                            state.focus = WizardFocus::Field(next_idx);
+                            if let Some(field) = state.fields.get(next_idx) {
+                                self.input_buffer = field.value.clone();
+                            }
+                            return;
                         }
-                    } else {
-                        // Last field, move to CONFIRM button
-                        state.focus = WizardFocus::ConfirmButton;
-                        self.input_buffer.clear();
                     }
+                    // No more editable fields, move to CONFIRM button
+                    state.focus = WizardFocus::ConfirmButton;
+                    self.input_buffer.clear();
                 }
                 WizardFocus::ConfirmButton => {
                     // From CONFIRM, go to CANCEL
                     state.focus = WizardFocus::CancelButton;
                 }
                 WizardFocus::CancelButton => {
-                    // From CANCEL, wrap to first field
+                    // From CANCEL, wrap to first EDITABLE field
                     if !state.fields.is_empty() {
-                        state.focus = WizardFocus::Field(0);
-                        if let Some(field) = state.fields.first() {
-                            self.input_buffer = field.value.clone();
+                        // Find first editable field
+                        let first_editable = state.fields.iter().position(|f| f.is_editable);
+                        if let Some(idx) = first_editable {
+                            state.focus = WizardFocus::Field(idx);
+                            if let Some(field) = state.fields.get(idx) {
+                                self.input_buffer = field.value.clone();
+                            }
                         }
                     }
                 }
@@ -1079,8 +1099,8 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Keywords that are prepopulated and not editable (NAME is now editable!)
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER"];
+        // Keywords that are prepopulated and not editable
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
@@ -1169,8 +1189,8 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Keywords that are prepopulated and not editable (NAME is now editable!)
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER"];
+        // Keywords that are prepopulated and not editable
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
@@ -1281,7 +1301,7 @@ impl App {
             .collect();
 
         // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
@@ -1366,7 +1386,7 @@ impl App {
             .collect();
 
         // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
@@ -1452,7 +1472,7 @@ impl App {
             .collect();
 
         // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
@@ -1539,7 +1559,7 @@ impl App {
             .collect();
 
         // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER"];
+        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
 
         // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields

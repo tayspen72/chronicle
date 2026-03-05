@@ -548,18 +548,36 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
                 ),
             ]));
         } else if *editable {
-            // Non-focused editable field - normal text with : separator
+            // Non-focused editable field - bold label
+            let is_empty = value == "empty";
             lines_vec.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(Color::White)),
-                Span::styled(format!("{}: ", label), Style::default().fg(Color::White)),
-                Span::styled(value, Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{}: ", label),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    value,
+                    Style::default().fg(if is_empty {
+                        Color::DarkGray
+                    } else {
+                        Color::White
+                    }),
+                ),
             ]));
         } else {
-            // Prepopulated field - dimmed/gray with : separator
+            // Prepopulated/auto-filled field - bold label, white text with "(auto-filled)"
             lines_vec.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
-                Span::styled(value, Style::default().fg(Color::DarkGray)),
+                Span::styled("  ", Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{}: ", label),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(value, Style::default().fg(Color::White)),
             ]));
         }
     }

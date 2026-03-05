@@ -727,62 +727,35 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
     let mut fields = Vec::new();
     let mut seen_placeholders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Single pass: scan template line by line to preserve template order
-    // Handle different patterns:
-    // 1. #Label! {{Placeholder}} or #Label: {{Placeholder}} (on same line)
-    // 2. {{Placeholder}} (standalone on its own line)
-    // 3. Inline placeholders (e.g., "field: {{VALUE}}" anywhere in line)
+    // Only handle inline YAML format: "field: {{Placeholder}}"
+    // This is the only supported format
 
-    let re_labeled = regex::Regex::new(r"#([^:!]+)![:]?\s*\{\{(\w+)\}\}").unwrap();
-    let re_standalone = regex::Regex::new(r"^\{\{(\w+)\}\}$").unwrap();
     let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
 
     for line in template.lines() {
         let line_trimmed = line.trim();
 
-        // Check for labeled field pattern: #Label! {{Placeholder}} or #Label: {{Placeholder}}
-        if let Some(cap) = re_labeled.captures(line_trimmed) {
-            if let (Some(label_match), Some(placeholder_match)) = (cap.get(1), cap.get(2)) {
-                let field_label = label_match.as_str().trim().to_string();
-                let placeholder = placeholder_match.as_str().to_string();
-
-                if !field_label.is_empty()
-                    && !placeholder.is_empty()
-                    && !seen_placeholders.contains(&placeholder)
-                {
-                    let should_strip = field_label.contains('!');
-                    let clean_label = field_label.replace('!', "");
-                    seen_placeholders.insert(placeholder.clone());
-                    fields.push((clean_label, placeholder, should_strip));
-                }
-            }
-            // After processing labeled pattern, continue to next line
-            // (don't also match inline placeholder on same line - labeled takes precedence)
+        // Skip comments and empty lines
+        if line_trimmed.starts_with('#') || line_trimmed.is_empty() {
             continue;
         }
 
-        // Check for standalone field: {{Placeholder}} (entire line is just the placeholder)
-        if let Some(cap) = re_standalone.captures(line_trimmed) {
-            if let Some(placeholder_match) = cap.get(1) {
-                let placeholder = placeholder_match.as_str().to_string();
-                if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
-                    // Use placeholder name as label, formatted nicely
-                    let label = format_label(&placeholder);
-                    seen_placeholders.insert(placeholder.clone());
-                    fields.push((label, placeholder, true));
-                }
-            }
-            continue;
-        }
+        // Check for inline placeholders: "field: {{Placeholder}}"
+        // Only extract if it looks like a YAML field (has colon before the placeholder)
+        if let Some(colon_pos) = line_trimmed.find(':') {
+            let before_colon = &line_trimmed[..colon_pos];
+            let after_colon = &line_trimmed[colon_pos + 1..];
 
-        // Check for inline placeholders anywhere in the line
-        for cap in re_inline.captures_iter(line_trimmed) {
-            if let Some(placeholder_match) = cap.get(1) {
-                let placeholder = placeholder_match.as_str().to_string();
-                if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
-                    let label = format_label(&placeholder);
-                    seen_placeholders.insert(placeholder.clone());
-                    fields.push((label, placeholder, true));
+            // Check if there's a placeholder after the colon
+            if let Some(cap) = re_inline.captures(after_colon) {
+                if let Some(placeholder_match) = cap.get(1) {
+                    let placeholder = placeholder_match.as_str().to_string();
+                    if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
+                        // Extract label from text before the colon
+                        let label = extract_label_from_yaml_line(before_colon);
+                        seen_placeholders.insert(placeholder.clone());
+                        fields.push((label, placeholder, true));
+                    }
                 }
             }
         }
@@ -791,9 +764,11 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
     fields
 }
 
-/// Format a placeholder name as a nice label (e.g., "DUE_DATE" -> "Due Date")
-fn format_label(placeholder: &str) -> String {
-    placeholder
+/// Extract label from YAML field name (e.g., "creation_date" -> "Creation Date")
+fn extract_label_from_yaml_line(field_name: &str) -> String {
+    // Convert field name to title case
+    // e.g., "creation_date" -> "Creation Date", "created_by" -> "Created By"
+    field_name
         .replace('_', " ")
         .split_whitespace()
         .map(|word| {
@@ -824,6 +799,10 @@ pub fn resolve_template(
 
             if placeholder == "TODAY" {
                 return today.clone();
+            }
+
+            if placeholder == "UUID" {
+                return uuid::Uuid::new_v4().to_string();
             }
 
             values.get(placeholder).cloned().unwrap_or_default()

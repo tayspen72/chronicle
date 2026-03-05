@@ -1,4 +1,5 @@
 ---
+uuid: {{UUID}}
 title: {{NAME}}
 status: {{DEFAULT_STATUS}}
 creation_date: {{TODAY}}

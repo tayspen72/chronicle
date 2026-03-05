@@ -1,4 +1,5 @@
 ---
+uuid: {{UUID}}
 title: {{TODAY}}
 ---
 
