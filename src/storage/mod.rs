@@ -769,16 +769,16 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             .unwrap_or_default();
         if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
             // For inline placeholders, use the placeholder name as the label
-            // Format it nicely (e.g., DUE_DATE -> "Due Date")
+            // Format it nicely (e.g., DUE_DATE -> "Due Date", DESCRIPTION -> "Description")
             let label = placeholder
                 .replace('_', " ")
                 .split_whitespace()
                 .map(|word| {
+                    // Title case each word: first char uppercase, rest lowercase
                     let mut chars = word.chars();
                     match chars.next() {
-                        Some(c) => {
-                            c.to_uppercase().collect::<String>()
-                                + chars.as_str().to_lowercase().as_str()
+                        Some(first) => {
+                            first.to_uppercase().to_string() + &chars.as_str().to_lowercase()
                         }
                         None => String::new(),
                     }
