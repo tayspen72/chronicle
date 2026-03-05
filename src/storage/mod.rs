@@ -725,71 +725,86 @@ impl WorkspaceStorage for PathBuf {
 
 pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
     let mut fields = Vec::new();
+    let mut seen_placeholders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Pass 1: Labeled fields - #Label! {{PLACEHOLDER}}
+    // Single pass: scan template line by line to preserve template order
+    // Handle different patterns:
+    // 1. #Label! {{Placeholder}} or #Label: {{Placeholder}} (on same line)
+    // 2. {{Placeholder}} (standalone on its own line)
+    // 3. Inline placeholders (e.g., "field: {{VALUE}}" anywhere in line)
+
     let re_labeled = regex::Regex::new(r"#([^:!]+)![:]?\s*\{\{(\w+)\}\}").unwrap();
-    for cap in re_labeled.captures_iter(template) {
-        let field_label = cap
-            .get(1)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let placeholder = cap
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-
-        if !field_label.is_empty() && !placeholder.is_empty() {
-            let should_strip = field_label.contains('!');
-            let clean_label = field_label.replace('!', "");
-            fields.push((clean_label, placeholder, should_strip));
-        }
-    }
-
-    // Pass 2: Standalone fields - entire line is just {{PLACEHOLDER}}
     let re_standalone = regex::Regex::new(r"^\{\{(\w+)\}\}$").unwrap();
+    let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
+
     for line in template.lines() {
-        let line = line.trim();
-        if let Some(cap) = re_standalone.captures(line) {
-            let placeholder = cap
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
-                fields.push((placeholder.clone(), placeholder, true));
+        let line_trimmed = line.trim();
+
+        // Check for labeled field pattern: #Label! {{Placeholder}} or #Label: {{Placeholder}}
+        if let Some(cap) = re_labeled.captures(line_trimmed) {
+            if let (Some(label_match), Some(placeholder_match)) = (cap.get(1), cap.get(2)) {
+                let field_label = label_match.as_str().trim().to_string();
+                let placeholder = placeholder_match.as_str().to_string();
+
+                if !field_label.is_empty()
+                    && !placeholder.is_empty()
+                    && !seen_placeholders.contains(&placeholder)
+                {
+                    let should_strip = field_label.contains('!');
+                    let clean_label = field_label.replace('!', "");
+                    seen_placeholders.insert(placeholder.clone());
+                    fields.push((clean_label, placeholder, should_strip));
+                }
+            }
+            // After processing labeled pattern, continue to next line
+            // (don't also match inline placeholder on same line - labeled takes precedence)
+            continue;
+        }
+
+        // Check for standalone field: {{Placeholder}} (entire line is just the placeholder)
+        if let Some(cap) = re_standalone.captures(line_trimmed) {
+            if let Some(placeholder_match) = cap.get(1) {
+                let placeholder = placeholder_match.as_str().to_string();
+                if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
+                    // Use placeholder name as label, formatted nicely
+                    let label = format_label(&placeholder);
+                    seen_placeholders.insert(placeholder.clone());
+                    fields.push((label, placeholder, true));
+                }
+            }
+            continue;
+        }
+
+        // Check for inline placeholders anywhere in the line
+        for cap in re_inline.captures_iter(line_trimmed) {
+            if let Some(placeholder_match) = cap.get(1) {
+                let placeholder = placeholder_match.as_str().to_string();
+                if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
+                    let label = format_label(&placeholder);
+                    seen_placeholders.insert(placeholder.clone());
+                    fields.push((label, placeholder, true));
+                }
             }
         }
     }
 
-    // Pass 3: Inline placeholders - anywhere in the template (e.g., due_date: {{DUE_DATE}})
-    let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
-    for cap in re_inline.captures_iter(template) {
-        let placeholder = cap
-            .get(1)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-        if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
-            // For inline placeholders, use the placeholder name as the label
-            // Format it nicely (e.g., DUE_DATE -> "Due Date", DESCRIPTION -> "Description")
-            let label = placeholder
-                .replace('_', " ")
-                .split_whitespace()
-                .map(|word| {
-                    // Title case each word: first char uppercase, rest lowercase
-                    let mut chars = word.chars();
-                    match chars.next() {
-                        Some(first) => {
-                            first.to_uppercase().to_string() + &chars.as_str().to_lowercase()
-                        }
-                        None => String::new(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            fields.push((label, placeholder, true));
-        }
-    }
-
     fields
+}
+
+/// Format a placeholder name as a nice label (e.g., "DUE_DATE" -> "Due Date")
+fn format_label(placeholder: &str) -> String {
+    placeholder
+        .replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn resolve_template(
