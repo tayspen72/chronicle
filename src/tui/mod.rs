@@ -1057,8 +1057,83 @@ impl App {
     }
 
     fn start_new_program(&mut self) {
+        // Go directly to template field wizard - name will be the first editable field
         self.input_buffer.clear();
-        self.current_view = ViewType::InputProgram;
+
+        let template = include_str!("../../templates/program.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+        }
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        // Keywords that are prepopulated and not editable (NAME is now editable!)
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
+        let fields: Vec<FieldInfo> = all_fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
+            })
+            .collect();
+
+        // Find first editable field for initial focus (this will be NAME/Title)
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
+
+        // Target path will be determined later after name is entered
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "program".to_string(),
+            target_path: None, // Will be set when confirmed
+            fields,
+            focus: initial_focus,
+            values,
+            strip_labels,
+        });
+
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn start_new_project(&mut self) {
@@ -1071,9 +1146,80 @@ impl App {
                 self.load_tree_view_data();
             }
         }
-        // Now start the input for new project
+
+        // Go directly to template field wizard
         self.input_buffer.clear();
-        self.current_view = ViewType::InputProject;
+
+        let template = include_str!("../../templates/project.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+        }
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        // Keywords that are prepopulated and not editable (NAME is now editable!)
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER"];
+
+        let fields: Vec<FieldInfo> = all_fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
+            })
+            .collect();
+
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
+
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "project".to_string(),
+            target_path: None,
+            fields,
+            focus: initial_focus,
+            values,
+            strip_labels,
+        });
+
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn start_new_milestone(&mut self) {
