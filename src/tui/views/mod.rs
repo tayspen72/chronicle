@@ -533,7 +533,7 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
             // Focused editable field - background highlight, no arrow
             lines_vec.push(Line::from(vec![
                 Span::styled(
-                    format!("  {}:: ", label),
+                    format!("  {}: ", label),
                     Style::default()
                         .fg(Color::Black)
                         .bg(Color::LightBlue)
@@ -548,20 +548,17 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
                 ),
             ]));
         } else if *editable {
-            // Non-focused editable field - normal text with :: separator
+            // Non-focused editable field - normal text with : separator
             lines_vec.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(Color::White)),
-                Span::styled(format!("{}:: ", label), Style::default().fg(Color::White)),
+                Span::styled(format!("{}: ", label), Style::default().fg(Color::White)),
                 Span::styled(value, Style::default().fg(Color::White)),
             ]));
         } else {
-            // Prepopulated field - dimmed/gray with :: separator
+            // Prepopulated field - dimmed/gray with : separator
             lines_vec.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{}:: ", label),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
                 Span::styled(value, Style::default().fg(Color::DarkGray)),
             ]));
         }
