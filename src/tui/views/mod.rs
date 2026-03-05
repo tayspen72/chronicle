@@ -451,12 +451,19 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
         )
         .split(area);
 
-    // Render header (prompt and instructions)
-    let header_text = format!(
-        "{}\n\n↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
-        prompt
-    );
-    let header = Paragraph::new(header_text).style(Style::default().fg(Color::White));
+    // Render header (prompt and instructions) - prompt is bold
+    use ratatui::text::{Line, Span};
+    let prompt_line = Line::from(vec![Span::styled(
+        prompt,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let instructions_line = Line::from(Span::styled(
+        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![prompt_line, instructions_line]);
     f.render_widget(header, chunks[0]);
 
     // Render fields in a scrollable area
@@ -485,13 +492,14 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
         let is_focused = matches!(state.focus, WizardFocus::Field(fi) if fi == idx);
 
         // Create horizontal layout for this field
-        let label_text = format!("{}:", field.label);
+        // Use :: separator, "empty" for unfilled, "(auto-filled)" suffix
+        let label_text = field.label.clone();
         let value_text = if field.value.is_empty() && field.is_editable {
-            format!("<{}>", field.placeholder)
+            "empty".to_string()
         } else if field.is_editable {
             field.value.clone()
         } else {
-            format!("{} (auto)", field.value)
+            format!("{} (auto-filled)", field.value)
         };
 
         field_lines.push((label_text, value_text, is_focused, field.is_editable));
@@ -511,7 +519,6 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     }
 
     // Render all field lines with proper styling
-    use ratatui::text::{Line, Span};
 
     let mut lines_vec: Vec<Line> = Vec::new();
 
@@ -523,29 +530,38 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
                 Style::default().fg(Color::DarkGray),
             )));
         } else if *focused && *editable {
-            // Focused editable field - yellow highlight
+            // Focused editable field - background highlight, no arrow
             lines_vec.push(Line::from(vec![
-                Span::styled("→ ", Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    format!("{}: ", label),
+                    format!("  {}:: ", label),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(Color::Black)
+                        .bg(Color::LightBlue)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
-                Span::styled(value, Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    value,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::LightBlue)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
             ]));
         } else if *editable {
-            // Non-focused editable field - normal text
+            // Non-focused editable field - normal text with :: separator
             lines_vec.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(Color::White)),
-                Span::styled(format!("{}: ", label), Style::default().fg(Color::White)),
+                Span::styled(format!("{}:: ", label), Style::default().fg(Color::White)),
                 Span::styled(value, Style::default().fg(Color::White)),
             ]));
         } else {
-            // Prepopulated field - dimmed/gray
+            // Prepopulated field - dimmed/gray with :: separator
             lines_vec.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}: ", label), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{}:: ", label),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(value, Style::default().fg(Color::DarkGray)),
             ]));
         }
@@ -554,22 +570,32 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     let fields_widget = Paragraph::new(lines_vec);
     f.render_widget(fields_widget, chunks[1]);
 
-    // Render buttons
-    let confirm_prefix = if state.focus == WizardFocus::ConfirmButton {
-        "→ "
+    // Render buttons - no brackets, use background highlight for selection
+    const CONFIRM_TEXT: &str = "CONFIRM";
+    const CANCEL_TEXT: &str = "CANCEL";
+
+    let confirm_style = if state.focus == WizardFocus::ConfirmButton {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
-        "  "
+        Style::default().fg(Color::White)
     };
-    let cancel_prefix = if state.focus == WizardFocus::CancelButton {
-        "→ "
+    let cancel_style = if state.focus == WizardFocus::CancelButton {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
-        "  "
+        Style::default().fg(Color::White)
     };
-    let buttons_text = format!(
-        "\n{}[CONFIRM]     {}[CANCEL]",
-        confirm_prefix, cancel_prefix
-    );
-    let buttons = Paragraph::new(buttons_text).style(Style::default().fg(Color::White));
+
+    let buttons = Paragraph::new(Line::from(vec![
+        Span::styled(CONFIRM_TEXT, confirm_style),
+        Span::styled("     ", Style::default().fg(Color::DarkGray)),
+        Span::styled(CANCEL_TEXT, cancel_style),
+    ]));
     f.render_widget(buttons, chunks[2]);
 }
 
