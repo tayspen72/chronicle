@@ -12,7 +12,6 @@ use super::ViewType;
 
 /// Actions that can be triggered by commands.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum CommandAction {
     OpenTodayJournal,
     ShowArchiveList,
@@ -24,11 +23,11 @@ pub enum CommandAction {
     NewProject,
     NewMilestone,
     NewTask,
+    Refresh,
 }
 
 /// A matched command with its label, target view, and optional action.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CommandMatch {
     pub label: String,
     pub view: ViewType,
@@ -115,7 +114,6 @@ impl CommandPalette {
 }
 
 /// Returns the list of all available commands.
-#[allow(dead_code)]
 pub fn get_command_list() -> Vec<CommandMatch> {
     vec![
         CommandMatch {
@@ -197,6 +195,12 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             action: Some(CommandAction::ShowArchiveList),
         },
         CommandMatch {
+            label: "Refresh".to_string(),
+            view: ViewType::TreeView,
+            exit: false,
+            action: Some(CommandAction::Refresh),
+        },
+        CommandMatch {
             label: "Exit".to_string(),
             view: ViewType::Journal,
             exit: true,
@@ -205,16 +209,24 @@ pub fn get_command_list() -> Vec<CommandMatch> {
     ]
 }
 
-/// Filters commands based on input and tree depth.
+/// Filters commands based on input and navigation context.
 ///
 /// # Arguments
 /// * `input` - The user's search input (lowercase)
-/// * `depth` - Current tree navigation depth
+/// * `current_program` - Currently selected program (if any)
+/// * `current_project` - Currently selected project (if any)
+/// * `current_milestone` - Currently selected milestone (if any)
+/// * `has_programs` - Whether any programs exist in the workspace
 ///
 /// # Returns
 /// A filtered list of matching commands.
-#[allow(dead_code)]
-pub fn filter_commands(input: &str, depth: usize) -> Vec<CommandMatch> {
+pub fn filter_commands(
+    input: &str,
+    current_program: Option<&str>,
+    current_project: Option<&str>,
+    current_milestone: Option<&str>,
+    has_programs: bool,
+) -> Vec<CommandMatch> {
     let input = input.to_lowercase();
 
     if input.starts_with("journal") || input.starts_with("/journal") {
@@ -253,66 +265,36 @@ pub fn filter_commands(input: &str, depth: usize) -> Vec<CommandMatch> {
             .filter(|cmd| {
                 let matches_input = cmd.label.to_lowercase().contains(&input);
 
-                if depth == 0 {
-                    matches_input
-                        && matches!(
-                            cmd.label.as_str(),
-                            "New Program"
-                                | "New Project"
-                                | "Programs"
-                                | "Journal"
-                                | "Backlog"
-                                | "Weekly Planning"
-                                | "Open Today's Journal"
-                                | "Journal History"
-                                | "Exit"
-                        )
-                } else if depth == 1 {
-                    matches_input
-                        && matches!(
-                            cmd.label.as_str(),
-                            "New Project"
-                                | "Programs"
-                                | "Projects"
-                                | "Journal"
-                                | "Backlog"
-                                | "Weekly Planning"
-                                | "Open Today's Journal"
-                                | "Journal History"
-                                | "Exit"
-                        )
-                } else if depth == 2 {
-                    matches_input
-                        && matches!(
-                            cmd.label.as_str(),
-                            "New Milestone"
-                                | "Programs"
-                                | "Projects"
-                                | "Milestones"
-                                | "Journal"
-                                | "Backlog"
-                                | "Weekly Planning"
-                                | "Open Today's Journal"
-                                | "Journal History"
-                                | "Exit"
-                        )
-                } else {
-                    matches_input
-                        && matches!(
-                            cmd.label.as_str(),
-                            "New Task"
-                                | "Programs"
-                                | "Projects"
-                                | "Milestones"
-                                | "Tasks"
-                                | "Journal"
-                                | "Backlog"
-                                | "Weekly Planning"
-                                | "Open Today's Journal"
-                                | "Journal History"
-                                | "Exit"
-                        )
-                }
+                // Context-based command availability:
+                // - "New Program" ALWAYS available (especially when no programs exist)
+                // - "New Project" available when current_program is set
+                // - "New Milestone" available when current_program AND current_project are set
+                // - "New Task" available when current_program, current_project, AND current_milestone are set
+                let is_context_valid = match cmd.label.as_str() {
+                    "New Program" => true, // Always available
+                    "New Project" => current_program.is_some(),
+                    "New Milestone" => current_program.is_some() && current_project.is_some(),
+                    "New Task" => {
+                        current_program.is_some()
+                            && current_project.is_some()
+                            && current_milestone.is_some()
+                    }
+                    // Navigation commands - always available
+                    "Programs"
+                    | "Journal"
+                    | "Backlog"
+                    | "Weekly Planning"
+                    | "Open Today's Journal"
+                    | "Journal History"
+                    | "Exit" => true,
+                    // Tier-specific navigation - context-based
+                    "Projects" => current_program.is_some() || has_programs,
+                    "Milestones" => current_project.is_some(),
+                    "Tasks" => current_milestone.is_some(),
+                    _ => true,
+                };
+
+                matches_input && is_context_valid
             })
             .collect()
     }
@@ -388,25 +370,58 @@ mod tests {
 
     #[test]
     fn test_filter_commands_empty_input() {
-        let commands = filter_commands("", 0);
-        // Should return context-aware commands for depth 0
+        let commands = filter_commands("", None, None, None, true);
+        // Should always include "New Program" when no programs exist
         assert!(commands.iter().any(|c| c.label == "New Program"));
     }
 
     #[test]
     fn test_filter_commands_journal_prefix() {
-        let commands = filter_commands("journal", 0);
+        let commands = filter_commands("journal", None, None, None, true);
         assert!(commands.iter().all(|c| c.label.contains("Journal")));
     }
 
     #[test]
-    fn test_filter_commands_by_depth() {
-        // Depth 0: should include "New Program"
-        let commands = filter_commands("", 0);
+    fn test_filter_commands_by_context() {
+        // No program selected: "New Program" should be available
+        let commands = filter_commands("", None, None, None, true);
         assert!(commands.iter().any(|c| c.label == "New Program"));
 
-        // Depth 3: should include "New Task"
-        let commands = filter_commands("", 3);
+        // Program selected, no project: "New Project" should be available
+        let commands = filter_commands("", Some("MyProgram"), None, None, true);
+        assert!(commands.iter().any(|c| c.label == "New Project"));
+
+        // Program and project selected, no milestone: "New Milestone" should be available
+        let commands = filter_commands("", Some("MyProgram"), Some("MyProject"), None, true);
+        assert!(commands.iter().any(|c| c.label == "New Milestone"));
+
+        // Program, project, and milestone selected: "New Task" should be available
+        let commands = filter_commands(
+            "",
+            Some("MyProgram"),
+            Some("MyProject"),
+            Some("MyMilestone"),
+            true,
+        );
         assert!(commands.iter().any(|c| c.label == "New Task"));
+    }
+
+    #[test]
+    fn test_filter_commands_new_program_always_available() {
+        // Even with programs existing, "New Program" should still be available
+        let commands = filter_commands("", Some("MyProgram"), None, None, false);
+        assert!(commands.iter().any(|c| c.label == "New Program"));
+    }
+
+    #[test]
+    fn test_filter_commands_empty_workspace() {
+        // When workspace has no programs and nothing is selected, "New Program" should be available
+        let commands = filter_commands("", None, None, None, false);
+        assert!(commands.iter().any(|c| c.label == "New Program"));
+
+        // Also verify that basic navigation commands are available
+        assert!(commands.iter().any(|c| c.label == "Programs"));
+        assert!(commands.iter().any(|c| c.label == "Journal"));
+        assert!(commands.iter().any(|c| c.label == "Exit"));
     }
 }

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::error::{Result, StorageError};
 use chrono::Local;
 
 pub struct JournalEntry {
@@ -710,7 +710,7 @@ impl WorkspaceStorage for PathBuf {
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
             "subtask" => include_str!("../../templates/subtask.md"),
-            _ => return Err(anyhow::anyhow!("Unknown template: {}", template_name)),
+            _ => return Err(StorageError::TemplateNotFound(template_name.to_string()).into()),
         };
 
         let content = resolve_template(template, values, strip_labels);
@@ -725,40 +725,90 @@ impl WorkspaceStorage for PathBuf {
 
 pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
     let mut fields = Vec::new();
+    let mut seen_placeholders: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let re_labeled = regex::Regex::new(r"#([^:!]+)![:]?\s*\{\{(\w+)\}\}").unwrap();
-    for cap in re_labeled.captures_iter(template) {
-        let field_label = cap
-            .get(1)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let placeholder = cap
-            .get(2)
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
+    // Only handle inline YAML format: "field: {{Placeholder}}"
+    // This is the only supported format
 
-        if !field_label.is_empty() && !placeholder.is_empty() {
-            let should_strip = field_label.contains('!');
-            let clean_label = field_label.replace('!', "");
-            fields.push((clean_label, placeholder, should_strip));
-        }
-    }
+    let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
 
-    let re_standalone = regex::Regex::new(r"^\{\{(\w+)\}\}$").unwrap();
+    // Track if we're past the YAML frontmatter (after the closing ---)
+    let mut in_yaml = false;
+    let mut found_yaml_end = false;
+
     for line in template.lines() {
-        let line = line.trim();
-        if let Some(cap) = re_standalone.captures(line) {
-            let placeholder = cap
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            if !placeholder.is_empty() && !fields.iter().any(|(_, p, _)| p == &placeholder) {
-                fields.push((placeholder.clone(), placeholder, true));
+        let line_trimmed = line.trim();
+
+        // Track YAML boundaries
+        if line_trimmed == "---" {
+            if !in_yaml {
+                in_yaml = true;
+            } else {
+                found_yaml_end = true;
+                in_yaml = false;
+            }
+            continue;
+        }
+
+        // Skip comments and empty lines
+        if line_trimmed.starts_with('#') || line_trimmed.is_empty() {
+            continue;
+        }
+
+        // Check for inline placeholders: "field: {{Placeholder}}"
+        // Only extract if it looks like a YAML field (has colon before the placeholder)
+        if let Some(colon_pos) = line_trimmed.find(':') {
+            let before_colon = &line_trimmed[..colon_pos];
+            let after_colon = &line_trimmed[colon_pos + 1..];
+
+            // Check if there's a placeholder after the colon
+            if let Some(cap) = re_inline.captures(after_colon) {
+                if let Some(placeholder_match) = cap.get(1) {
+                    let placeholder = placeholder_match.as_str().to_string();
+                    if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
+                        // Extract label from text before the colon
+                        let label = extract_label_from_yaml_line(before_colon);
+                        seen_placeholders.insert(placeholder.clone());
+                        fields.push((label, placeholder, true));
+                    }
+                }
+            }
+        }
+
+        // Also detect {{DESCRIPTION}} outside YAML frontmatter (in markdown body)
+        if found_yaml_end && !in_yaml {
+            if let Some(cap) = re_inline.captures(line_trimmed) {
+                if let Some(placeholder_match) = cap.get(1) {
+                    let placeholder = placeholder_match.as_str().to_string();
+                    if placeholder == "DESCRIPTION" && !seen_placeholders.contains(&placeholder) {
+                        seen_placeholders.insert(placeholder.clone());
+                        // DESCRIPTION in markdown body should be stripped from YAML and put in body
+                        fields.push(("Description".to_string(), placeholder, true));
+                    }
+                }
             }
         }
     }
 
     fields
+}
+
+/// Extract label from YAML field name (e.g., "creation_date" -> "Creation Date")
+fn extract_label_from_yaml_line(field_name: &str) -> String {
+    // Convert field name to title case
+    // e.g., "creation_date" -> "Creation Date", "created_by" -> "Created By"
+    field_name
+        .replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn resolve_template(
@@ -778,6 +828,10 @@ pub fn resolve_template(
 
             if placeholder == "TODAY" {
                 return today.clone();
+            }
+
+            if placeholder == "UUID" {
+                return uuid::Uuid::new_v4().to_string();
             }
 
             values.get(placeholder).cloned().unwrap_or_default()
@@ -1470,5 +1524,89 @@ mod tests {
             .list_subtasks("MyProgram", "MyProject", "MyMilestone", "MyTask")
             .unwrap();
         assert!(subtasks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_template_fields_detects_description_outside_yaml() {
+        // Test template with DESCRIPTION in markdown body (outside YAML)
+        let template = r#"---
+uuid: {{UUID}}
+title: {{NAME}}
+status: {{DEFAULT_STATUS}}
+---
+
+# Description
+{{DESCRIPTION}}
+"#;
+        let fields = parse_template_fields(template);
+
+        // Should detect both YAML fields and DESCRIPTION
+        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        assert!(
+            placeholders.contains(&"DESCRIPTION"),
+            "Should detect DESCRIPTION placeholder, got: {:?}",
+            placeholders
+        );
+    }
+
+    #[test]
+    fn test_parse_template_fields_yaml_only() {
+        // Test template with only YAML fields (no DESCRIPTION in body)
+        let template = r#"---
+uuid: {{UUID}}
+title: {{NAME}}
+status: {{DEFAULT_STATUS}}
+tags: program
+---
+
+Some markdown content without placeholders.
+"#;
+        let fields = parse_template_fields(template);
+
+        // Should detect YAML fields but not DESCRIPTION
+        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        assert!(
+            !placeholders.contains(&"DESCRIPTION"),
+            "Should NOT detect DESCRIPTION when not present"
+        );
+        assert!(placeholders.contains(&"UUID"));
+        assert!(placeholders.contains(&"NAME"));
+    }
+
+    #[test]
+    fn test_resolve_template_preserves_description_in_body() {
+        let template = r#"---
+uuid: {{UUID}}
+title: {{NAME}}
+status: {{DEFAULT_STATUS}}
+---
+
+# Description
+{{DESCRIPTION}}
+"#;
+        let mut values = HashMap::new();
+        values.insert("UUID".to_string(), "test-uuid".to_string());
+        values.insert("NAME".to_string(), "Test Program".to_string());
+        values.insert("DEFAULT_STATUS".to_string(), "New".to_string());
+        values.insert(
+            "DESCRIPTION".to_string(),
+            "This is the description".to_string(),
+        );
+        let strip_labels: HashSet<String> = HashSet::new();
+
+        let result = resolve_template(template, &values, &strip_labels);
+
+        // Verify DESCRIPTION is replaced in markdown body
+        assert!(
+            result.contains("This is the description"),
+            "Description should appear in markdown body"
+        );
+        // Verify it's not in YAML
+        let yaml_end = result.find("---").unwrap_or(0);
+        let after_yaml = &result[yaml_end + 3..];
+        assert!(
+            !after_yaml.starts_with("description:"),
+            "DESCRIPTION should not appear as YAML field"
+        );
     }
 }

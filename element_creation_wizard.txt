@@ -1,0 +1,21 @@
+Based on example task in /home/taylors/Projects/chronicle/templates/task.md
+
+```
+Title: <field for title>
+
+Status: (show entry 1 in the config.toml workflow)
+
+Creation Date: (show today's date)
+
+Created By: (show owner name pulled from config.toml)
+
+Assigned To: <field for assigned to>
+
+Due Date: <field for due date>
+
+Type: task
+
+Description: <field for description>
+
+CONFIRM     CANCEL
+```

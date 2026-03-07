@@ -1,15 +1,10 @@
-
-use anyhow::Result;
+use crate::Result;
 use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
 
 pub fn run(title: &str, scope: Option<&str>) -> Result<()> {
-    let slug = title
-        .to_lowercase()
-        .replace(' ', "-")
-        .replace('/', "-")
-        .replace('\', "-");
+    let slug = title.to_lowercase().replace([' ', '/', '\\'], "-");
     let ts = Utc::now().format("%Y%m%d").to_string();
 
     let mut dir = PathBuf::from("data/tasks");

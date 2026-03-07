@@ -1,10 +1,13 @@
-# Details
-#Title: {{NAME}}
-#Status: {{DEFAULT_STATUS}}
-#Creation Date: {{TODAY}}
-#Created By: {{OWNER}}
-#Assigned To: {{ASSIGNED_TO}}
-#Due Date: {{DUE_DATE}}
+---
+uuid: {{UUID}}
+title: {{NAME}}
+status: {{DEFAULT_STATUS}}
+creation_date: {{TODAY}}
+created_by: {{OWNER}}
+assigned_to: {{ASSIGNED_TO}}
+due_date: {{DUE_DATE}}
+type: subtask
+---
 
 # Description
-#Description! {{DESCRIPTION}}
+{{DESCRIPTION}}
