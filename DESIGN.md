@@ -311,19 +311,126 @@ graph TD
 
 ## Current Sprint
 
-No active sprint. Ready for next task.
+**Branch**: `fix/navigator-auto-navigate-on-create`
+**Status**: In Progress
+
+### Issue
+After creating a new element (program/project/milestone/task), the code automatically navigates into it. This causes the sidebar to show the children of the new element instead of the parent's list. Users don't see the newly created element in the list because they've already been pushed into it.
+
+### Root Cause
+In `confirm_template_field`, after calling `load_tree_view_data()` at line 1914, the code:
+1. Sets `current_project`/`current_milestone`/`current_task`
+2. Pushes to `tree_state.path`
+3. Calls `load_tree_view_data()` again at line 1955
+
+This second call loads children (e.g., milestones after creating a project), hiding the new element from view.
+
+### Fix Required
+- Remove auto-navigation into new element after creation
+- After creating element, stay at parent level with new element selected
+- User can manually navigate into new element with arrow key
+
+### Additional Task: Add `/refresh` Command
+- Add a `/refresh` command that forces `load_tree_view_data()`
+- Useful when navigator gets out of sync with filesystem
+
+### Tasks
+- [ ] Fix auto-navigation behavior - stay at parent level after element creation
+- [ ] Add `/refresh` command to command palette
+- [ ] Verify navigator shows new element after creation
+- [ ] Run tests and ensure clippy clean
 
 ---
 
-## Current Sprint
+### Bug: Creation Wizard File/Folder Structure
 
-No active sprint. Ready for next task.
+**Status**: Not yet started
+
+### Issue
+The creation wizard is not adhering to the proper file/folder structure. Elements may be created in wrong locations or with incorrect naming.
+
+### Tasks
+- [ ] Verify all element types (program/project/milestone/task) are created in correct locations
+- [ ] Check folder vs file creation logic
+- [ ] Fix any discrepancies
 
 ---
 
-### Recent Sprints (Completed)
+### Bug: History Not Sorting by Year/Month
 
-**Branch**: `fix/wizard-ui-polish` — **MERGED** (tag: `stable/wizard-ui-polish-2026-03-04`)
+**Status**: Not yet started
+
+### Issue
+History entries are not being sorted by year/month as defined in the design. The journal history should display entries organized by date.
+
+### Tasks
+- [ ] Investigate current journal listing implementation
+- [ ] Add proper sorting by year/month descending
+- [ ] Verify sorting matches design requirements
+
+### Work Completed
+- Converted templates from block YAML to inline YAML format (`field: {{PLACEHOLDER}}`)
+- Added UUID placeholder support in `resolve_template()` function
+- Added `FieldInfo` and `WizardFocus` structs for better wizard state management
+- Added Tab key handling for wizard field navigation
+- Added `uuid` crate dependency to Cargo.toml
+
+### Verification
+- All 61 tests passing ✓ (including new navigator refresh test)
+- Cargo clippy clean ✓
+- Code compiles ✓
+
+---
+
+### Bug Fix: Navigator Not Refreshing on Element Creation
+
+**Branch**: `fix/navigator-refresh-on-create`
+**Status**: Complete
+
+### Issue
+The navigator panel was not being refreshed when a new element was created via the template wizard.
+
+### Root Cause (Two bugs)
+1. **Missing reload**: After creating a new element and navigating into it, `load_tree_view_data()` was not called to refresh the sidebar with the new children.
+2. **Wrong key lookup**: The code looked for `PROGRAM_NAME`, `PROJECT_NAME`, `MILESTONE_NAME` but templates use `NAME` as the placeholder - causing navigation to never happen.
+
+### Fix Applied
+- Added second `load_tree_view_data()` call after navigating into new element
+- Fixed name lookup to use correct template placeholder key (`NAME`)
+- Added test `test_navigator_refreshes_after_creating_element`
+
+### Verification
+- All 65 tests passing ✓ (updated count)
+- Clippy clean ✓
+
+---
+
+### Bug Fix: Element Creation Not Working
+
+**Branch**: `fix/element-creation-not-working`
+**Status**: Complete
+
+### Issue
+Elements were not being created at all when completing the template wizard - files were never written to disk.
+
+### Root Cause
+In `confirm_template_field`, the `target_path` field was initialized as `None` with a comment "Will be set when confirmed" but the code to compute it was never implemented. The code checked `if let Some(ref target) = state.target_path` which was always `None`, so `create_from_template` was skipped entirely.
+
+### Fix Applied
+- Modified `confirm_template_field` to compute `target_path` based on element type (program/project/milestone/task), current context, and element name
+- Updated `start_new_milestone` to use template wizard
+- Updated `start_new_task` to use template wizard with proper navigation
+
+### Tests Added
+- `test_wizard_creates_program_file_on_disk`
+- `test_wizard_creates_project_file_on_disk`
+- `test_wizard_creates_milestone_file_on_disk`
+- `test_wizard_creates_task_file_on_disk`
+
+### Verification
+- All 65 tests passing ✓
+- Clippy clean ✓
+- All 60 tests passing, clippy clean
 - Bold prompts with `::` separator
 - "empty" for unfilled fields
 - "(auto-filled)" suffix for auto-populated fields
@@ -552,6 +659,9 @@ No active sprint. Ready for next task.
 
 | Date | Event |
 |------|-------|
+| 2026-03-05 | Bug fix: Element creation not working - `target_path` was never set, now computes path based on element type and context |
+| 2026-03-05 | Bug fix: Navigator not refreshing on element creation - added missing `load_tree_view_data()` call and fixed name key lookup |
+| 2026-03-05 | Sprint `fix/wizard-template-formats` complete - UUID placeholder support, inline YAML templates |
 | 2026-03-04 | Corrected architecture assessment - command.rs and navigation.rs are NOT empty |
 | 2026-03-03 | Created DESIGN.md with actual codebase assessment |
 | 2026-03-03 | Created branch `feat/app-modes` |
