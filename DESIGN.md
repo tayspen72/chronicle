@@ -641,6 +641,7 @@ In `confirm_template_field`, the `target_path` field was initialized as `None` w
 
 | Date | Event |
 |------|-------|
+| 2026-03-06 | Bug fix: Navigator now stays at parent level after element creation, /refresh command added |
 | 2026-03-05 | Bug fix: Element creation not working - `target_path` was never set, now computes path based on element type and context |
 | 2026-03-05 | Bug fix: Navigator not refreshing on element creation - added missing `load_tree_view_data()` call and fixed name key lookup |
 | 2026-03-05 | Sprint `fix/wizard-template-formats` complete - UUID placeholder support, inline YAML templates |
