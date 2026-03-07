@@ -335,38 +335,20 @@ This second call loads children (e.g., milestones after creating a project), hid
 - Useful when navigator gets out of sync with filesystem
 
 ### Tasks
-- [ ] Fix auto-navigation behavior - stay at parent level after element creation
-- [ ] Add `/refresh` command to command palette
-- [ ] Verify navigator shows new element after creation
-- [ ] Run tests and ensure clippy clean
+- [x] Fix auto-navigation behavior - stay at parent level after element creation
+- [x] Add `/refresh` command to command palette
+- [x] Verify navigator shows new element after creation
+- [x] Run tests and ensure clippy clean
 
 ---
 
 ### Bug: Creation Wizard File/Folder Structure
 
-**Status**: Not yet started
-
-### Issue
-The creation wizard is not adhering to the proper file/folder structure. Elements may be created in wrong locations or with incorrect naming.
-
-### Tasks
-- [ ] Verify all element types (program/project/milestone/task) are created in correct locations
-- [ ] Check folder vs file creation logic
-- [ ] Fix any discrepancies
-
----
+**Status**: Verified OK - elements are created in correct locations
 
 ### Bug: History Not Sorting by Year/Month
 
-**Status**: Not yet started
-
-### Issue
-History entries are not being sorted by year/month as defined in the design. The journal history should display entries organized by date.
-
-### Tasks
-- [ ] Investigate current journal listing implementation
-- [ ] Add proper sorting by year/month descending
-- [ ] Verify sorting matches design requirements
+**Status**: Verified OK - current implementation sorts correctly for flat journal structure
 
 ### Work Completed
 - Converted templates from block YAML to inline YAML format (`field: {{PLACEHOLDER}}`)

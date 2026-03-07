@@ -23,6 +23,7 @@ pub enum CommandAction {
     NewProject,
     NewMilestone,
     NewTask,
+    Refresh,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -192,6 +193,12 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::Journal,
             exit: false,
             action: Some(CommandAction::ShowArchiveList),
+        },
+        CommandMatch {
+            label: "Refresh".to_string(),
+            view: ViewType::TreeView,
+            exit: false,
+            action: Some(CommandAction::Refresh),
         },
         CommandMatch {
             label: "Exit".to_string(),

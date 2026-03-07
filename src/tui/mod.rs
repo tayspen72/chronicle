@@ -964,6 +964,9 @@ impl App {
             Some(CommandAction::NewTask) => {
                 self.start_new_task();
             }
+            Some(CommandAction::Refresh) => {
+                self.load_tree_view_data();
+            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1264,13 +1267,196 @@ impl App {
                 self.load_tree_view_data();
             }
         }
+
+        // Go directly to template field wizard
         self.input_buffer.clear();
-        self.current_view = ViewType::InputMilestone;
+
+        let template = include_str!("../../templates/milestone.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+        }
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        // Keywords that are prepopulated and not editable
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+
+        let fields: Vec<FieldInfo> = all_fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
+            })
+            .collect();
+
+        // Find first editable field for initial focus (this will be NAME/Title)
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
+
+        // Target path will be determined later after name is entered
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "milestone".to_string(),
+            target_path: None, // Will be set when confirmed
+            fields,
+            focus: initial_focus,
+            values,
+            strip_labels,
+        });
+
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn start_new_task(&mut self) {
+        // If at depth 0, navigate into selected program first
+        if self.tree_state.path.is_empty() {
+            if let Some(entry) = self.programs.get(self.selected_entry_index) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_program = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
+        // If at depth 1, navigate into selected project first
+        if self.tree_state.path.len() == 1 {
+            if let Some(entry) = self.projects.get(
+                self.selected_entry_index
+                    .saturating_sub(self.programs.len()),
+            ) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_project = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
+        // If at depth 2, navigate into selected milestone first
+        if self.tree_state.path.len() == 2 {
+            if let Some(entry) = self.milestones.get(
+                self.selected_entry_index
+                    .saturating_sub(self.programs.len() + self.projects.len()),
+            ) {
+                self.tree_state.path.push(entry.name.clone());
+                self.current_milestone = Some(entry.name.clone());
+                self.selected_entry_index = 0;
+                self.load_tree_view_data();
+            }
+        }
+
+        // Go directly to template field wizard
         self.input_buffer.clear();
-        self.current_view = ViewType::InputTask;
+
+        let template = include_str!("../../templates/task.md");
+        let all_fields = crate::storage::parse_template_fields(template);
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "TODAY".to_string(),
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
+        values.insert("OWNER".to_string(), self.config.owner.clone());
+        if let Some(default_status) = self.config.workflow.first() {
+            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+        }
+
+        let strip_labels: std::collections::HashSet<String> = all_fields
+            .iter()
+            .filter(|(_, _, strip)| *strip)
+            .map(|(_, p, _)| p.clone())
+            .collect();
+
+        // Keywords that are prepopulated and not editable
+        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+
+        let fields: Vec<FieldInfo> = all_fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, placeholder, _))| {
+                let is_keyword = keywords.contains(&placeholder.as_str());
+                let value = if is_keyword {
+                    values.get(&placeholder).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                FieldInfo {
+                    label,
+                    placeholder,
+                    value,
+                    is_focused: i == 0 && !is_keyword,
+                    is_editable: !is_keyword,
+                    display_order: i,
+                }
+            })
+            .collect();
+
+        // Find first editable field for initial focus (this will be NAME/Title)
+        let initial_focus = fields
+            .iter()
+            .position(|f| f.is_editable)
+            .map(WizardFocus::Field)
+            .unwrap_or(WizardFocus::ConfirmButton);
+
+        // Target path will be determined later after name is entered
+        self.template_field_state = Some(TemplateFieldState {
+            template_name: "task".to_string(),
+            target_path: None, // Will be set when confirmed
+            fields,
+            focus: initial_focus,
+            values,
+            strip_labels,
+        });
+
+        // Load initial field value into buffer
+        if let WizardFocus::Field(idx) = initial_focus {
+            if let Some(field) = self
+                .template_field_state
+                .as_ref()
+                .and_then(|s| s.fields.get(idx))
+            {
+                self.input_buffer = field.value.clone();
+            }
+        } else {
+            self.input_buffer.clear();
+        }
+        self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_create_program(&mut self) {
@@ -1632,47 +1818,126 @@ impl App {
                     }
 
                     let template_name = state.template_name.clone();
-                    let program_name = state.values.get("PROGRAM_NAME").cloned();
-                    let project_name = state.values.get("PROJECT_NAME").cloned();
-                    let milestone_name = state.values.get("MILESTONE_NAME").cloned();
+                    // Templates use "NAME" as the placeholder for the element name
+                    // (not PROGRAM_NAME, PROJECT_NAME, or MILESTONE_NAME)
+                    let name = state.values.get("NAME").cloned();
 
-                    if let Some(ref target) = state.target_path {
-                        let _ = self.config.workspace.create_from_template(
+                    // Also check for type-specific names for backwards compatibility
+                    let program_name = state.values.get("PROGRAM_NAME").or(name.as_ref()).cloned();
+                    let project_name = state.values.get("PROJECT_NAME").or(name.as_ref()).cloned();
+                    let milestone_name = state
+                        .values
+                        .get("MILESTONE_NAME")
+                        .or(name.as_ref())
+                        .cloned();
+
+                    // Compute target_path based on template_name and current context
+                    let target_path = match template_name.as_str() {
+                        "program" => program_name.as_ref().map(|n| {
+                            self.config
+                                .workspace
+                                .programs_dir()
+                                .join(format!("{}.md", n))
+                        }),
+                        "project" => {
+                            if let (Some(prog), Some(proj)) = (&self.current_program, &project_name)
+                            {
+                                Some(
+                                    self.config
+                                        .workspace
+                                        .programs_dir()
+                                        .join(prog)
+                                        .join(format!("{}.md", proj)),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        "milestone" => {
+                            if let (Some(prog), Some(proj), Some(mil)) = (
+                                &self.current_program,
+                                &self.current_project,
+                                &milestone_name,
+                            ) {
+                                Some(
+                                    self.config
+                                        .workspace
+                                        .programs_dir()
+                                        .join(prog)
+                                        .join(proj)
+                                        .join(format!("{}.md", mil)),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        "task" => {
+                            if let (Some(prog), Some(proj), Some(mil), Some(t)) = (
+                                &self.current_program,
+                                &self.current_project,
+                                &self.current_milestone,
+                                &name,
+                            ) {
+                                Some(
+                                    self.config
+                                        .workspace
+                                        .programs_dir()
+                                        .join(prog)
+                                        .join(proj)
+                                        .join(mil)
+                                        .join(format!("{}.md", t)),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(target) = target_path {
+                        if let Err(e) = self.config.workspace.create_from_template(
                             &template_name,
-                            target,
+                            &target,
                             &state.values,
                             &state.strip_labels,
+                        ) {
+                            tracing::error!("Failed to create element: {}", e);
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Could not compute target path for template: {}",
+                            template_name
                         );
                     }
+
+                    // Determine the name of the newly created element
+                    let new_element_name: Option<String> = match template_name.as_str() {
+                        "program" => program_name.clone(),
+                        "project" => project_name.clone(),
+                        "milestone" => milestone_name.clone(),
+                        "task" => name.clone(),
+                        _ => None,
+                    };
 
                     // Clear template state before calling load_tree_view_data
                     self.template_field_state = None;
 
-                    // Refresh the tree view
+                    // Refresh the tree view to show the newly created element at current level
                     self.load_tree_view_data();
 
-                    // Navigate to the new item
-                    match template_name.as_str() {
-                        "program" => {
-                            if let Some(name) = program_name {
-                                self.current_program = Some(name.clone());
-                                self.tree_state.path.push(name);
-                            }
+                    // Find and select the newly created element in the sidebar
+                    // Stay at parent level (don't auto-navigate into new element)
+                    if let Some(ref element_name) = new_element_name {
+                        // Find the newly created element in sidebar_items
+                        if let Some(pos) = self
+                            .sidebar_items
+                            .iter()
+                            .position(|item| !item.is_header && item.name == *element_name)
+                        {
+                            self.selected_entry_index = pos;
                         }
-                        "project" => {
-                            if let Some(name) = project_name {
-                                self.current_project = Some(name.clone());
-                                self.tree_state.path.push(name);
-                            }
-                        }
-                        "milestone" => {
-                            if let Some(name) = milestone_name {
-                                self.current_milestone = Some(name.clone());
-                                self.tree_state.path.push(name);
-                            }
-                        }
-                        _ => {}
                     }
+
                     self.current_view = ViewType::TreeView;
                 }
                 WizardFocus::Field(idx) => {
@@ -1915,5 +2180,549 @@ mod tests {
         if let Some(state) = &app.template_field_state {
             assert_eq!(state.fields[0].value, "Hell");
         }
+    }
+
+    #[test]
+    fn test_navigator_refreshes_after_creating_element() {
+        // Create a temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Create a program directory manually so we have something to work with
+        let programs_dir = workspace_path.join("programs");
+        std::fs::create_dir_all(&programs_dir).expect("Failed to create programs dir");
+
+        // Create a simple program file
+        let program_content = r#"---
+uuid: test-uuid
+title: TestProgram
+status: New
+tags: program
+---
+
+# DESCRIPTION
+Test description
+"#;
+        std::fs::write(programs_dir.join("TestProgram.md"), program_content)
+            .expect("Failed to create program file");
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Verify we're at root level with programs loaded
+        assert!(!app.programs.is_empty(), "Programs should be loaded");
+        assert_eq!(app.tree_state.path.len(), 0, "Should be at root level");
+
+        // Navigate into the program (select index 1 because index 0 is "Programs" header)
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Verify we're now inside the program
+        assert_eq!(app.tree_state.path.len(), 1, "Should be inside program");
+        assert!(
+            app.current_program.is_some(),
+            "Current program should be set"
+        );
+
+        // Now simulate creating a new project via the wizard
+        // First, start the new project wizard
+        app.start_new_project();
+
+        // Verify we're in template field input mode
+        assert_eq!(app.current_view, ViewType::InputTemplateField);
+        assert!(app.template_field_state.is_some());
+
+        // Fill in the project name in the first editable field
+        if let Some(ref mut state) = app.template_field_state {
+            // Find first editable field and set its value
+            for field in &mut state.fields {
+                if field.is_editable {
+                    field.value = "NewProject".to_string();
+                    break;
+                }
+            }
+            // Set focus to ConfirmButton to simulate pressing tab through all fields
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewProject".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // After creation, verify the navigator was refreshed
+        // NEW BEHAVIOR: Stay at parent level (don't auto-navigate into new element)
+        // The user can manually navigate into it with arrow key
+        assert_eq!(
+            app.tree_state.path.len(),
+            1,
+            "Should stay at parent level (program) after creation"
+        );
+        assert!(
+            app.current_project.is_none(),
+            "Should NOT auto-navigate into project - current_project should be None"
+        );
+
+        // Verify we're back in TreeView
+        assert_eq!(app.current_view, ViewType::TreeView);
+
+        // The key test: verify that sidebar_items reflects the current state
+        // After creating a project, we should still be in the program, showing projects
+        assert!(
+            !app.sidebar_items.is_empty(),
+            "Sidebar should have items after creation"
+        );
+
+        // Verify the new project is in the sidebar and selected
+        let has_new_project = app
+            .sidebar_items
+            .iter()
+            .any(|item| !item.is_header && item.name == "NewProject");
+        assert!(
+            has_new_project,
+            "Newly created project should appear in sidebar"
+        );
+    }
+
+    #[test]
+    fn test_wizard_creates_program_file_on_disk() {
+        // Create a temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Start the new program wizard
+        app.start_new_program();
+
+        // Verify we're in template field input mode
+        assert_eq!(app.current_view, ViewType::InputTemplateField);
+        assert!(app.template_field_state.is_some());
+
+        // Fill in the program name in the first editable field
+        if let Some(ref mut state) = app.template_field_state {
+            // Find first editable field and set its value
+            for field in &mut state.fields {
+                if field.is_editable {
+                    field.value = "MyNewProgram".to_string();
+                    break;
+                }
+            }
+            // Set focus to ConfirmButton
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "MyNewProgram".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Verify the file was created on disk
+        let program_path = workspace_path.join("programs").join("MyNewProgram.md");
+        assert!(
+            program_path.exists(),
+            "Program file should be created at {:?}",
+            program_path
+        );
+
+        // Verify the file has content from the template
+        let content = std::fs::read_to_string(&program_path).expect("Should be able to read file");
+        assert!(
+            content.contains("MyNewProgram"),
+            "Program file should contain the name"
+        );
+    }
+
+    #[test]
+    fn test_wizard_creates_project_file_on_disk() {
+        // Create a temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Create a program directory manually so we have something to work with
+        let programs_dir = workspace_path.join("programs");
+        std::fs::create_dir_all(&programs_dir).expect("Failed to create programs dir");
+
+        // Create a simple program file
+        let program_content = r#"---
+uuid: test-uuid
+title: TestProgram
+status: New
+tags: program
+---
+
+# DESCRIPTION
+Test description
+"#;
+        std::fs::write(programs_dir.join("TestProgram.md"), program_content)
+            .expect("Failed to create program file");
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Navigate into the program
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Start the new project wizard
+        app.start_new_project();
+
+        // Fill in the project name
+        if let Some(ref mut state) = app.template_field_state {
+            for field in &mut state.fields {
+                if field.is_editable {
+                    field.value = "NewProject".to_string();
+                    break;
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewProject".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Verify the file was created on disk
+        let project_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("NewProject.md");
+        assert!(
+            project_path.exists(),
+            "Project file should be created at {:?}",
+            project_path
+        );
+
+        // Verify the file has content from the template
+        let content = std::fs::read_to_string(&project_path).expect("Should be able to read file");
+        assert!(
+            content.contains("NewProject"),
+            "Project file should contain the name"
+        );
+    }
+
+    #[test]
+    fn test_wizard_creates_milestone_file_on_disk() {
+        // Create a temp workspace with program and project
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let programs_dir = workspace_path.join("programs");
+        let project_dir = programs_dir.join("TestProgram");
+        std::fs::create_dir_all(&project_dir).expect("Failed to create directories");
+
+        // Create program file
+        std::fs::write(
+            programs_dir.join("TestProgram.md"),
+            "---\ntitle: TestProgram\nstatus: New\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        // Create project file
+        std::fs::write(
+            project_dir.join("NewProject.md"),
+            "---\ntitle: NewProject\nstatus: New\n---\n",
+        )
+        .expect("Failed to create project file");
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Navigate into program, then project
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Start the new milestone wizard
+        app.start_new_milestone();
+
+        // Fill in the milestone name
+        if let Some(ref mut state) = app.template_field_state {
+            for field in &mut state.fields {
+                if field.is_editable {
+                    field.value = "NewMilestone".to_string();
+                    break;
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewMilestone".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Verify the file was created on disk
+        let milestone_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("NewProject")
+            .join("NewMilestone.md");
+        assert!(
+            milestone_path.exists(),
+            "Milestone file should be created at {:?}",
+            milestone_path
+        );
+
+        // Verify the file has content
+        let content =
+            std::fs::read_to_string(&milestone_path).expect("Should be able to read file");
+        assert!(
+            content.contains("NewMilestone"),
+            "Milestone file should contain the name"
+        );
+    }
+
+    #[test]
+    fn test_wizard_creates_task_file_on_disk() {
+        // Create a temp workspace with program, project, and milestone
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let milestone_dir = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("NewProject")
+            .join("NewMilestone");
+        std::fs::create_dir_all(&milestone_dir).expect("Failed to create directories");
+
+        // Create program file
+        std::fs::write(
+            workspace_path.join("programs").join("TestProgram.md"),
+            "---\ntitle: TestProgram\nstatus: New\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        // Create project file
+        std::fs::write(
+            milestone_dir.parent().unwrap().join("NewProject.md"),
+            "---\ntitle: NewProject\nstatus: New\n---\n",
+        )
+        .expect("Failed to create project file");
+
+        // Create milestone file
+        std::fs::write(
+            milestone_dir.join("NewMilestone.md"),
+            "---\ntitle: NewMilestone\nstatus: New\n---\n",
+        )
+        .expect("Failed to create milestone file");
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Navigate into program, then project, then milestone
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Start the new task wizard
+        app.start_new_task();
+
+        // Fill in the task name
+        if let Some(ref mut state) = app.template_field_state {
+            for field in &mut state.fields {
+                if field.is_editable {
+                    field.value = "NewTask".to_string();
+                    break;
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewTask".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Verify the file was created on disk
+        let task_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("NewProject")
+            .join("NewMilestone")
+            .join("NewTask.md");
+        assert!(
+            task_path.exists(),
+            "Task file should be created at {:?}",
+            task_path
+        );
+
+        // Verify the file has content
+        let content = std::fs::read_to_string(&task_path).expect("Should be able to read file");
+        assert!(
+            content.contains("NewTask"),
+            "Task file should contain the name"
+        );
+    }
+
+    #[test]
+    fn test_navigator_selection_stays_on_newly_created_element() {
+        // Test that after creating an element, the navigator selects the new element
+        // instead of resetting to the first item
+
+        // Create a temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Create a program directory manually so we have something to work with
+        let programs_dir = workspace_path.join("programs");
+        std::fs::create_dir_all(&programs_dir).expect("Failed to create programs dir");
+
+        // Create a simple program file
+        let program_content = r#"---
+uuid: test-uuid
+title: TestProgram
+status: New
+tags: program
+---
+
+# DESCRIPTION
+Test description
+"#;
+        std::fs::write(programs_dir.join("TestProgram.md"), program_content)
+            .expect("Failed to create program file");
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // We're at root level - verify there are programs
+        assert!(!app.programs.is_empty(), "Programs should be loaded");
+
+        // Record the initial selection position (before creating new element)
+        let _initial_selected_index = app.selected_entry_index;
+
+        // Start the new program wizard
+        app.start_new_program();
+
+        // Fill in the program name in the first editable field
+        if let Some(ref mut state) = app.template_field_state {
+            for field in &mut state.fields {
+                if field.is_editable && field.placeholder == "NAME" {
+                    field.value = "NewProgram".to_string();
+                    break;
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewProgram".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Now verify selection is on the newly created element, NOT reset to first item
+        // The new element should be in the sidebar
+        let new_element_in_sidebar = app
+            .sidebar_items
+            .iter()
+            .any(|item| item.name == "NewProgram");
+
+        assert!(
+            new_element_in_sidebar,
+            "Newly created element should be in sidebar"
+        );
+
+        // The key assertion: selected_entry_index should point to the new element
+        let selected_item = &app.sidebar_items[app.selected_entry_index];
+        assert_eq!(
+            selected_item.name, "NewProgram",
+            "Selected item should be the newly created program, but got '{}' (index {})",
+            selected_item.name, app.selected_entry_index
+        );
+
+        // Also verify we didn't just reset to initial position (index 1)
+        // The new element should NOT be at index 1 if there's an existing program
+        // (index 1 should be the first existing element "TestProgram", not "NewProgram")
+    }
+
+    #[test]
+    fn test_wizard_description_in_markdown_body() {
+        // Test that DESCRIPTION field appears in wizard and is placed in markdown body
+
+        // Create a temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Set up config with temp workspace
+        let mut config = crate::config::Config::default();
+        config.workspace = workspace_path.clone();
+
+        let mut app = App::new(config);
+
+        // Start the new program wizard
+        app.start_new_program();
+
+        // Verify we're in template field input mode
+        assert_eq!(app.current_view, ViewType::InputTemplateField);
+        assert!(app.template_field_state.is_some());
+
+        // Check that DESCRIPTION is in the wizard fields
+        let has_description_field = app
+            .template_field_state
+            .as_ref()
+            .map(|state| state.fields.iter().any(|f| f.placeholder == "DESCRIPTION"))
+            .unwrap_or(false);
+
+        assert!(
+            has_description_field,
+            "Wizard should have DESCRIPTION field"
+        );
+
+        // Fill in the program name and description
+        if let Some(ref mut state) = app.template_field_state {
+            for field in &mut state.fields {
+                if field.placeholder == "NAME" {
+                    field.value = "TestProgram".to_string();
+                } else if field.placeholder == "DESCRIPTION" {
+                    field.value = "This is a test description".to_string();
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "TestProgram".to_string();
+
+        // Confirm the creation
+        app.confirm_template_field();
+
+        // Verify the file was created on disk
+        let program_path = workspace_path.join("programs").join("TestProgram.md");
+        assert!(program_path.exists(), "Program file should be created");
+
+        // Read the content and verify DESCRIPTION is in the markdown body
+        let content = std::fs::read_to_string(&program_path).expect("Should be able to read file");
+
+        // Verify description appears in markdown body (after YAML separator)
+        assert!(
+            content.contains("This is a test description"),
+            "Description should appear in markdown body, got: {}",
+            content
+        );
+
+        // Verify description is NOT in YAML frontmatter
+        // The YAML section is between the two --- markers
+        let yaml_section = content.split("---").nth(1).unwrap_or("");
+        assert!(
+            !yaml_section.to_lowercase().contains("description:"),
+            "Description should NOT be in YAML frontmatter, YAML section was: {}",
+            yaml_section
+        );
     }
 }
