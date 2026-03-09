@@ -22,6 +22,7 @@ use crate::config::Config;
 use crate::storage::{
     validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
 };
+use chrono::Local;
 use command::{get_command_list, CommandAction, CommandMatch};
 use navigation::{SidebarItem, SidebarSection};
 use tree::TreeModel;
@@ -495,8 +496,15 @@ impl App {
         if let Some(journal_action) = &item.is_journal_item {
             match journal_action.as_str() {
                 "Today" => {
-                    if let Ok((path, _)) = self.config.workspace.open_or_create_today_journal() {
-                        self.launch_editor(&path);
+                    let today_path = self.config.workspace.today_journal_path();
+                    if today_path.exists() {
+                        // Content preview is already rendered inline in TreeView.
+                        self.current_view = ViewType::TreeView;
+                    } else {
+                        match self.create_today_journal_from_template() {
+                            Ok(path) => self.launch_editor(&path),
+                            Err(e) => tracing::error!("Failed to create today's journal: {}", e),
+                        }
                     }
                 }
                 "History" => {
@@ -1081,15 +1089,28 @@ impl App {
     }
 
     fn open_today_journal(&mut self) {
-        let workspace = &self.config.workspace;
-        match workspace.open_or_create_today_journal() {
-            Ok((path, _)) => {
-                self.launch_editor(&path);
-            }
-            Err(e) => {
-                eprintln!("Error opening today's journal: {}", e);
-            }
+        match self.create_today_journal_from_template() {
+            Ok(path) => self.launch_editor(&path),
+            Err(e) => eprintln!("Error opening today's journal: {}", e),
         }
+    }
+
+    fn create_today_journal_from_template(&self) -> Result<std::path::PathBuf> {
+        let path = self.config.workspace.today_journal_path();
+        if path.exists() {
+            return Ok(path);
+        }
+
+        let mut values = std::collections::HashMap::new();
+        values.insert(
+            "TODAY".to_string(),
+            Local::now().format("%Y-%m-%d").to_string(),
+        );
+
+        let strip_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.config
+            .workspace
+            .create_from_template("journal", &path, &values, &strip_labels)
     }
 
     fn show_archive_list(&mut self) {
@@ -1274,6 +1295,7 @@ impl App {
             "project" => include_str!("../../templates/project.md"),
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
+            "journal" => include_str!("../../templates/journal.md"),
             _ => {
                 tracing::warn!("Unknown template requested: {}", template_name);
                 return;
@@ -1381,58 +1403,65 @@ impl App {
     fn resolve_template_target_path(
         &self,
         template_name: &str,
-        name: &str,
+        name: Option<&str>,
     ) -> Option<std::path::PathBuf> {
         match template_name {
-            "program" => Some(
+            "program" => name.map(|program_name| {
                 self.config
                     .workspace
                     .programs_dir()
-                    .join(name)
-                    .join(format!("{}.md", name)),
-            ),
-            "project" => self.current_program.as_ref().map(|prog| {
-                self.config
-                    .workspace
-                    .programs_dir()
-                    .join(prog)
-                    .join("projects")
-                    .join(name)
-                    .join(format!("{}.md", name))
+                    .join(program_name)
+                    .join(format!("{}.md", program_name))
             }),
-            "milestone" => self
-                .current_program
-                .as_ref()
-                .zip(self.current_project.as_ref())
-                .map(|(prog, proj)| {
+            "project" => name.and_then(|project_name| {
+                self.current_program.as_ref().map(|prog| {
                     self.config
                         .workspace
                         .programs_dir()
                         .join(prog)
                         .join("projects")
-                        .join(proj)
-                        .join("milestones")
-                        .join(name)
-                        .join(format!("{}.md", name))
+                        .join(project_name)
+                        .join(format!("{}.md", project_name))
+                })
+            }),
+            "milestone" => self
+                .current_program
+                .as_ref()
+                .zip(self.current_project.as_ref())
+                .and_then(|(prog, proj)| {
+                    name.map(|milestone_name| {
+                        self.config
+                            .workspace
+                            .programs_dir()
+                            .join(prog)
+                            .join("projects")
+                            .join(proj)
+                            .join("milestones")
+                            .join(milestone_name)
+                            .join(format!("{}.md", milestone_name))
+                    })
                 }),
             "task" => self
                 .current_program
                 .as_ref()
                 .zip(self.current_project.as_ref())
                 .zip(self.current_milestone.as_ref())
-                .map(|((prog, proj), milestone)| {
-                    self.config
-                        .workspace
-                        .programs_dir()
-                        .join(prog)
-                        .join("projects")
-                        .join(proj)
-                        .join("milestones")
-                        .join(milestone)
-                        .join("tasks")
-                        .join(name)
-                        .join(format!("{}.md", name))
+                .and_then(|((prog, proj), milestone)| {
+                    name.map(|task_name| {
+                        self.config
+                            .workspace
+                            .programs_dir()
+                            .join(prog)
+                            .join("projects")
+                            .join(proj)
+                            .join("milestones")
+                            .join(milestone)
+                            .join("tasks")
+                            .join(task_name)
+                            .join(format!("{}.md", task_name))
+                    })
                 }),
+            "journal" => Some(self.config.workspace.today_journal_path()),
             _ => None,
         }
     }
@@ -1472,9 +1501,8 @@ impl App {
                         }
                     }
 
-                    let target_path = name.as_deref().and_then(|element_name| {
-                        self.resolve_template_target_path(&template_name, element_name)
-                    });
+                    let target_path =
+                        self.resolve_template_target_path(&template_name, name.as_deref());
 
                     if let Some(target) = target_path {
                         if let Err(e) = self.config.workspace.create_from_template(
@@ -2703,6 +2731,62 @@ title: TestMilestone
         assert_eq!(app.current_view, ViewType::TreeView);
         assert_eq!(app.tree_model.selected_path().to_vec(), selected_before);
         assert!(app.selected_entry_index < app.sidebar_items.len());
+    }
+
+    #[test]
+    fn test_create_today_journal_from_template_populates_fields() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+        let app = App::new(config);
+
+        let today_path = app.config.workspace.today_journal_path();
+        assert!(!today_path.exists());
+
+        let created = app
+            .create_today_journal_from_template()
+            .expect("Journal creation should succeed");
+        assert_eq!(created, today_path);
+        assert!(today_path.exists());
+
+        let content = std::fs::read_to_string(&today_path).expect("Should read created journal");
+        assert!(
+            !content.contains("{{UUID}}") && !content.contains("{{TODAY}}"),
+            "Journal template placeholders should be resolved"
+        );
+    }
+
+    #[test]
+    fn test_today_entry_does_not_open_wizard_when_present() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        let today_path = app.config.workspace.today_journal_path();
+        if let Some(parent) = today_path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create journal directory");
+        }
+        std::fs::write(&today_path, "---\ntitle: today\n---\n").expect("Failed to create file");
+
+        let today_idx = app
+            .sidebar_items
+            .iter()
+            .position(|item| item.is_journal_item.as_deref() == Some("Today"))
+            .expect("Today entry should exist");
+        app.selected_entry_index = today_idx;
+        app.open_tree_item();
+
+        assert_eq!(app.current_view, ViewType::TreeView);
+        assert!(app.template_field_state.is_none());
     }
 
     #[test]

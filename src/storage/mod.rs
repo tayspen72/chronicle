@@ -675,6 +675,7 @@ impl WorkspaceStorage for PathBuf {
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
             "subtask" => include_str!("../../templates/subtask.md"),
+            "journal" => include_str!("../../templates/journal.md"),
             _ => return Err(StorageError::TemplateNotFound(template_name.to_string()).into()),
         };
 

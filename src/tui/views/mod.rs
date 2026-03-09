@@ -22,12 +22,17 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 match journal_action.as_str() {
                     "Today" => {
                         title = "Today".to_string();
-                        if let Ok((_, content)) =
-                            app.config.workspace.open_or_create_today_journal()
-                        {
-                            content_to_show = content;
+                        let today_path = app.config.workspace.today_journal_path();
+                        if today_path.exists() {
+                            content_to_show = app
+                                .config
+                                .workspace
+                                .read_md_file(&today_path)
+                                .unwrap_or_else(|_| "Failed to load today's journal".to_string());
                         } else {
-                            content_to_show = "No journal entry for today".to_string();
+                            content_to_show =
+                                "No journal entry found for today.\n\nPress Enter to create entry."
+                                    .to_string();
                         }
                     }
                     "History" => {
