@@ -1,6 +1,6 @@
+use crate::Result;
 use crate::config::Config;
 use crate::storage::JournalStorage;
-use crate::Result;
 use chrono::Local;
 use std::fs;
 use std::io::Write;

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-use crate::storage::WorkspaceStorage;
 use crate::Result;
+use crate::storage::WorkspaceStorage;
 
 pub fn slugify(input: &str) -> String {
     let normalized = input

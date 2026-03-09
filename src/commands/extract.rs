@@ -1,7 +1,7 @@
+use crate::Result;
 use crate::commands::task_template::{slugify, write_task_from_template};
 use crate::config::Config;
 use crate::storage::JournalStorage;
-use crate::Result;
 use std::fs;
 
 /// Naive extractor: scans journal for lines containing `/todo` and writes backlog tasks.

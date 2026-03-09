@@ -45,7 +45,7 @@ pub trait WorkspaceStorage {
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String>;
     fn save_milestone(&self, program: &str, project: &str, name: &str, content: &str)
-        -> Result<()>;
+    -> Result<()>;
     fn create_milestone(
         &self,
         program: &str,
@@ -733,30 +733,30 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             let after_colon = &line_trimmed[colon_pos + 1..];
 
             // Check if there's a placeholder after the colon
-            if let Some(cap) = re_inline.captures(after_colon) {
-                if let Some(placeholder_match) = cap.get(1) {
-                    let placeholder = placeholder_match.as_str().to_string();
-                    if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
-                        // Extract label from text before the colon
-                        let label = extract_label_from_yaml_line(before_colon);
-                        seen_placeholders.insert(placeholder.clone());
-                        fields.push((label, placeholder, true));
-                    }
+            if let Some(cap) = re_inline.captures(after_colon)
+                && let Some(placeholder_match) = cap.get(1)
+            {
+                let placeholder = placeholder_match.as_str().to_string();
+                if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
+                    // Extract label from text before the colon
+                    let label = extract_label_from_yaml_line(before_colon);
+                    seen_placeholders.insert(placeholder.clone());
+                    fields.push((label, placeholder, true));
                 }
             }
         }
 
         // Also detect {{DESCRIPTION}} outside YAML frontmatter (in markdown body)
-        if found_yaml_end && !in_yaml {
-            if let Some(cap) = re_inline.captures(line_trimmed) {
-                if let Some(placeholder_match) = cap.get(1) {
-                    let placeholder = placeholder_match.as_str().to_string();
-                    if placeholder == "DESCRIPTION" && !seen_placeholders.contains(&placeholder) {
-                        seen_placeholders.insert(placeholder.clone());
-                        // DESCRIPTION in markdown body should be stripped from YAML and put in body
-                        fields.push(("Description".to_string(), placeholder, true));
-                    }
-                }
+        if found_yaml_end
+            && !in_yaml
+            && let Some(cap) = re_inline.captures(line_trimmed)
+            && let Some(placeholder_match) = cap.get(1)
+        {
+            let placeholder = placeholder_match.as_str().to_string();
+            if placeholder == "DESCRIPTION" && !seen_placeholders.contains(&placeholder) {
+                seen_placeholders.insert(placeholder.clone());
+                // DESCRIPTION in markdown body should be stripped from YAML and put in body
+                fields.push(("Description".to_string(), placeholder, true));
             }
         }
     }

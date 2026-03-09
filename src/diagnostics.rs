@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use tracing_subscriber::Layer as _;
 use tracing_subscriber::fmt::Layer;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Layer as _;
 
 use crate::config::Config;
 

@@ -13,17 +13,17 @@ use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend};
 use std::io::{self, Write};
 
 use crate::config::Config;
 use crate::storage::{
-    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
+    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
 use chrono::Local;
-use command::{get_command_list, CommandAction, CommandMatch};
+use command::{CommandAction, CommandMatch, get_command_list};
 use navigation::{SidebarItem, SidebarSection};
 use tree::TreeModel;
 
@@ -189,15 +189,14 @@ impl App {
                 break;
             }
 
-            if event::poll(std::time::Duration::from_millis(16))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        if matches!(self.mode, Mode::CommandPalette) {
-                            self.handle_command_input(key.code);
-                        } else {
-                            self.handle_key(key.code);
-                        }
-                    }
+            if event::poll(std::time::Duration::from_millis(16))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                if matches!(self.mode, Mode::CommandPalette) {
+                    self.handle_command_input(key.code);
+                } else {
+                    self.handle_key(key.code);
                 }
             }
 
@@ -227,10 +226,10 @@ impl App {
                     // Escape jumps to CANCEL button
                     if let Some(ref mut state) = self.template_field_state {
                         // Save current field value first
-                        if let WizardFocus::Field(idx) = state.focus {
-                            if let Some(field) = state.fields.get_mut(idx) {
-                                field.value = self.input_buffer.clone();
-                            }
+                        if let WizardFocus::Field(idx) = state.focus
+                            && let Some(field) = state.fields.get_mut(idx)
+                        {
+                            field.value = self.input_buffer.clone();
                         }
                         state.focus = WizardFocus::CancelButton;
                         self.input_buffer.clear();
@@ -290,10 +289,10 @@ impl App {
     fn navigate_template_field_up(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
             // Save current value if on a field
-            if let WizardFocus::Field(idx) = state.focus {
-                if let Some(field) = state.fields.get_mut(idx) {
-                    field.value = self.input_buffer.clone();
-                }
+            if let WizardFocus::Field(idx) = state.focus
+                && let Some(field) = state.fields.get_mut(idx)
+            {
+                field.value = self.input_buffer.clone();
             }
 
             match state.focus {
@@ -336,10 +335,10 @@ impl App {
     fn navigate_template_field_down(&mut self) {
         if let Some(ref mut state) = self.template_field_state {
             // Save current value if on a field
-            if let WizardFocus::Field(idx) = state.focus {
-                if let Some(field) = state.fields.get_mut(idx) {
-                    field.value = self.input_buffer.clone();
-                }
+            if let WizardFocus::Field(idx) = state.focus
+                && let Some(field) = state.fields.get_mut(idx)
+            {
+                field.value = self.input_buffer.clone();
             }
 
             match state.focus {
@@ -481,15 +480,8 @@ impl App {
         }
 
         if let Some(plan_type) = &item.is_planning_item {
-            match plan_type.as_str() {
-                "WeeklyPlanning" => {
-                    self.current_view = ViewType::WeeklyPlanning;
-                }
-                "Backlog" => {
-                    self.current_view = ViewType::Backlog;
-                }
-                _ => {}
-            }
+            let _ = plan_type;
+            // Planning entries are placeholders for now; Enter should do nothing.
             return;
         }
 
@@ -957,16 +949,14 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state {
-                    if let WizardFocus::Field(idx) = state.focus {
-                        if let Some(field) = state.fields.get_mut(idx) {
-                            if field.is_editable {
-                                // Update both input_buffer and field.value for inline editing
-                                self.input_buffer.push(c);
-                                field.value.push(c);
-                            }
-                        }
-                    }
+                if let Some(ref mut state) = self.template_field_state
+                    && let WizardFocus::Field(idx) = state.focus
+                    && let Some(field) = state.fields.get_mut(idx)
+                    && field.is_editable
+                {
+                    // Update both input_buffer and field.value for inline editing
+                    self.input_buffer.push(c);
+                    field.value.push(c);
                 }
             }
             _ => {}
@@ -983,16 +973,14 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state {
-                    if let WizardFocus::Field(idx) = state.focus {
-                        if let Some(field) = state.fields.get_mut(idx) {
-                            if field.is_editable {
-                                // Update both input_buffer and field.value for inline editing
-                                self.input_buffer.pop();
-                                field.value.pop();
-                            }
-                        }
-                    }
+                if let Some(ref mut state) = self.template_field_state
+                    && let WizardFocus::Field(idx) = state.focus
+                    && let Some(field) = state.fields.get_mut(idx)
+                    && field.is_editable
+                {
+                    // Update both input_buffer and field.value for inline editing
+                    self.input_buffer.pop();
+                    field.value.pop();
                 }
             }
             _ => {}
@@ -1283,11 +1271,11 @@ impl App {
     }
 
     fn open_template_wizard(&mut self, template_name: &str, seeded_name: Option<String>) {
-        if let Some(name) = seeded_name.as_deref() {
-            if let Err(e) = validate_element_name(name) {
-                tracing::warn!("Invalid {} name '{}': {}", template_name, name, e);
-                return;
-            }
+        if let Some(name) = seeded_name.as_deref()
+            && let Err(e) = validate_element_name(name)
+        {
+            tracing::warn!("Invalid {} name '{}': {}", template_name, name, e);
+            return;
         }
 
         let template = match template_name {
@@ -1489,16 +1477,16 @@ impl App {
                     let name = values.get("NAME").cloned();
                     let candidate_name = name.as_deref();
 
-                    if let Some(candidate_name) = candidate_name {
-                        if let Err(e) = validate_element_name(candidate_name) {
-                            tracing::warn!(
-                                "Invalid {} name '{}': {}",
-                                template_name,
-                                candidate_name,
-                                e
-                            );
-                            return;
-                        }
+                    if let Some(candidate_name) = candidate_name
+                        && let Err(e) = validate_element_name(candidate_name)
+                    {
+                        tracing::warn!(
+                            "Invalid {} name '{}': {}",
+                            template_name,
+                            candidate_name,
+                            e
+                        );
+                        return;
                     }
 
                     let target_path =

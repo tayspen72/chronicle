@@ -1,6 +1,6 @@
+use crate::Result;
 use crate::commands::task_template::{slugify, write_task_from_template};
 use crate::config::Config;
-use crate::Result;
 use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
