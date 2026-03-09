@@ -195,6 +195,81 @@ fn create_named_element(
     workspace.create_from_template(template_name, target_path, &values, &strip_labels)
 }
 
+fn program_markdown_path(workspace: &Path, program: &str) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join(format!("{}.md", program))
+}
+
+fn legacy_program_markdown_path(workspace: &Path, program: &str) -> PathBuf {
+    workspace.join("programs").join(format!("{}.md", program))
+}
+
+fn project_markdown_path(workspace: &Path, program: &str, project: &str) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join("projects")
+        .join(project)
+        .join(format!("{}.md", project))
+}
+
+fn legacy_project_markdown_path(workspace: &Path, program: &str, project: &str) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join(format!("{}.md", project))
+}
+
+fn milestone_markdown_path(
+    workspace: &Path,
+    program: &str,
+    project: &str,
+    milestone: &str,
+) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join("projects")
+        .join(project)
+        .join("milestones")
+        .join(milestone)
+        .join(format!("{}.md", milestone))
+}
+
+fn legacy_milestone_markdown_path(
+    workspace: &Path,
+    program: &str,
+    project: &str,
+    milestone: &str,
+) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join(project)
+        .join(format!("{}.md", milestone))
+}
+
+fn task_markdown_path(
+    workspace: &Path,
+    program: &str,
+    project: &str,
+    milestone: &str,
+    task: &str,
+) -> PathBuf {
+    workspace
+        .join("programs")
+        .join(program)
+        .join("projects")
+        .join(project)
+        .join("milestones")
+        .join(milestone)
+        .join("tasks")
+        .join(task)
+        .join(format!("{}.md", task))
+}
+
 impl JournalStorage for PathBuf {
     fn journal_dir(&self) -> PathBuf {
         self.join("journal")
@@ -306,19 +381,28 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn read_program(&self, name: &str) -> Result<String> {
-        let path = self.programs_dir().join(format!("{}.md", name));
+        let canonical = program_markdown_path(self, name);
+        let path = if canonical.exists() {
+            canonical
+        } else {
+            legacy_program_markdown_path(self, name)
+        };
         Ok(fs::read_to_string(path)?)
     }
 
     fn save_program(&self, name: &str, content: &str) -> Result<()> {
-        let path = self.programs_dir().join(format!("{}.md", name));
+        validate_element_name(name)?;
+        let path = program_markdown_path(self, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, content)?;
         Ok(())
     }
 
     fn create_program(&self, name: &str, description: &str) -> Result<PathBuf> {
         validate_element_name(name)?;
-        let program_md = self.programs_dir().join(format!("{}.md", name));
+        let program_md = program_markdown_path(self, name);
         let program_dir = self.programs_dir().join(name);
         fs::create_dir_all(&program_dir)?;
         create_named_element(self, "program", &program_md, name, description)?;
@@ -335,18 +419,28 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn read_project(&self, program: &str, name: &str) -> Result<String> {
-        let path = self
-            .programs_dir()
-            .join(program)
-            .join(format!("{}.md", name));
+        let canonical = project_markdown_path(self, program, name);
+        let path = if canonical.exists() {
+            canonical
+        } else if let Ok(entries) = self.list_projects(program) {
+            entries
+                .into_iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.path)
+                .unwrap_or_else(|| legacy_project_markdown_path(self, program, name))
+        } else {
+            legacy_project_markdown_path(self, program, name)
+        };
         Ok(fs::read_to_string(path)?)
     }
 
     fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()> {
-        let path = self
-            .programs_dir()
-            .join(program)
-            .join(format!("{}.md", name));
+        validate_element_name(program)?;
+        validate_element_name(name)?;
+        let path = project_markdown_path(self, program, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, content)?;
         Ok(())
     }
@@ -354,11 +448,12 @@ impl WorkspaceStorage for PathBuf {
     fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf> {
         validate_element_name(program)?;
         validate_element_name(name)?;
-        let project_md = self
+        let project_md = project_markdown_path(self, program, name);
+        let project_dir = self
             .programs_dir()
             .join(program)
-            .join(format!("{}.md", name));
-        let project_dir = self.programs_dir().join(program).join(name);
+            .join("projects")
+            .join(name);
         fs::create_dir_all(&project_dir)?;
         create_named_element(self, "project", &project_md, name, description)?;
         Ok(project_md)
@@ -379,11 +474,18 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String> {
-        let path = self
-            .programs_dir()
-            .join(program)
-            .join(project)
-            .join(format!("{}.md", name));
+        let canonical = milestone_markdown_path(self, program, project, name);
+        let path = if canonical.exists() {
+            canonical
+        } else if let Ok(entries) = self.list_milestones(program, project) {
+            entries
+                .into_iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.path)
+                .unwrap_or_else(|| legacy_milestone_markdown_path(self, program, project, name))
+        } else {
+            legacy_milestone_markdown_path(self, program, project, name)
+        };
         Ok(fs::read_to_string(path)?)
     }
 
@@ -394,11 +496,13 @@ impl WorkspaceStorage for PathBuf {
         name: &str,
         content: &str,
     ) -> Result<()> {
-        let path = self
-            .programs_dir()
-            .join(program)
-            .join(project)
-            .join(format!("{}.md", name));
+        validate_element_name(program)?;
+        validate_element_name(project)?;
+        validate_element_name(name)?;
+        let path = milestone_markdown_path(self, program, project, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, content)?;
         Ok(())
     }
@@ -413,12 +517,14 @@ impl WorkspaceStorage for PathBuf {
         validate_element_name(program)?;
         validate_element_name(project)?;
         validate_element_name(name)?;
-        let milestone_md = self
+        let milestone_md = milestone_markdown_path(self, program, project, name);
+        let milestone_dir = self
             .programs_dir()
             .join(program)
+            .join("projects")
             .join(project)
-            .join(format!("{}.md", name));
-        let milestone_dir = self.programs_dir().join(program).join(project).join(name);
+            .join("milestones")
+            .join(name);
         fs::create_dir_all(&milestone_dir)?;
         create_named_element(self, "milestone", &milestone_md, name, description)?;
         Ok(milestone_md)
@@ -484,7 +590,18 @@ impl WorkspaceStorage for PathBuf {
         milestone: &str,
         name: &str,
     ) -> Result<String> {
-        let path = self.get_task_path(program, project, milestone, name);
+        let canonical = self.get_task_path(program, project, milestone, name);
+        let path = if canonical.exists() {
+            canonical
+        } else if let Ok(entries) = self.list_tasks(program, project, milestone) {
+            entries
+                .into_iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.path)
+                .unwrap_or_else(|| canonical)
+        } else {
+            canonical
+        };
         Ok(fs::read_to_string(path)?)
     }
 
@@ -496,7 +613,14 @@ impl WorkspaceStorage for PathBuf {
         name: &str,
         content: &str,
     ) -> Result<()> {
+        validate_element_name(program)?;
+        validate_element_name(project)?;
+        validate_element_name(milestone)?;
+        validate_element_name(name)?;
         let path = self.get_task_path(program, project, milestone, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, content)?;
         Ok(())
     }
@@ -522,11 +646,7 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn get_task_path(&self, program: &str, project: &str, milestone: &str, task: &str) -> PathBuf {
-        self.programs_dir()
-            .join(program)
-            .join(project)
-            .join(milestone)
-            .join(format!("{}.md", task))
+        task_markdown_path(self, program, project, milestone, task)
     }
 
     fn read_md_file(&self, path: &Path) -> Result<String> {
@@ -1415,6 +1535,77 @@ mod tests {
             .list_subtasks("MyProgram", "MyProject", "MyMilestone", "MyTask")
             .unwrap();
         assert!(subtasks.is_empty());
+    }
+
+    #[test]
+    fn test_create_project_writes_canonical_path() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+
+        let workspace = temp_dir.path().to_path_buf();
+        let created = workspace
+            .create_project("MyProgram", "MyProject", "Project description")
+            .unwrap();
+
+        let canonical = temp_dir
+            .path()
+            .join("programs")
+            .join("MyProgram")
+            .join("projects")
+            .join("MyProject")
+            .join("MyProject.md");
+        let legacy = temp_dir
+            .path()
+            .join("programs")
+            .join("MyProgram")
+            .join("MyProject.md");
+
+        assert_eq!(created, canonical);
+        assert!(canonical.exists());
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn test_save_project_writes_canonical_path() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+
+        let workspace = temp_dir.path().to_path_buf();
+        workspace
+            .save_project("MyProgram", "MyProject", "# Canonical")
+            .unwrap();
+
+        let canonical = temp_dir
+            .path()
+            .join("programs")
+            .join("MyProgram")
+            .join("projects")
+            .join("MyProject")
+            .join("MyProject.md");
+        assert!(canonical.exists());
+        assert_eq!(fs::read_to_string(canonical).unwrap(), "# Canonical");
+    }
+
+    #[test]
+    fn test_read_task_falls_back_to_legacy_path() {
+        let temp_dir = TempDir::new().unwrap();
+        create_nested_program(temp_dir.path(), "MyProgram");
+        create_nested_project(temp_dir.path(), "MyProgram", "MyProject");
+        create_nested_milestone(temp_dir.path(), "MyProgram", "MyProject", "MyMilestone");
+        create_flat_task(
+            temp_dir.path(),
+            "MyProgram",
+            "MyProject",
+            "MyMilestone",
+            "LegacyTask",
+        );
+
+        let workspace = temp_dir.path().to_path_buf();
+        let content = workspace
+            .read_task("MyProgram", "MyProject", "MyMilestone", "LegacyTask")
+            .unwrap();
+
+        assert!(content.contains("LegacyTask") || content.contains("Flat Task"));
     }
 
     #[test]

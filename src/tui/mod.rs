@@ -1,9 +1,10 @@
 pub mod command;
 pub mod layout;
 pub mod navigation;
+pub mod tree;
 pub mod views;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -22,7 +23,8 @@ use crate::storage::{
     validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
 };
 use command::{get_command_list, CommandAction, CommandMatch};
-use navigation::{SidebarItem, SidebarSection, TreeState};
+use navigation::{SidebarItem, SidebarSection};
+use tree::TreeModel;
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +96,7 @@ pub enum ViewType {
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
-    pub tree_state: TreeState,
+    pub tree_model: TreeModel,
     pub mode: Mode,
     pub command_input: String,
     pub command_matches: Vec<CommandMatch>,
@@ -107,8 +109,6 @@ pub struct App {
     pub current_project: Option<String>,
     pub current_milestone: Option<String>,
     pub current_task: Option<String>,
-    pub selected_tree_path: Vec<String>,
-    pub expanded_tree_paths: BTreeSet<Vec<String>>,
     pub programs: Vec<DirectoryEntry>,
     pub projects: Vec<DirectoryEntry>,
     pub milestones: Vec<DirectoryEntry>,
@@ -128,7 +128,7 @@ impl App {
         let mut app = App {
             config,
             current_view: ViewType::TreeView,
-            tree_state: TreeState::default(),
+            tree_model: TreeModel::default(),
             mode: Mode::Normal,
             command_input: String::new(),
             command_matches,
@@ -141,8 +141,6 @@ impl App {
             current_project: None,
             current_milestone: None,
             current_task: None,
-            selected_tree_path: Vec::new(),
-            expanded_tree_paths: BTreeSet::new(),
             programs: Vec::new(),
             projects: Vec::new(),
             milestones: Vec::new(),
@@ -243,7 +241,7 @@ impl App {
                     // can sometimes incorrectly trigger ESC first (the escape sequence parsing
                     // issue causes the ESC byte of the escape sequence to be interpreted as a
                     // separate keypress). By doing nothing, we prevent double-navigation.
-                    if self.selected_tree_path.is_empty() {
+                    if self.tree_model.selected_path().is_empty() {
                         self.current_view = ViewType::Journal;
                     }
                 } else {
@@ -386,10 +384,10 @@ impl App {
         if self.current_view == ViewType::TreeView {
             tracing::debug!(
                 selected_index = self.selected_entry_index,
-                path = ?self.selected_tree_path,
+                path = ?self.tree_model.selected_path(),
                 "navigate right"
             );
-            self.open_tree_item();
+            self.open_tree_item_with_leaf_open(false);
         }
     }
 
@@ -413,6 +411,7 @@ impl App {
         self.collapse_path(&selected_path);
         let mut parent = selected_path;
         parent.pop();
+        self.collapse_path(&parent);
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
     }
@@ -428,8 +427,8 @@ impl App {
                 self.current_content_text = None;
             }
             ViewType::TreeView => {
-                if !self.selected_tree_path.is_empty() {
-                    let mut parent = self.selected_tree_path.clone();
+                if !self.tree_model.selected_path().is_empty() {
+                    let mut parent = self.tree_model.selected_path_vec();
                     parent.pop();
                     self.set_selected_tree_path(parent);
                     self.load_tree_view_data();
@@ -458,6 +457,10 @@ impl App {
     }
 
     fn open_tree_item(&mut self) {
+        self.open_tree_item_with_leaf_open(true);
+    }
+
+    fn open_tree_item_with_leaf_open(&mut self, open_leaf_content: bool) {
         let idx = self.selected_entry_index;
 
         if idx >= self.sidebar_items.len() {
@@ -528,20 +531,21 @@ impl App {
                 indent = item.indent,
                 selected_index = idx,
                 node_path = ?node_path,
-                current_path = ?self.selected_tree_path,
+                current_path = ?self.tree_model.selected_path(),
                 has_children,
                 "open tree item"
             );
-            if has_children || self.selected_tree_path != node_path {
-                self.set_selected_tree_path(node_path.clone());
+            if has_children || self.tree_model.selected_path() != node_path {
                 if has_children {
-                    self.expanded_tree_paths.insert(node_path.clone());
+                    self.tree_model.expand_path(&node_path);
+                    self.set_selected_tree_path(node_path.clone());
                     self.load_tree_view_data();
                     self.select_first_child_for_path(&node_path);
                 } else {
+                    self.set_selected_tree_path(node_path.clone());
                     self.load_tree_view_data();
                 }
-            } else {
+            } else if open_leaf_content {
                 self.set_selected_tree_path(node_path);
                 self.open_content(&entry);
             }
@@ -558,10 +562,10 @@ impl App {
 
     fn load_tree_view_data(&mut self) {
         self.programs = self.load_tree_level(&[]);
-        self.current_program = self.selected_tree_path.first().cloned();
-        self.current_project = self.selected_tree_path.get(1).cloned();
-        self.current_milestone = self.selected_tree_path.get(2).cloned();
-        self.current_task = self.selected_tree_path.get(3).cloned();
+        self.current_program = self.tree_model.selected_path().first().cloned();
+        self.current_project = self.tree_model.selected_path().get(1).cloned();
+        self.current_milestone = self.tree_model.selected_path().get(2).cloned();
+        self.current_task = self.tree_model.selected_path().get(3).cloned();
 
         self.projects = self.load_tree_level_for_selected_depth(1);
         self.milestones = self.load_tree_level_for_selected_depth(2);
@@ -569,7 +573,7 @@ impl App {
         self.subtasks = self.load_tree_level_for_selected_depth(4);
 
         tracing::debug!(
-            path = ?self.selected_tree_path,
+            path = ?self.tree_model.selected_path(),
             programs = self.programs.len(),
             projects = self.projects.len(),
             milestones = self.milestones.len(),
@@ -582,7 +586,7 @@ impl App {
     }
 
     fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {
-        let mut node_path = self.selected_tree_path.clone();
+        let mut node_path = self.tree_model.selected_path_vec();
         let truncate_to = item.indent.min(node_path.len());
         node_path.truncate(truncate_to);
         node_path.push(item.name.clone());
@@ -590,23 +594,19 @@ impl App {
     }
 
     fn set_selected_tree_path(&mut self, path: Vec<String>) {
-        for depth in 1..=path.len() {
-            self.expanded_tree_paths.insert(path[..depth].to_vec());
-        }
-        self.selected_tree_path = path.clone();
-        self.tree_state.path = path;
+        self.tree_model.set_selected_path(path.clone());
+        self.tree_model.expand_ancestors(&path);
     }
 
     fn collapse_path(&mut self, path: &[String]) {
-        self.expanded_tree_paths
-            .retain(|expanded| !is_same_or_descendant(expanded, path));
+        self.tree_model.collapse_path(path);
     }
 
     fn load_tree_level_for_selected_depth(&self, depth: usize) -> Vec<DirectoryEntry> {
-        if self.selected_tree_path.len() < depth {
+        if self.tree_model.selected_depth() < depth {
             return Vec::new();
         }
-        self.load_tree_level(&self.selected_tree_path[..depth])
+        self.load_tree_level(&self.tree_model.selected_path()[..depth])
     }
 
     fn load_tree_level(&self, path: &[String]) -> Vec<DirectoryEntry> {
@@ -791,7 +791,7 @@ impl App {
     }
 
     fn sync_selection_with_tree_path(&mut self) {
-        let mut candidate = self.selected_tree_path.clone();
+        let mut candidate = self.tree_model.selected_path_vec();
         while !candidate.is_empty() {
             if let Some(idx) = self
                 .sidebar_items
@@ -799,12 +799,12 @@ impl App {
                 .position(|item| item.tree_path.as_ref() == Some(&candidate))
             {
                 self.selected_entry_index = idx;
-                if candidate != self.selected_tree_path {
+                if candidate != self.tree_model.selected_path() {
                     self.set_selected_tree_path(candidate.clone());
                 }
                 tracing::debug!(
                     selected_index = idx,
-                    selected_name = ?self.selected_tree_path.last(),
+                    selected_name = ?self.tree_model.selected_path().last(),
                     "selection synced to tree path"
                 );
                 return;
@@ -812,10 +812,21 @@ impl App {
             candidate.pop();
         }
         tracing::warn!(
-            path = ?self.selected_tree_path,
+            path = ?self.tree_model.selected_path(),
             "selection sync fallback to first selectable item"
         );
         self.selected_entry_index = self.first_selectable_sidebar_index();
+        if !self.tree_model.selected_path().is_empty() {
+            if let Some(path) = self
+                .sidebar_items
+                .get(self.selected_entry_index)
+                .and_then(|item| item.tree_path.clone())
+            {
+                self.set_selected_tree_path(path);
+            } else {
+                self.tree_model.set_selected_path(Vec::new());
+            }
+        }
     }
 
     fn select_first_child_for_path(&mut self, parent_path: &[String]) {
@@ -895,7 +906,7 @@ impl App {
                 is_create_action: false,
             });
 
-            if self.expanded_tree_paths.contains(&node_path) {
+            if self.tree_model.is_expanded(&node_path) {
                 self.push_tree_level_items(&node_path, depth + 1);
             }
         }
@@ -1143,7 +1154,7 @@ impl App {
     }
 
     fn show_projects_list(&mut self) {
-        if !self.selected_tree_path.is_empty() {
+        if !self.tree_model.selected_path().is_empty() {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1154,7 +1165,7 @@ impl App {
     }
 
     fn show_milestones_list(&mut self) {
-        if self.selected_tree_path.len() >= 2 {
+        if self.tree_model.selected_depth() >= 2 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1165,7 +1176,7 @@ impl App {
     }
 
     fn show_tasks_list(&mut self) {
-        if self.selected_tree_path.len() >= 3 {
+        if self.tree_model.selected_depth() >= 3 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1202,7 +1213,7 @@ impl App {
     }
 
     fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
-        if self.selected_tree_path.len() >= target_depth {
+        if self.tree_model.selected_depth() >= target_depth {
             return;
         }
 
@@ -1214,7 +1225,7 @@ impl App {
         };
 
         if selected_path.len() < target_depth {
-            let parent = self.selected_tree_path.clone();
+            let parent = self.tree_model.selected_path_vec();
             self.select_first_child_for_path(&parent);
             selected_path = match self.sidebar_items.get(self.selected_entry_index) {
                 Some(item) if !item.is_header && !item.name.is_empty() => item
@@ -1546,10 +1557,6 @@ impl App {
     }
 }
 
-fn is_same_or_descendant(candidate: &[String], ancestor: &[String]) -> bool {
-    candidate.len() >= ancestor.len() && candidate.starts_with(ancestor)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1747,14 +1754,22 @@ Test description
 
         // Verify we're at root level with programs loaded
         assert!(!app.programs.is_empty(), "Programs should be loaded");
-        assert_eq!(app.tree_state.path.len(), 0, "Should be at root level");
+        assert_eq!(
+            app.tree_model.selected_depth(),
+            0,
+            "Should be at root level"
+        );
 
         // Navigate into the program (select index 1 because index 0 is "Programs" header)
         app.selected_entry_index = 1;
         app.open_tree_item();
 
         // Verify we're now inside the program
-        assert_eq!(app.tree_state.path.len(), 1, "Should be inside program");
+        assert_eq!(
+            app.tree_model.selected_depth(),
+            1,
+            "Should be inside program"
+        );
         assert!(
             app.current_program.is_some(),
             "Current program should be set"
@@ -1789,7 +1804,7 @@ Test description
         // NEW BEHAVIOR: Stay at parent level (don't auto-navigate into new element)
         // The user can manually navigate into it with arrow key
         assert_eq!(
-            app.tree_state.path.len(),
+            app.tree_model.selected_depth(),
             1,
             "Should stay at parent level (program) after creation"
         );
@@ -1808,14 +1823,14 @@ Test description
             "Sidebar should have items after creation"
         );
 
-        // Verify the new project is in the sidebar and selected
+        // Selected nodes keep children collapsed, so project children are not shown here.
         let has_new_project = app
             .sidebar_items
             .iter()
             .any(|item| !item.is_header && item.name == "NewProject");
         assert!(
-            has_new_project,
-            "Newly created project should appear in sidebar"
+            !has_new_project,
+            "Selected program should keep project children collapsed"
         );
     }
 
@@ -1972,7 +1987,10 @@ Test description
         std::fs::create_dir_all(project_dir.join("projects").join("NewProject"))
             .expect("Failed to create project directories");
         std::fs::write(
-            project_dir.join("projects").join("NewProject").join("NewProject.md"),
+            project_dir
+                .join("projects")
+                .join("NewProject")
+                .join("NewProject.md"),
             "---\ntitle: NewProject\nstatus: New\n---\n",
         )
         .expect("Failed to create project file");
@@ -2085,12 +2103,17 @@ Test description
 
         let mut app = App::new(config);
 
-        // Navigate into program, then project, then milestone
+        // Navigate into program, then project.
+        // Right-navigation auto-selects first child, so after entering project
+        // selection is already on the milestone.
         app.selected_entry_index = 1;
         app.open_tree_item();
-        app.selected_entry_index = 1;
-        app.open_tree_item();
-        app.selected_entry_index = 1;
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "NewProject" && i.indent == 1)
+            .expect("NewProject should be selectable");
+        app.selected_entry_index = project_idx;
         app.open_tree_item();
 
         // Start the new task wizard
@@ -2363,7 +2386,7 @@ title: TestMilestone
 
         // Single right from project now expands and moves selection into milestone.
         assert_eq!(
-            app.tree_state.path.len(),
+            app.tree_model.selected_depth(),
             3,
             "Should be inside milestone after second navigation"
         );
@@ -2374,7 +2397,7 @@ title: TestMilestone
         // BUG: This should go to project level (path = ["TestProgram", "TestProject"])
         // but it jumps to program level (path = ["TestProgram"])
         assert_eq!(
-            app.tree_state.path.len(),
+            app.tree_model.selected_depth(),
             2,
             "Should go back to project level (depth 2), not program level (depth 1)"
         );
@@ -2434,7 +2457,7 @@ title: TestMilestone
         // Right now expands and moves selection to the first project in one step.
         app.selected_entry_index = 1;
         app.open_tree_item();
-        assert_eq!(app.tree_state.path.len(), 2);
+        assert_eq!(app.tree_model.selected_depth(), 2);
 
         // Navigate into Project
         let project_idx = app
@@ -2444,7 +2467,7 @@ title: TestMilestone
             .expect("TestProject should be in sidebar");
         app.selected_entry_index = project_idx;
         app.open_tree_item();
-        assert_eq!(app.tree_state.path.len(), 3);
+        assert_eq!(app.tree_model.selected_depth(), 3);
 
         // Now navigate LEFT - this should collapse back to project level
         app.navigate_left();
@@ -2452,16 +2475,16 @@ title: TestMilestone
         // After collapsing, we should be at project level (depth 2)
         // path should be ["TestProgram", "TestProject"], not ["TestProgram"]
         assert_eq!(
-            app.tree_state.path.len(),
+            app.tree_model.selected_depth(),
             2,
             "After collapsing milestone, should be at project level (depth 2), not program level (depth 1)"
         );
 
-        // The sidebar should show milestones (the children of project level)
+        // The sidebar should keep milestones collapsed while project is selected.
         let has_milestones = app.sidebar_items.iter().any(|i| i.name == "TestMilestone");
         assert!(
-            has_milestones,
-            "Sidebar should show milestones after navigating back to project level"
+            !has_milestones,
+            "Sidebar should keep selected project's children collapsed"
         );
 
         // Selection should remain valid and on the project node after collapsing back.
@@ -2473,6 +2496,213 @@ title: TestMilestone
         assert!(!selected.is_header, "Selection should not land on a header");
         assert_eq!(selected.name, "TestProject");
         assert_eq!(selected.indent, 1);
+    }
+
+    #[test]
+    fn test_entering_program_does_not_auto_expand_first_project_children() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        std::fs::create_dir_all(&program_dir).expect("Failed to create program dir");
+        std::fs::write(
+            program_dir.join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        let alpha_project_dir = program_dir.join("projects").join("AlphaProject");
+        std::fs::create_dir_all(&alpha_project_dir).expect("Failed to create alpha project dir");
+        std::fs::write(
+            alpha_project_dir.join("AlphaProject.md"),
+            "---\ntitle: AlphaProject\n---\n",
+        )
+        .expect("Failed to create alpha project file");
+
+        let beta_project_dir = program_dir.join("projects").join("BetaProject");
+        std::fs::create_dir_all(&beta_project_dir).expect("Failed to create beta project dir");
+        std::fs::write(
+            beta_project_dir.join("BetaProject.md"),
+            "---\ntitle: BetaProject\n---\n",
+        )
+        .expect("Failed to create beta project file");
+
+        let milestone_dir = alpha_project_dir.join("milestones").join("M1");
+        std::fs::create_dir_all(&milestone_dir).expect("Failed to create milestone dir");
+        std::fs::write(milestone_dir.join("M1.md"), "---\ntitle: M1\n---\n")
+            .expect("Failed to create milestone file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram".to_string(), "AlphaProject".to_string()]
+        );
+        assert!(
+            !app.sidebar_items
+                .iter()
+                .any(|item| item.name == "M1" && item.indent == 2),
+            "Milestones should not auto-expand when entering program level"
+        );
+    }
+
+    #[test]
+    fn test_navigate_left_collapses_children_of_newly_selected_parent() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        std::fs::create_dir_all(&program_dir).expect("Failed to create program dir");
+        std::fs::write(
+            program_dir.join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        let project_dir = program_dir.join("projects").join("TestProject");
+        std::fs::create_dir_all(&project_dir).expect("Failed to create project dir");
+        std::fs::write(
+            project_dir.join("TestProject.md"),
+            "---\ntitle: TestProject\n---\n",
+        )
+        .expect("Failed to create project file");
+
+        let milestone_dir = project_dir.join("milestones").join("M1");
+        std::fs::create_dir_all(&milestone_dir).expect("Failed to create milestone dir");
+        std::fs::write(milestone_dir.join("M1.md"), "---\ntitle: M1\n---\n")
+            .expect("Failed to create milestone file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item_with_leaf_open(false);
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "TestProject" && i.indent == 1)
+            .expect("TestProject should be selectable");
+        app.selected_entry_index = project_idx;
+        app.open_tree_item_with_leaf_open(false);
+
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec![
+                "TestProgram".to_string(),
+                "TestProject".to_string(),
+                "M1".to_string()
+            ]
+        );
+
+        app.navigate_left();
+
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram".to_string(), "TestProject".to_string()]
+        );
+        assert!(
+            !app.sidebar_items
+                .iter()
+                .any(|item| item.name == "M1" && item.indent == 2),
+            "Milestones should be collapsed when project is selected after left navigation"
+        );
+    }
+
+    #[test]
+    fn test_navigate_right_on_leaf_does_not_open_content_or_lose_selection() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let task_dir = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("projects")
+            .join("TestProject")
+            .join("milestones")
+            .join("M1")
+            .join("tasks")
+            .join("LeafTask");
+        std::fs::create_dir_all(&task_dir).expect("Failed to create task dir");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("TestProject")
+                .join("TestProject.md"),
+            "---\ntitle: TestProject\n---\n",
+        )
+        .expect("Failed to create project file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("TestProject")
+                .join("milestones")
+                .join("M1")
+                .join("M1.md"),
+            "---\ntitle: M1\n---\n",
+        )
+        .expect("Failed to create milestone file");
+        std::fs::write(task_dir.join("LeafTask.md"), "---\ntitle: LeafTask\n---\n")
+            .expect("Failed to create task file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item_with_leaf_open(false);
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "TestProject" && i.indent == 1)
+            .expect("TestProject should be selectable");
+        app.selected_entry_index = project_idx;
+        app.open_tree_item_with_leaf_open(false);
+        let milestone_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "M1" && i.indent == 2)
+            .expect("M1 should be selectable");
+        app.selected_entry_index = milestone_idx;
+        app.open_tree_item_with_leaf_open(false);
+        let task_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "LeafTask" && i.indent == 3)
+            .expect("LeafTask should be selectable after entering milestone");
+        app.selected_entry_index = task_idx;
+        app.open_tree_item_with_leaf_open(false);
+
+        let selected_before = app.tree_model.selected_path().to_vec();
+        app.navigate_right();
+        app.navigate_right();
+
+        assert_eq!(app.current_view, ViewType::TreeView);
+        assert_eq!(app.tree_model.selected_path().to_vec(), selected_before);
+        assert!(app.selected_entry_index < app.sidebar_items.len());
     }
 
     #[test]
@@ -2527,12 +2757,18 @@ title: TestMilestone
         app.open_tree_item();
 
         // Single right from project expands and moves to milestone.
-        assert_eq!(app.tree_state.path, vec!["TestProgram", "BetaProject", "M1"]);
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram", "BetaProject", "M1"]
+        );
 
         // Collapse back one level.
         app.navigate_left();
 
-        assert_eq!(app.tree_state.path, vec!["TestProgram", "BetaProject"]);
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram", "BetaProject"]
+        );
         assert!(app.selected_entry_index < app.sidebar_items.len());
         let selected = &app.sidebar_items[app.selected_entry_index];
         assert_eq!(selected.name, "BetaProject");
@@ -2567,10 +2803,13 @@ title: TestMilestone
 
         app.selected_entry_index = 1;
         app.open_tree_item();
-        assert_eq!(app.tree_state.path, vec!["TestProgram", "DirectTask"]);
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram", "DirectTask"]
+        );
 
         app.navigate_left();
-        assert_eq!(app.tree_state.path, vec!["TestProgram"]);
+        assert_eq!(app.tree_model.selected_path().to_vec(), vec!["TestProgram"]);
         assert!(app.selected_entry_index < app.sidebar_items.len());
     }
 
@@ -2625,7 +2864,10 @@ title: TestMilestone
         app.selected_entry_index = common_idx;
         app.open_tree_item();
 
-        assert_eq!(app.tree_state.path, vec!["TestProgram", "Common", "M1"]);
+        assert_eq!(
+            app.tree_model.selected_path().to_vec(),
+            vec!["TestProgram", "Common", "M1"]
+        );
         assert!(
             app.sidebar_items
                 .iter()
