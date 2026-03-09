@@ -5,7 +5,8 @@ use crate::tui::App;
 use chrono::{Datelike, Utc};
 use ratatui::{
     style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -63,8 +64,9 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
     }
 
-    let paragraph = Paragraph::new(content_to_show)
+    let paragraph = Paragraph::new(markdown_to_text(&content_to_show))
         .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false })
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -389,8 +391,205 @@ pub fn render_content_viewer(f: &mut Frame, app: &App, area: ratatui::layout::Re
         height: area.height.saturating_sub(2),
     };
 
-    let paragraph = Paragraph::new(content.as_str()).style(Style::default().fg(Color::White));
+    let paragraph = Paragraph::new(markdown_to_text(&content))
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, inner_area);
+}
+
+fn markdown_to_text(content: &str) -> Text<'static> {
+    let body = strip_yaml_frontmatter(content);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut in_code_block = false;
+
+    for raw_line in body.lines() {
+        let trimmed = raw_line.trim_end();
+
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        if in_code_block {
+            lines.push(Line::from(Span::styled(
+                trimmed.to_string(),
+                Style::default().fg(Color::Yellow),
+            )));
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+
+        if let Some((level, text)) = parse_heading(trimmed) {
+            let heading_color = match level {
+                1 => Color::Cyan,
+                2 => Color::LightBlue,
+                _ => Color::White,
+            };
+            lines.push(Line::from(Span::styled(
+                text.to_string(),
+                Style::default()
+                    .fg(heading_color)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )));
+            continue;
+        }
+
+        if let Some(item) = parse_list_item(trimmed) {
+            let mut spans = vec![Span::styled(
+                "• ".to_string(),
+                Style::default().fg(Color::LightBlue),
+            )];
+            spans.extend(render_inline_markdown(
+                item,
+                Style::default().fg(Color::White),
+            ));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        if let Some(quote) = trimmed.strip_prefix("> ") {
+            lines.push(Line::from(Span::styled(
+                quote.to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(ratatui::style::Modifier::ITALIC),
+            )));
+            continue;
+        }
+
+        lines.push(Line::from(render_inline_markdown(
+            trimmed,
+            Style::default().fg(Color::White),
+        )));
+    }
+
+    Text::from(lines)
+}
+
+fn strip_yaml_frontmatter(content: &str) -> &str {
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        return content;
+    }
+
+    let mut byte_offset = 0usize;
+    for line in content.lines() {
+        byte_offset += line.len() + 1;
+        if line == "---" && byte_offset > 4 {
+            return &content[byte_offset..];
+        }
+    }
+    content
+}
+
+fn parse_heading(line: &str) -> Option<(usize, &str)> {
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let text = line[hashes..].trim_start();
+    if text.is_empty() {
+        return None;
+    }
+    Some((hashes, text))
+}
+
+fn parse_list_item(line: &str) -> Option<&str> {
+    for prefix in ["- ", "* ", "+ "] {
+        if let Some(item) = line.strip_prefix(prefix) {
+            return Some(item);
+        }
+    }
+
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx > 0 && idx + 1 < bytes.len() && bytes[idx] == b'.' && bytes[idx + 1] == b' ' {
+        return Some(&line[idx + 2..]);
+    }
+    None
+}
+
+fn render_inline_markdown(line: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let mut code = false;
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
+            flush_span(
+                &mut spans,
+                &mut buffer,
+                style_from_flags(base_style, bold, italic, code),
+            );
+            bold = !bold;
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] == b'*' {
+            flush_span(
+                &mut spans,
+                &mut buffer,
+                style_from_flags(base_style, bold, italic, code),
+            );
+            italic = !italic;
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'`' {
+            flush_span(
+                &mut spans,
+                &mut buffer,
+                style_from_flags(base_style, bold, italic, code),
+            );
+            code = !code;
+            i += 1;
+            continue;
+        }
+
+        buffer.push(bytes[i] as char);
+        i += 1;
+    }
+
+    flush_span(
+        &mut spans,
+        &mut buffer,
+        style_from_flags(base_style, bold, italic, code),
+    );
+    spans
+}
+
+fn style_from_flags(base: Style, bold: bool, italic: bool, code: bool) -> Style {
+    let mut style = base;
+    if bold {
+        style = style.add_modifier(ratatui::style::Modifier::BOLD);
+    }
+    if italic {
+        style = style.add_modifier(ratatui::style::Modifier::ITALIC);
+    }
+    if code {
+        style = style.fg(Color::Yellow).bg(Color::Rgb(40, 40, 40));
+    }
+    style
+}
+
+fn flush_span(spans: &mut Vec<Span<'static>>, buffer: &mut String, style: Style) {
+    if !buffer.is_empty() {
+        spans.push(Span::styled(buffer.clone(), style));
+        buffer.clear();
+    }
 }
 
 pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, prompt: &str) {
@@ -836,4 +1035,40 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .style(Style::default().fg(Color::White));
 
     f.render_widget(list, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_markdown_to_text_strips_frontmatter_and_renders_heading() {
+        let md = r#"---
+uuid: abc
+title: Test
+---
+
+# Heading
+Some body text
+"#;
+        let text = markdown_to_text(md);
+        let rendered = text
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("uuid: abc"));
+        assert!(rendered.contains("Heading"));
+        assert!(rendered.contains("Some body text"));
+    }
+
+    #[test]
+    fn test_parse_list_item_detects_bullets_and_numbers() {
+        assert_eq!(parse_list_item("- item"), Some("item"));
+        assert_eq!(parse_list_item("* item"), Some("item"));
+        assert_eq!(parse_list_item("2. item"), Some("item"));
+        assert_eq!(parse_list_item("plain"), None);
+    }
 }
