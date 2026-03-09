@@ -3,10 +3,11 @@
 //! Binary entry point.
 
 use anyhow::Result;
-use chronicle::{config, tui};
+use chronicle::{config, diagnostics, tui};
 
 fn main() -> Result<()> {
     let config = config::Config::load_or_create().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _diagnostics = diagnostics::init(&config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut app = tui::App::new(config);
     app.run().map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())

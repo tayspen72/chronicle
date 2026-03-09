@@ -2,7 +2,8 @@ pub mod md;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::iter;
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Result, StorageError};
 use chrono::Local;
@@ -16,7 +17,6 @@ pub struct JournalEntry {
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
-    #[allow(dead_code)]
     pub is_dir: bool,
 }
 
@@ -25,9 +25,7 @@ pub trait JournalStorage {
     fn today_journal_path(&self) -> PathBuf;
     fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)>;
     fn list_journal_entries(&self) -> Result<Vec<JournalEntry>>;
-    #[allow(dead_code)]
     fn read_journal_entry(&self, path: &Path) -> Result<String>;
-    #[allow(dead_code)]
     fn save_journal_entry(&self, path: &Path, content: &str) -> Result<()>;
 }
 
@@ -37,26 +35,17 @@ pub trait JournalStorage {
 pub trait WorkspaceStorage {
     fn programs_dir(&self) -> PathBuf;
     fn list_programs(&self) -> Result<Vec<DirectoryEntry>>;
-    #[allow(dead_code)]
     fn read_program(&self, name: &str) -> Result<String>;
-    #[allow(dead_code)]
     fn save_program(&self, name: &str, content: &str) -> Result<()>;
-    #[allow(dead_code)]
     fn create_program(&self, name: &str, description: &str) -> Result<PathBuf>;
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
-    #[allow(dead_code)]
     fn read_project(&self, program: &str, name: &str) -> Result<String>;
-    #[allow(dead_code)]
     fn save_project(&self, program: &str, name: &str, content: &str) -> Result<()>;
-    #[allow(dead_code)]
     fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf>;
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
-    #[allow(dead_code)]
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String>;
-    #[allow(dead_code)]
     fn save_milestone(&self, program: &str, project: &str, name: &str, content: &str)
         -> Result<()>;
-    #[allow(dead_code)]
     fn create_milestone(
         &self,
         program: &str,
@@ -77,7 +66,6 @@ pub trait WorkspaceStorage {
         milestone: &str,
         task: &str,
     ) -> Result<Vec<DirectoryEntry>>;
-    #[allow(dead_code)]
     fn read_task(
         &self,
         program: &str,
@@ -85,7 +73,6 @@ pub trait WorkspaceStorage {
         milestone: &str,
         name: &str,
     ) -> Result<String>;
-    #[allow(dead_code)]
     fn save_task(
         &self,
         program: &str,
@@ -94,7 +81,6 @@ pub trait WorkspaceStorage {
         name: &str,
         content: &str,
     ) -> Result<()>;
-    #[allow(dead_code)]
     fn create_task(
         &self,
         program: &str,
@@ -103,7 +89,6 @@ pub trait WorkspaceStorage {
         name: &str,
         description: &str,
     ) -> Result<PathBuf>;
-    #[allow(dead_code)]
     fn get_task_path(&self, program: &str, project: &str, milestone: &str, task: &str) -> PathBuf;
     fn read_md_file(&self, path: &Path) -> Result<String>;
     fn create_from_template(
@@ -113,6 +98,101 @@ pub trait WorkspaceStorage {
         values: &HashMap<String, String>,
         strip_labels: &HashSet<String>,
     ) -> Result<PathBuf>;
+}
+
+pub fn validate_element_name(name: &str) -> Result<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(StorageError::InvalidPath("Element name cannot be empty".to_string()).into());
+    }
+
+    if trimmed
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c.is_control())
+    {
+        return Err(StorageError::InvalidPath(format!(
+            "Element name '{}' contains invalid path characters",
+            name
+        ))
+        .into());
+    }
+
+    if trimmed.contains("..") {
+        return Err(StorageError::InvalidPath(format!(
+            "Element name '{}' cannot contain '..'",
+            name
+        ))
+        .into());
+    }
+
+    let mut components = Path::new(trimmed).components();
+    match components.next() {
+        Some(Component::Normal(_)) if components.next().is_none() => Ok(()),
+        _ => Err(StorageError::InvalidPath(format!(
+            "Element name '{}' is not a valid filename",
+            name
+        ))
+        .into()),
+    }
+}
+
+fn validate_target_path(workspace_root: &Path, target_path: &Path) -> Result<()> {
+    let absolute_target = if target_path.is_absolute() {
+        target_path.to_path_buf()
+    } else {
+        workspace_root.join(target_path)
+    };
+
+    let relative = absolute_target.strip_prefix(workspace_root).map_err(|_| {
+        StorageError::InvalidPath(format!(
+            "Target path '{}' is outside workspace '{}'",
+            absolute_target.display(),
+            workspace_root.display()
+        ))
+    })?;
+
+    if relative.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(StorageError::InvalidPath(format!(
+            "Target path '{}' escapes workspace '{}'",
+            absolute_target.display(),
+            workspace_root.display()
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
+fn create_named_element(
+    workspace: &PathBuf,
+    template_name: &str,
+    target_path: &Path,
+    name: &str,
+    description: &str,
+) -> Result<PathBuf> {
+    let mut values = HashMap::new();
+    values.insert("NAME".to_string(), name.to_string());
+    values.insert("DESCRIPTION".to_string(), description.to_string());
+    values.insert(
+        "TODAY".to_string(),
+        Local::now().format("%Y-%m-%d").to_string(),
+    );
+    values.insert("DEFAULT_STATUS".to_string(), "todo".to_string());
+    values.insert("OWNER".to_string(), String::new());
+    values.insert("ASSIGNED_TO".to_string(), String::new());
+    values.insert("DUE_DATE".to_string(), String::new());
+    values.insert("PROGRAM_NAME".to_string(), name.to_string());
+    values.insert("PROJECT_NAME".to_string(), name.to_string());
+    values.insert("MILESTONE_NAME".to_string(), name.to_string());
+    values.insert("TASK_NAME".to_string(), name.to_string());
+
+    let strip_labels: HashSet<String> = HashSet::new();
+    workspace.create_from_template(template_name, target_path, &values, &strip_labels)
 }
 
 impl JournalStorage for PathBuf {
@@ -237,93 +317,21 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn create_program(&self, name: &str, description: &str) -> Result<PathBuf> {
+        validate_element_name(name)?;
         let program_md = self.programs_dir().join(format!("{}.md", name));
         let program_dir = self.programs_dir().join(name);
         fs::create_dir_all(&program_dir)?;
-        let template = include_str!("../../templates/program.md");
-        let truncated_desc = if description.len() > 1024 {
-            &description[..1024]
-        } else {
-            description
-        };
-        let content = template
-            .replace("{{PROGRAM_NAME}}", name)
-            .replace("{{DESCRIPTION}}", truncated_desc);
-        fs::write(&program_md, content)?;
+        create_named_element(self, "program", &program_md, name, description)?;
         Ok(program_md)
     }
 
     fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>> {
         let program_dir = self.programs_dir().join(program);
-
-        if !program_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        // The program's own .md file (which we should exclude)
-        let program_md_name = format!("{}.md", program);
-
-        let mut entries: Vec<DirectoryEntry> = fs::read_dir(&program_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                let name = path.file_name()?.to_str()?.to_string();
-
-                // Structure 1: Flat .md file (program/MyProject.md)
-                // Exclude the program's own .md file
-                if name.ends_with(".md") && name != program_md_name {
-                    return Some(DirectoryEntry {
-                        name: name.trim_end_matches(".md").to_string(),
-                        path,
-                        is_dir: false,
-                    });
-                }
-
-                // Structure 2: Nested in program directory (program/MyProject/MyProject.md)
-                if path.is_dir() && name != "projects" {
-                    let nested_md = path.join(format!("{}.md", name));
-                    if nested_md.exists() {
-                        return Some(DirectoryEntry {
-                            name,
-                            path: nested_md,
-                            is_dir: true,
-                        });
-                    }
-                }
-
-                None
-            })
-            .collect();
-
-        // Also check for projects in program/projects/ subdirectory (nested structure)
-        let projects_subdir = program_dir.join("projects");
-        if projects_subdir.exists() {
-            let nested_entries: Vec<DirectoryEntry> = fs::read_dir(&projects_subdir)?
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let path = entry.path();
-                    let name = path.file_name()?.to_str()?.to_string();
-
-                    // Nested: program/projects/MyProject/MyProject.md
-                    if path.is_dir() {
-                        let nested_md = path.join(format!("{}.md", name));
-                        if nested_md.exists() {
-                            return Some(DirectoryEntry {
-                                name,
-                                path: nested_md,
-                                is_dir: true,
-                            });
-                        }
-                    }
-
-                    None
-                })
-                .collect();
-            entries.extend(nested_entries);
-        }
-
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        discover_across_bases(
+            iter::once(program_dir),
+            &format!("{}.md", program),
+            "projects",
+        )
     }
 
     fn read_project(&self, program: &str, name: &str) -> Result<String> {
@@ -344,165 +352,30 @@ impl WorkspaceStorage for PathBuf {
     }
 
     fn create_project(&self, program: &str, name: &str, description: &str) -> Result<PathBuf> {
+        validate_element_name(program)?;
+        validate_element_name(name)?;
         let project_md = self
             .programs_dir()
             .join(program)
             .join(format!("{}.md", name));
         let project_dir = self.programs_dir().join(program).join(name);
         fs::create_dir_all(&project_dir)?;
-        let template = include_str!("../../templates/project.md");
-        let truncated_desc = if description.len() > 1024 {
-            &description[..1024]
-        } else {
-            description
-        };
-        let content = template
-            .replace("{{PROJECT_NAME}}", name)
-            .replace("{{DESCRIPTION}}", truncated_desc);
-        fs::write(&project_md, content)?;
+        create_named_element(self, "project", &project_md, name, description)?;
         Ok(project_md)
     }
 
     fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>> {
-        let mut entries: Vec<DirectoryEntry> = Vec::new();
-
-        // The project's own .md file (which we should exclude)
-        let project_md_name = format!("{}.md", project);
-
-        // Check flat structure: programs/program/project/
-        let project_dir = self.programs_dir().join(program).join(project);
-        if project_dir.exists() {
-            let flat_entries: Vec<DirectoryEntry> = fs::read_dir(&project_dir)?
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let path = entry.path();
-                    let name = path.file_name()?.to_str()?.to_string();
-
-                    // Structure 1: Flat .md file (project/MyMilestone.md)
-                    // Exclude the project's own .md file
-                    if name.ends_with(".md") && name != project_md_name {
-                        return Some(DirectoryEntry {
-                            name: name.trim_end_matches(".md").to_string(),
-                            path,
-                            is_dir: false,
-                        });
-                    }
-
-                    // Structure 2: Nested in project directory (project/MyMilestone/MyMilestone.md)
-                    if path.is_dir() && name != "milestones" {
-                        let nested_md = path.join(format!("{}.md", name));
-                        if nested_md.exists() {
-                            return Some(DirectoryEntry {
-                                name,
-                                path: nested_md,
-                                is_dir: true,
-                            });
-                        }
-                    }
-
-                    None
-                })
-                .collect();
-            entries.extend(flat_entries);
-
-            // Check for milestones in project/milestones/ subdirectory
-            let milestones_subdir = project_dir.join("milestones");
-            if milestones_subdir.exists() {
-                let nested_entries: Vec<DirectoryEntry> = fs::read_dir(&milestones_subdir)?
-                    .filter_map(|entry| {
-                        let entry = entry.ok()?;
-                        let path = entry.path();
-                        let name = path.file_name()?.to_str()?.to_string();
-
-                        // Nested: project/milestones/MyMilestone/MyMilestone.md
-                        if path.is_dir() {
-                            let nested_md = path.join(format!("{}.md", name));
-                            if nested_md.exists() {
-                                return Some(DirectoryEntry {
-                                    name,
-                                    path: nested_md,
-                                    is_dir: true,
-                                });
-                            }
-                        }
-
-                        None
-                    })
-                    .collect();
-                entries.extend(nested_entries);
-            }
-        }
-
-        // Check nested structure: programs/program/projects/project/
-        let nested_project_dir = self
-            .programs_dir()
-            .join(program)
-            .join("projects")
-            .join(project);
-        if nested_project_dir.exists() {
-            let nested_flat_entries: Vec<DirectoryEntry> = fs::read_dir(&nested_project_dir)?
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let path = entry.path();
-                    let name = path.file_name()?.to_str()?.to_string();
-
-                    // Nested flat: projects/project/MyMilestone.md
-                    if name.ends_with(".md") && name != project_md_name {
-                        return Some(DirectoryEntry {
-                            name: name.trim_end_matches(".md").to_string(),
-                            path,
-                            is_dir: false,
-                        });
-                    }
-
-                    // Nested in project directory: projects/project/MyMilestone/MyMilestone.md
-                    if path.is_dir() && name != "milestones" {
-                        let nested_md = path.join(format!("{}.md", name));
-                        if nested_md.exists() {
-                            return Some(DirectoryEntry {
-                                name,
-                                path: nested_md,
-                                is_dir: true,
-                            });
-                        }
-                    }
-
-                    None
-                })
-                .collect();
-            entries.extend(nested_flat_entries);
-
-            // Check for milestones in projects/project/milestones/ subdirectory
-            let nested_milestones_subdir = nested_project_dir.join("milestones");
-            if nested_milestones_subdir.exists() {
-                let deeply_nested_entries: Vec<DirectoryEntry> =
-                    fs::read_dir(&nested_milestones_subdir)?
-                        .filter_map(|entry| {
-                            let entry = entry.ok()?;
-                            let path = entry.path();
-                            let name = path.file_name()?.to_str()?.to_string();
-
-                            // Deeply nested: projects/project/milestones/MyMilestone/MyMilestone.md
-                            if path.is_dir() {
-                                let nested_md = path.join(format!("{}.md", name));
-                                if nested_md.exists() {
-                                    return Some(DirectoryEntry {
-                                        name,
-                                        path: nested_md,
-                                        is_dir: true,
-                                    });
-                                }
-                            }
-
-                            None
-                        })
-                        .collect();
-                entries.extend(deeply_nested_entries);
-            }
-        }
-
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        discover_across_bases(
+            [
+                self.programs_dir().join(program).join(project),
+                self.programs_dir()
+                    .join(program)
+                    .join("projects")
+                    .join(project),
+            ],
+            &format!("{}.md", project),
+            "milestones",
+        )
     }
 
     fn read_milestone(&self, program: &str, project: &str, name: &str) -> Result<String> {
@@ -537,6 +410,9 @@ impl WorkspaceStorage for PathBuf {
         name: &str,
         description: &str,
     ) -> Result<PathBuf> {
+        validate_element_name(program)?;
+        validate_element_name(project)?;
+        validate_element_name(name)?;
         let milestone_md = self
             .programs_dir()
             .join(program)
@@ -544,16 +420,7 @@ impl WorkspaceStorage for PathBuf {
             .join(format!("{}.md", name));
         let milestone_dir = self.programs_dir().join(program).join(project).join(name);
         fs::create_dir_all(&milestone_dir)?;
-        let template = include_str!("../../templates/milestone.md");
-        let truncated_desc = if description.len() > 1024 {
-            &description[..1024]
-        } else {
-            description
-        };
-        let content = template
-            .replace("{{MILESTONE_NAME}}", name)
-            .replace("{{DESCRIPTION}}", truncated_desc);
-        fs::write(&milestone_md, content)?;
+        create_named_element(self, "milestone", &milestone_md, name, description)?;
         Ok(milestone_md)
     }
 
@@ -563,35 +430,22 @@ impl WorkspaceStorage for PathBuf {
         project: &str,
         milestone: &str,
     ) -> Result<Vec<DirectoryEntry>> {
-        let mut entries: Vec<DirectoryEntry> = Vec::new();
-        let milestone_md_name = format!("{}.md", milestone);
-
-        // Check flat structure: programs/program/project/milestone/
-        let milestone_dir = self
-            .programs_dir()
-            .join(program)
-            .join(project)
-            .join(milestone);
-        let flat_tasks = discover_elements(&milestone_dir, &milestone_md_name, "tasks")?;
-        entries.extend(flat_tasks);
-
-        // Check nested structure: programs/program/projects/project/milestones/milestone/
-        let nested_milestone_dir = self
-            .programs_dir()
-            .join(program)
-            .join("projects")
-            .join(project)
-            .join("milestones")
-            .join(milestone);
-        let nested_tasks = discover_elements(&nested_milestone_dir, &milestone_md_name, "tasks")?;
-        entries.extend(nested_tasks);
-
-        // Deduplicate by name (prefer first occurrence)
-        let mut seen = std::collections::HashSet::new();
-        entries.retain(|e| seen.insert(e.name.clone()));
-
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        discover_across_bases(
+            [
+                self.programs_dir()
+                    .join(program)
+                    .join(project)
+                    .join(milestone),
+                self.programs_dir()
+                    .join(program)
+                    .join("projects")
+                    .join(project)
+                    .join("milestones")
+                    .join(milestone),
+            ],
+            &format!("{}.md", milestone),
+            "tasks",
+        )
     }
 
     fn list_subtasks(
@@ -601,39 +455,26 @@ impl WorkspaceStorage for PathBuf {
         milestone: &str,
         task: &str,
     ) -> Result<Vec<DirectoryEntry>> {
-        let mut entries: Vec<DirectoryEntry> = Vec::new();
-        let task_md_name = format!("{}.md", task);
-
-        // Check flat structure: programs/program/project/milestone/tasks/task/
-        let task_dir = self
-            .programs_dir()
-            .join(program)
-            .join(project)
-            .join(milestone)
-            .join("tasks")
-            .join(task);
-        let flat_subtasks = discover_elements(&task_dir, &task_md_name, "subtasks")?;
-        entries.extend(flat_subtasks);
-
-        // Check nested structure: programs/program/projects/project/milestones/milestone/tasks/task/
-        let nested_task_dir = self
-            .programs_dir()
-            .join(program)
-            .join("projects")
-            .join(project)
-            .join("milestones")
-            .join(milestone)
-            .join("tasks")
-            .join(task);
-        let nested_subtasks = discover_elements(&nested_task_dir, &task_md_name, "subtasks")?;
-        entries.extend(nested_subtasks);
-
-        // Deduplicate by name (prefer first occurrence)
-        let mut seen = std::collections::HashSet::new();
-        entries.retain(|e| seen.insert(e.name.clone()));
-
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        discover_across_bases(
+            [
+                self.programs_dir()
+                    .join(program)
+                    .join(project)
+                    .join(milestone)
+                    .join("tasks")
+                    .join(task),
+                self.programs_dir()
+                    .join(program)
+                    .join("projects")
+                    .join(project)
+                    .join("milestones")
+                    .join(milestone)
+                    .join("tasks")
+                    .join(task),
+            ],
+            &format!("{}.md", task),
+            "subtasks",
+        )
     }
 
     fn read_task(
@@ -668,20 +509,15 @@ impl WorkspaceStorage for PathBuf {
         name: &str,
         description: &str,
     ) -> Result<PathBuf> {
+        validate_element_name(program)?;
+        validate_element_name(project)?;
+        validate_element_name(milestone)?;
+        validate_element_name(name)?;
         let task_path = self.get_task_path(program, project, milestone, name);
         if let Some(parent) = task_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let template = include_str!("../../templates/task.md");
-        let truncated_desc = if description.len() > 1024 {
-            &description[..1024]
-        } else {
-            description
-        };
-        let content = template
-            .replace("{{TASK_NAME}}", name)
-            .replace("{{DESCRIPTION}}", truncated_desc);
-        fs::write(&task_path, content)?;
+        create_named_element(self, "task", &task_path, name, description)?;
         Ok(task_path)
     }
 
@@ -704,6 +540,15 @@ impl WorkspaceStorage for PathBuf {
         values: &HashMap<String, String>,
         strip_labels: &HashSet<String>,
     ) -> Result<PathBuf> {
+        tracing::debug!(
+            template = template_name,
+            target = %target_path.display(),
+            value_keys = values.len(),
+            strip_labels = strip_labels.len(),
+            "creating element from template"
+        );
+        validate_target_path(self, target_path)?;
+
         let template = match template_name {
             "program" => include_str!("../../templates/program.md"),
             "project" => include_str!("../../templates/project.md"),
@@ -719,6 +564,11 @@ impl WorkspaceStorage for PathBuf {
             fs::create_dir_all(parent)?;
         }
         fs::write(target_path, content)?;
+        tracing::debug!(
+            template = template_name,
+            target = %target_path.display(),
+            "template write complete"
+        );
         Ok(target_path.to_path_buf())
     }
 }
@@ -790,6 +640,14 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
         }
     }
 
+    tracing::debug!(
+        field_count = fields.len(),
+        placeholders = ?fields
+            .iter()
+            .map(|(_, placeholder, strip)| (placeholder.clone(), *strip))
+            .collect::<Vec<_>>(),
+        "parsed template fields"
+    );
     fields
 }
 
@@ -933,7 +791,40 @@ fn discover_elements(
     }
 
     entries.sort_by(|a, b| a.name.cmp(&b.name));
+    tracing::debug!(
+        base = %base_dir.display(),
+        parent_md = parent_md_name,
+        subdir = subdir_name,
+        discovered = entries.len(),
+        "discovered element entries"
+    );
     Ok(entries)
+}
+
+fn discover_across_bases<I>(
+    base_dirs: I,
+    parent_md_name: &str,
+    subdir_name: &str,
+) -> Result<Vec<DirectoryEntry>>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut all = Vec::new();
+    for base_dir in base_dirs {
+        let mut entries = discover_elements(&base_dir, parent_md_name, subdir_name)?;
+        all.append(&mut entries);
+    }
+
+    let mut seen = HashSet::new();
+    all.retain(|entry| seen.insert(entry.name.clone()));
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    tracing::debug!(
+        parent_md = parent_md_name,
+        subdir = subdir_name,
+        deduped = all.len(),
+        "discovered entries across base dirs"
+    );
+    Ok(all)
 }
 
 #[cfg(test)]
@@ -1608,5 +1499,27 @@ status: {{DEFAULT_STATUS}}
             !after_yaml.starts_with("description:"),
             "DESCRIPTION should not appear as YAML field"
         );
+    }
+
+    #[test]
+    fn test_validate_element_name_rejects_path_traversal() {
+        assert!(validate_element_name("../escape").is_err());
+        assert!(validate_element_name("..").is_err());
+        assert!(validate_element_name("safe-name").is_ok());
+    }
+
+    #[test]
+    fn test_create_from_template_rejects_out_of_workspace_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path().to_path_buf();
+
+        let mut values = HashMap::new();
+        values.insert("NAME".to_string(), "SafeName".to_string());
+        let strip_labels: HashSet<String> = HashSet::new();
+
+        let bad_target = workspace.join("programs").join("..").join("evil.md");
+        let result = workspace.create_from_template("program", &bad_target, &values, &strip_labels);
+
+        assert!(result.is_err());
     }
 }

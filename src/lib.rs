@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 pub mod model;
 pub mod storage;

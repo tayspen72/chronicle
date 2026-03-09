@@ -3,6 +3,9 @@ pub mod layout;
 pub mod navigation;
 pub mod views;
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use crate::Result;
@@ -15,7 +18,9 @@ use ratatui::{backend::CrosstermBackend, Frame, Terminal};
 use std::io::{self, Write};
 
 use crate::config::Config;
-use crate::storage::{DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage};
+use crate::storage::{
+    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
+};
 use command::{get_command_list, CommandAction, CommandMatch};
 use navigation::{SidebarItem, SidebarSection, TreeState};
 
@@ -63,7 +68,6 @@ impl Default for WizardFocus {
 #[derive(Debug, Clone)]
 pub struct TemplateFieldState {
     pub template_name: String,
-    pub target_path: Option<std::path::PathBuf>,
     pub fields: Vec<FieldInfo>,
     pub focus: WizardFocus,
     pub values: std::collections::HashMap<String, String>,
@@ -103,6 +107,8 @@ pub struct App {
     pub current_project: Option<String>,
     pub current_milestone: Option<String>,
     pub current_task: Option<String>,
+    pub selected_tree_path: Vec<String>,
+    pub expanded_tree_paths: BTreeSet<Vec<String>>,
     pub programs: Vec<DirectoryEntry>,
     pub projects: Vec<DirectoryEntry>,
     pub milestones: Vec<DirectoryEntry>,
@@ -135,6 +141,8 @@ impl App {
             current_project: None,
             current_milestone: None,
             current_task: None,
+            selected_tree_path: Vec::new(),
+            expanded_tree_paths: BTreeSet::new(),
             programs: Vec::new(),
             projects: Vec::new(),
             milestones: Vec::new(),
@@ -227,6 +235,16 @@ impl App {
                         }
                         state.focus = WizardFocus::CancelButton;
                         self.input_buffer.clear();
+                    }
+                } else if self.current_view == ViewType::TreeView {
+                    // In TreeView, only navigate back if we're at root (empty path).
+                    // When inside the tree (path not empty), do nothing because Left arrow
+                    // should handle navigation up, and due to a crossterm bug, arrow keys
+                    // can sometimes incorrectly trigger ESC first (the escape sequence parsing
+                    // issue causes the ESC byte of the escape sequence to be interpreted as a
+                    // separate keypress). By doing nothing, we prevent double-navigation.
+                    if self.selected_tree_path.is_empty() {
+                        self.current_view = ViewType::Journal;
                     }
                 } else {
                     self.return_from_view();
@@ -366,73 +384,37 @@ impl App {
 
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
+            tracing::debug!(
+                selected_index = self.selected_entry_index,
+                path = ?self.selected_tree_path,
+                "navigate right"
+            );
             self.open_tree_item();
         }
     }
 
     fn navigate_left(&mut self) {
-        if self.current_view == ViewType::TreeView && !self.tree_state.path.is_empty() {
-            // Remember the parent we're navigating back to (the one that will remain in path after pop)
-            // If path is ["Program", "Project"], after pop it's ["Program"], so "Program" is the target
-            let target_name = if self.tree_state.path.len() > 1 {
-                // After pop, the target is the second-to-last element (which becomes the last)
-                self.tree_state.path[self.tree_state.path.len() - 2].clone()
-            } else {
-                // We're at depth 1, navigating to root - select first program after header
-                String::new() // Empty string means "select first non-header item"
-            };
-
-            self.tree_state.path.pop();
-            let new_depth = self.tree_state.path.len();
-            match new_depth {
-                0 => {
-                    self.current_program = None;
-                    self.current_project = None;
-                    self.current_milestone = None;
-                    self.current_task = None;
-                }
-                1 => {
-                    self.current_program = Some(self.tree_state.path[0].clone());
-                    self.current_project = None;
-                    self.current_milestone = None;
-                    self.current_task = None;
-                }
-                2 => {
-                    self.current_program = Some(self.tree_state.path[0].clone());
-                    self.current_project = Some(self.tree_state.path[1].clone());
-                    self.current_milestone = None;
-                    self.current_task = None;
-                }
-                3 => {
-                    self.current_program = Some(self.tree_state.path[0].clone());
-                    self.current_project = Some(self.tree_state.path[1].clone());
-                    self.current_milestone = Some(self.tree_state.path[2].clone());
-                    self.current_task = None;
-                }
-                4 => {
-                    self.current_program = Some(self.tree_state.path[0].clone());
-                    self.current_project = Some(self.tree_state.path[1].clone());
-                    self.current_milestone = Some(self.tree_state.path[2].clone());
-                    self.current_task = Some(self.tree_state.path[3].clone());
-                }
-                _ => {}
-            }
-
-            self.load_tree_view_data();
-
-            // Find and select the target item
-            if target_name.is_empty() {
-                // At root level, select first non-header item
-                self.selected_entry_index = if self.sidebar_items.len() > 1 { 1 } else { 0 };
-            } else {
-                // Find the item with matching name
-                self.selected_entry_index = self
-                    .sidebar_items
-                    .iter()
-                    .position(|item| item.name == target_name)
-                    .unwrap_or(if self.sidebar_items.len() > 1 { 1 } else { 0 });
-            }
+        if self.current_view != ViewType::TreeView {
+            return;
         }
+
+        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else {
+            return;
+        };
+        let Some(selected_path) = item.tree_path.clone() else {
+            return;
+        };
+
+        tracing::debug!(path = ?selected_path, "navigate left from selected path");
+        if selected_path.is_empty() {
+            return;
+        }
+
+        self.collapse_path(&selected_path);
+        let mut parent = selected_path;
+        parent.pop();
+        self.set_selected_tree_path(parent);
+        self.load_tree_view_data();
     }
 
     fn return_from_view(&mut self) {
@@ -446,43 +428,10 @@ impl App {
                 self.current_content_text = None;
             }
             ViewType::TreeView => {
-                if !self.tree_state.path.is_empty() {
-                    self.tree_state.path.pop();
-                    let new_depth = self.tree_state.path.len();
-                    match new_depth {
-                        0 => {
-                            self.current_program = None;
-                            self.current_project = None;
-                            self.current_milestone = None;
-                            self.current_task = None;
-                        }
-                        1 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = None;
-                            self.current_milestone = None;
-                            self.current_task = None;
-                        }
-                        2 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = Some(self.tree_state.path[1].clone());
-                            self.current_milestone = None;
-                            self.current_task = None;
-                        }
-                        3 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = Some(self.tree_state.path[1].clone());
-                            self.current_milestone = Some(self.tree_state.path[2].clone());
-                            self.current_task = None;
-                        }
-                        4 => {
-                            self.current_program = Some(self.tree_state.path[0].clone());
-                            self.current_project = Some(self.tree_state.path[1].clone());
-                            self.current_milestone = Some(self.tree_state.path[2].clone());
-                            self.current_task = Some(self.tree_state.path[3].clone());
-                        }
-                        _ => {}
-                    }
-                    self.selected_entry_index = 0;
+                if !self.selected_tree_path.is_empty() {
+                    let mut parent = self.selected_tree_path.clone();
+                    parent.pop();
+                    self.set_selected_tree_path(parent);
                     self.load_tree_view_data();
                 } else {
                     self.current_view = ViewType::Journal;
@@ -506,28 +455,6 @@ impl App {
     fn navigate_down(&mut self) {
         self.selected_entry_index =
             navigation::navigate_down(&self.sidebar_items, self.selected_entry_index);
-    }
-
-    // TODO: These helper methods are extracted for future use in pagination/scrolling.
-    #[allow(dead_code)]
-    fn get_current_tier_start_index(&self) -> usize {
-        0
-    }
-
-    #[allow(dead_code)]
-    fn get_current_tier_item_count(&self) -> usize {
-        self.sidebar_items
-            .iter()
-            .filter(|i| !i.is_header && !i.name.is_empty())
-            .count()
-    }
-
-    #[allow(dead_code)]
-    fn get_visible_item_count(&self) -> usize {
-        self.sidebar_items
-            .iter()
-            .filter(|i| !i.is_header && !i.name.is_empty())
-            .count()
     }
 
     fn open_tree_item(&mut self) {
@@ -585,56 +512,39 @@ impl App {
         }
 
         if let Some(path) = &item.path {
+            let node_path = item
+                .tree_path
+                .clone()
+                .unwrap_or_else(|| self.path_for_sidebar_item(item));
             let entry = DirectoryEntry {
                 name: item.name.clone(),
                 path: path.clone(),
                 is_dir: false,
             };
 
-            let depth = self.tree_state.path.len();
-            let is_dir = match depth {
-                0 => true,
-                1 => self.projects.iter().any(|p| p.name == item.name),
-                2 => self.milestones.iter().any(|m| m.name == item.name),
-                3 => {
-                    // A task is expandable if we can find subtasks for it
-                    // This is true whether the task is a directory or a flat .md file
-                    self.tasks.iter().any(|t| t.name == item.name)
-                }
-                4 => self
-                    .subtasks
-                    .iter()
-                    .any(|s| s.name == item.name && s.is_dir),
-                _ => false,
-            };
-
-            if is_dir {
-                let current_idx = self.selected_entry_index;
-                self.tree_state.path.push(item.name.clone());
-                self.load_tree_view_data();
-                // Select the first child item (one position after the expanded parent)
-                // After rebuild, parent is at same index, children follow immediately
-                self.selected_entry_index = current_idx + 1;
-                // Clamp to valid range
-                if self.selected_entry_index >= self.sidebar_items.len() {
-                    self.selected_entry_index = self.sidebar_items.len().saturating_sub(1);
+            let has_children = item.has_children;
+            tracing::debug!(
+                item = %item.name,
+                indent = item.indent,
+                selected_index = idx,
+                node_path = ?node_path,
+                current_path = ?self.selected_tree_path,
+                has_children,
+                "open tree item"
+            );
+            if has_children || self.selected_tree_path != node_path {
+                self.set_selected_tree_path(node_path.clone());
+                if has_children {
+                    self.expanded_tree_paths.insert(node_path.clone());
+                    self.load_tree_view_data();
+                    self.select_first_child_for_path(&node_path);
+                } else {
+                    self.load_tree_view_data();
                 }
             } else {
+                self.set_selected_tree_path(node_path);
                 self.open_content(&entry);
             }
-        }
-    }
-
-    // TODO: Helper for getting current tier's items, useful for future keyboard shortcuts
-    #[allow(dead_code)]
-    fn get_current_tree_items(&self) -> &Vec<DirectoryEntry> {
-        match self.tree_state.path.len() {
-            0 => &self.programs,
-            1 => &self.projects,
-            2 => &self.milestones,
-            3 => &self.tasks,
-            4 => &self.subtasks,
-            _ => &self.programs,
         }
     }
 
@@ -647,132 +557,346 @@ impl App {
     }
 
     fn load_tree_view_data(&mut self) {
-        match self.tree_state.path.len() {
-            0 => {
-                match self.config.workspace.list_programs() {
-                    Ok(entries) => self.programs = entries,
-                    Err(e) => {
-                        tracing::warn!("Failed to list programs: {}", e);
-                        self.programs.clear();
-                    }
-                }
-                self.current_program = None;
-                self.current_project = None;
-                self.current_milestone = None;
-                self.current_task = None;
-            }
-            1 => {
-                let program = &self.tree_state.path[0];
-                self.current_program = Some(program.clone());
-                match self.config.workspace.list_projects(program) {
-                    Ok(entries) => self.projects = entries,
-                    Err(e) => {
-                        tracing::warn!("Failed to list projects: {}", e);
-                        self.projects.clear();
-                    }
-                }
-            }
-            2 => {
-                let program = &self.tree_state.path[0];
-                let project = &self.tree_state.path[1];
-                self.current_program = Some(program.clone());
-                self.current_project = Some(project.clone());
-                match self.config.workspace.list_milestones(program, project) {
-                    Ok(entries) => self.milestones = entries,
-                    Err(e) => {
-                        tracing::warn!("Failed to list milestones: {}", e);
-                        self.milestones.clear();
-                    }
-                }
-            }
-            3 => {
-                let program = &self.tree_state.path[0];
-                let project = &self.tree_state.path[1];
-                let milestone = &self.tree_state.path[2];
-                self.current_program = Some(program.clone());
-                self.current_project = Some(project.clone());
-                self.current_milestone = Some(milestone.clone());
-                match self
-                    .config
-                    .workspace
-                    .list_tasks(program, project, milestone)
-                {
-                    Ok(entries) => self.tasks = entries,
-                    Err(e) => {
-                        tracing::warn!("Failed to list tasks: {}", e);
-                        self.tasks.clear();
-                    }
-                }
-            }
-            4 => {
-                let program = &self.tree_state.path[0];
-                let project = &self.tree_state.path[1];
-                let milestone = &self.tree_state.path[2];
-                let task = &self.tree_state.path[3];
-                self.current_program = Some(program.clone());
-                self.current_project = Some(project.clone());
-                self.current_milestone = Some(milestone.clone());
-                self.current_task = Some(task.clone());
-                match self
-                    .config
-                    .workspace
-                    .list_subtasks(program, project, milestone, task)
-                {
-                    Ok(entries) => self.subtasks = entries,
-                    Err(e) => {
-                        tracing::warn!("Failed to list subtasks: {}", e);
-                        self.subtasks.clear();
-                    }
-                }
-            }
-            _ => {}
-        }
+        self.programs = self.load_tree_level(&[]);
+        self.current_program = self.selected_tree_path.first().cloned();
+        self.current_project = self.selected_tree_path.get(1).cloned();
+        self.current_milestone = self.selected_tree_path.get(2).cloned();
+        self.current_task = self.selected_tree_path.get(3).cloned();
+
+        self.projects = self.load_tree_level_for_selected_depth(1);
+        self.milestones = self.load_tree_level_for_selected_depth(2);
+        self.tasks = self.load_tree_level_for_selected_depth(3);
+        self.subtasks = self.load_tree_level_for_selected_depth(4);
+
+        tracing::debug!(
+            path = ?self.selected_tree_path,
+            programs = self.programs.len(),
+            projects = self.projects.len(),
+            milestones = self.milestones.len(),
+            tasks = self.tasks.len(),
+            subtasks = self.subtasks.len(),
+            "loaded tree view data"
+        );
         self.build_sidebar_items();
-        // Select first non-header item (skip "Programs" header at index 0)
-        self.selected_entry_index = if self.sidebar_items.len() > 1 { 1 } else { 0 };
+        self.sync_selection_with_tree_path();
+    }
+
+    fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {
+        let mut node_path = self.selected_tree_path.clone();
+        let truncate_to = item.indent.min(node_path.len());
+        node_path.truncate(truncate_to);
+        node_path.push(item.name.clone());
+        node_path
+    }
+
+    fn set_selected_tree_path(&mut self, path: Vec<String>) {
+        for depth in 1..=path.len() {
+            self.expanded_tree_paths.insert(path[..depth].to_vec());
+        }
+        self.selected_tree_path = path.clone();
+        self.tree_state.path = path;
+    }
+
+    fn collapse_path(&mut self, path: &[String]) {
+        self.expanded_tree_paths
+            .retain(|expanded| !is_same_or_descendant(expanded, path));
+    }
+
+    fn load_tree_level_for_selected_depth(&self, depth: usize) -> Vec<DirectoryEntry> {
+        if self.selected_tree_path.len() < depth {
+            return Vec::new();
+        }
+        self.load_tree_level(&self.selected_tree_path[..depth])
+    }
+
+    fn load_tree_level(&self, path: &[String]) -> Vec<DirectoryEntry> {
+        if path.is_empty() {
+            return match self.config.workspace.list_programs() {
+                Ok(entries) => Self::dedupe_and_sort_entries(entries),
+                Err(e) => {
+                    tracing::warn!("Failed to list programs: {}", e);
+                    Vec::new()
+                }
+            };
+        }
+
+        let Some(current_entry) = self.resolve_entry_at_path(path) else {
+            tracing::warn!(requested_path = ?path, "failed to resolve tree path");
+            return Vec::new();
+        };
+        self.list_children_for_entry(&current_entry)
+    }
+
+    fn resolve_entry_at_path(&self, path: &[String]) -> Option<DirectoryEntry> {
+        if path.is_empty() {
+            return None;
+        }
+
+        let mut entries = self.load_tree_level(&[]);
+        let mut current: Option<DirectoryEntry> = None;
+        for node in path {
+            let found = entries.iter().find(|entry| &entry.name == node)?.clone();
+            current = Some(found.clone());
+            entries = self.list_children_for_entry(&found);
+        }
+        current
+    }
+
+    fn list_children_for_entry(&self, entry: &DirectoryEntry) -> Vec<DirectoryEntry> {
+        let Some(parent_dir) = entry.path.parent() else {
+            return Vec::new();
+        };
+
+        let mut base_dirs = Vec::new();
+        if parent_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name == entry.name)
+            .unwrap_or(false)
+        {
+            base_dirs.push(parent_dir.to_path_buf());
+        }
+
+        let sibling_named_dir = parent_dir.join(&entry.name);
+        if sibling_named_dir.exists() {
+            base_dirs.push(sibling_named_dir);
+        }
+
+        let mut all_children = Vec::new();
+        for base in base_dirs {
+            for child in Self::discover_children_from_base(&base, &entry.name) {
+                all_children.push(child);
+            }
+        }
+        let deduped = Self::dedupe_and_sort_entries(all_children);
+        tracing::debug!(
+            entry = entry.name,
+            entry_path = %entry.path.display(),
+            children = deduped.len(),
+            "listed children for entry"
+        );
+        deduped
+    }
+
+    fn discover_children_from_base(base_dir: &Path, parent_name: &str) -> Vec<DirectoryEntry> {
+        let mut entries = Vec::new();
+        let container_dirs = ["projects", "milestones", "tasks", "subtasks"];
+        let Ok(read_dir) = fs::read_dir(base_dir) else {
+            return entries;
+        };
+
+        for candidate in read_dir.filter_map(|entry| entry.ok()) {
+            let path = candidate.path();
+            let Some(name) = path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .map(|name| name.to_string())
+            else {
+                continue;
+            };
+
+            if path.is_file() && name.ends_with(".md") {
+                let stem = name.trim_end_matches(".md");
+                if stem != parent_name {
+                    entries.push(DirectoryEntry {
+                        name: stem.to_string(),
+                        path: path.clone(),
+                        is_dir: false,
+                    });
+                }
+                continue;
+            }
+
+            if !path.is_dir() {
+                continue;
+            }
+
+            let own_md = path.join(format!("{name}.md"));
+            if own_md.exists() {
+                entries.push(DirectoryEntry {
+                    name: name.clone(),
+                    path: own_md,
+                    is_dir: true,
+                });
+                continue;
+            }
+
+            if !container_dirs.contains(&name.as_str()) {
+                continue;
+            }
+
+            let Ok(container_dir) = fs::read_dir(&path) else {
+                continue;
+            };
+            for child in container_dir.filter_map(|entry| entry.ok()) {
+                let child_path = child.path();
+                let Some(child_name) = child_path
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .map(|name| name.to_string())
+                else {
+                    continue;
+                };
+
+                if child_path.is_file() && child_name.ends_with(".md") {
+                    entries.push(DirectoryEntry {
+                        name: child_name.trim_end_matches(".md").to_string(),
+                        path: child_path,
+                        is_dir: false,
+                    });
+                    continue;
+                }
+
+                if child_path.is_dir() {
+                    let nested_md = child_path.join(format!("{child_name}.md"));
+                    if nested_md.exists() {
+                        entries.push(DirectoryEntry {
+                            name: child_name,
+                            path: nested_md,
+                            is_dir: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
+
+    fn dedupe_and_sort_entries(entries: Vec<DirectoryEntry>) -> Vec<DirectoryEntry> {
+        let mut by_name: BTreeMap<String, DirectoryEntry> = BTreeMap::new();
+        for entry in entries {
+            match by_name.get(&entry.name) {
+                Some(existing) => {
+                    let replace = (entry.is_dir && !existing.is_dir)
+                        || (entry.is_dir == existing.is_dir && entry.path < existing.path);
+                    if replace {
+                        by_name.insert(entry.name.clone(), entry);
+                    }
+                }
+                None => {
+                    by_name.insert(entry.name.clone(), entry);
+                }
+            }
+        }
+        by_name.into_values().collect()
+    }
+
+    fn first_selectable_sidebar_index(&self) -> usize {
+        self.sidebar_items
+            .iter()
+            .position(|item| !item.is_header && !item.name.is_empty())
+            .unwrap_or(0)
+    }
+
+    fn sync_selection_with_tree_path(&mut self) {
+        let mut candidate = self.selected_tree_path.clone();
+        while !candidate.is_empty() {
+            if let Some(idx) = self
+                .sidebar_items
+                .iter()
+                .position(|item| item.tree_path.as_ref() == Some(&candidate))
+            {
+                self.selected_entry_index = idx;
+                if candidate != self.selected_tree_path {
+                    self.set_selected_tree_path(candidate.clone());
+                }
+                tracing::debug!(
+                    selected_index = idx,
+                    selected_name = ?self.selected_tree_path.last(),
+                    "selection synced to tree path"
+                );
+                return;
+            }
+            candidate.pop();
+        }
+        tracing::warn!(
+            path = ?self.selected_tree_path,
+            "selection sync fallback to first selectable item"
+        );
+        self.selected_entry_index = self.first_selectable_sidebar_index();
+    }
+
+    fn select_first_child_for_path(&mut self, parent_path: &[String]) {
+        if let Some(idx) = self.sidebar_items.iter().position(|item| {
+            if item.is_header || item.name.is_empty() {
+                return false;
+            }
+            let Some(path) = item.tree_path.as_ref() else {
+                return false;
+            };
+            path.len() == parent_path.len() + 1 && path.starts_with(parent_path)
+        }) {
+            self.selected_entry_index = idx;
+            if let Some(path) = self.sidebar_items[idx].tree_path.clone() {
+                self.set_selected_tree_path(path);
+                self.load_tree_view_data();
+            }
+        }
     }
 
     fn build_sidebar_items(&mut self) {
-        self.sidebar_items = navigation::build_sidebar_items(
-            &self.programs,
-            &self.projects,
-            &self.milestones,
-            &self.tasks,
-            self.current_program.as_deref(),
-            self.current_project.as_deref(),
-            self.current_milestone.as_deref(),
+        self.sidebar_items.clear();
+        self.sidebar_items
+            .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
+
+        if self.programs.is_empty() {
+            self.sidebar_items.push(
+                SidebarItem::new("+ Create Program...", SidebarSection::Programs)
+                    .indent(1)
+                    .create_action(),
+            );
+        } else {
+            self.push_tree_level_items(&[], 0);
+        }
+
+        self.sidebar_items
+            .push(SidebarItem::new("", SidebarSection::Planning));
+        self.sidebar_items
+            .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
+        self.sidebar_items.push(
+            SidebarItem::new("Weekly Planning", SidebarSection::Planning)
+                .planning_item("WeeklyPlanning"),
         );
+        self.sidebar_items
+            .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
 
-        // Handle subtasks separately since the extracted function doesn't include them
-        // TODO: Architect to decide if subtasks should be added to navigation::build_sidebar_items
-        if let (Some(_current_milestone), Some(current_task)) =
-            (self.current_milestone.as_ref(), self.current_task.as_ref())
-        {
-            // Find the index of the current task and add subtasks after it
-            let task_idx = self
-                .sidebar_items
-                .iter()
-                .position(|i| i.name == *current_task && i.indent == 3);
-            if let Some(idx) = task_idx {
-                // Insert subtasks after the task
-                let subtask_items: Vec<SidebarItem> = self
-                    .subtasks
-                    .iter()
-                    .map(|subtask| SidebarItem {
-                        name: subtask.name.clone(),
-                        section: SidebarSection::Programs,
-                        is_header: false,
-                        is_planning_item: None,
-                        is_journal_item: None,
-                        indent: 4,
-                        path: Some(subtask.path.clone()),
-                        is_create_action: false,
-                    })
-                    .collect();
+        self.sidebar_items
+            .push(SidebarItem::new("", SidebarSection::Journal));
+        self.sidebar_items
+            .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
+        self.sidebar_items
+            .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
+        self.sidebar_items
+            .push(SidebarItem::new("History", SidebarSection::Journal).journal_item("History"));
+    }
 
-                for (offset, item) in subtask_items.into_iter().enumerate() {
-                    self.sidebar_items.insert(idx + 1 + offset, item);
-                }
+    fn push_tree_level_items(&mut self, parent_path: &[String], depth: usize) {
+        let entries = if depth == 0 {
+            self.programs.clone()
+        } else {
+            self.load_tree_level(parent_path)
+        };
+        for entry in entries {
+            let mut node_path = parent_path.to_vec();
+            node_path.push(entry.name.clone());
+            let has_children = !self.load_tree_level(&node_path).is_empty();
+            self.sidebar_items.push(SidebarItem {
+                name: entry.name.clone(),
+                section: SidebarSection::Programs,
+                is_header: false,
+                is_planning_item: None,
+                is_journal_item: None,
+                indent: depth,
+                path: Some(entry.path.clone()),
+                tree_path: Some(node_path.clone()),
+                has_children,
+                is_create_action: false,
+            });
+
+            if self.expanded_tree_paths.contains(&node_path) {
+                self.push_tree_level_items(&node_path, depth + 1);
             }
         }
     }
@@ -853,34 +977,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-    }
-
-    // TODO: These methods are helpers for future keyboard shortcuts for quick element creation
-    #[allow(dead_code)]
-    fn select_program_for_new_project(&mut self) {
-        if let Some(entry) = self.programs.get(self.selected_entry_index) {
-            self.current_program = Some(entry.name.clone());
-            self.input_buffer.clear();
-            self.current_view = ViewType::InputProject;
-        }
-    }
-
-    #[allow(dead_code)]
-    fn select_project_for_new_milestone(&mut self) {
-        if let Some(entry) = self.projects.get(self.selected_entry_index) {
-            self.current_project = Some(entry.name.clone());
-            self.input_buffer.clear();
-            self.current_view = ViewType::InputMilestone;
-        }
-    }
-
-    #[allow(dead_code)]
-    fn select_milestone_for_new_task(&mut self) {
-        if let Some(entry) = self.milestones.get(self.selected_entry_index) {
-            self.current_milestone = Some(entry.name.clone());
-            self.input_buffer.clear();
-            self.current_view = ViewType::InputTask;
         }
     }
 
@@ -1041,607 +1137,146 @@ impl App {
     // Workspace functions: Programs, Projects, Milestones, Tasks
 
     fn show_programs_list(&mut self) {
-        self.tree_state.path.clear();
+        self.set_selected_tree_path(Vec::new());
         self.load_tree_view_data();
         self.current_view = ViewType::TreeView;
     }
 
     fn show_projects_list(&mut self) {
-        if !self.tree_state.path.is_empty() {
+        if !self.selected_tree_path.is_empty() {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
-            self.tree_state.path.clear();
+            self.set_selected_tree_path(Vec::new());
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         }
     }
 
     fn show_milestones_list(&mut self) {
-        if self.tree_state.path.len() >= 2 {
+        if self.selected_tree_path.len() >= 2 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
-            self.tree_state.path.clear();
+            self.set_selected_tree_path(Vec::new());
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         }
     }
 
     fn show_tasks_list(&mut self) {
-        if self.tree_state.path.len() >= 3 {
+        if self.selected_tree_path.len() >= 3 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
-            self.tree_state.path.clear();
+            self.set_selected_tree_path(Vec::new());
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         }
     }
 
     fn start_new_program(&mut self) {
-        // Go directly to template field wizard - name will be the first editable field
         self.input_buffer.clear();
-
-        let template = include_str!("../../templates/program.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let mut values = std::collections::HashMap::new();
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus (this will be NAME/Title)
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        // Target path will be determined later after name is entered
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "program".to_string(),
-            target_path: None, // Will be set when confirmed
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
-        }
-        self.current_view = ViewType::InputTemplateField;
+        self.open_template_wizard("program", None);
     }
 
     fn start_new_project(&mut self) {
-        // If at depth 0 (programs level), navigate into selected program first
-        if self.tree_state.path.is_empty() {
-            if let Some(entry) = self.programs.get(self.selected_entry_index) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_program = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-
-        // Go directly to template field wizard
+        self.promote_selection_to_path_depth(1);
         self.input_buffer.clear();
-
-        let template = include_str!("../../templates/project.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let mut values = std::collections::HashMap::new();
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "project".to_string(),
-            target_path: None,
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
-        }
-        self.current_view = ViewType::InputTemplateField;
+        self.open_template_wizard("project", None);
     }
 
     fn start_new_milestone(&mut self) {
-        // If at depth 0, navigate into selected program first
-        if self.tree_state.path.is_empty() {
-            if let Some(entry) = self.programs.get(self.selected_entry_index) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_program = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-        // If at depth 1, navigate into selected project first
-        if self.tree_state.path.len() == 1 {
-            if let Some(entry) = self.projects.get(
-                self.selected_entry_index
-                    .saturating_sub(self.programs.len()),
-            ) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_project = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-
-        // Go directly to template field wizard
+        self.promote_selection_to_path_depth(1);
+        self.promote_selection_to_path_depth(2);
         self.input_buffer.clear();
-
-        let template = include_str!("../../templates/milestone.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let mut values = std::collections::HashMap::new();
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus (this will be NAME/Title)
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        // Target path will be determined later after name is entered
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "milestone".to_string(),
-            target_path: None, // Will be set when confirmed
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
-        }
-        self.current_view = ViewType::InputTemplateField;
+        self.open_template_wizard("milestone", None);
     }
 
     fn start_new_task(&mut self) {
-        // If at depth 0, navigate into selected program first
-        if self.tree_state.path.is_empty() {
-            if let Some(entry) = self.programs.get(self.selected_entry_index) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_program = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-        // If at depth 1, navigate into selected project first
-        if self.tree_state.path.len() == 1 {
-            if let Some(entry) = self.projects.get(
-                self.selected_entry_index
-                    .saturating_sub(self.programs.len()),
-            ) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_project = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-        // If at depth 2, navigate into selected milestone first
-        if self.tree_state.path.len() == 2 {
-            if let Some(entry) = self.milestones.get(
-                self.selected_entry_index
-                    .saturating_sub(self.programs.len() + self.projects.len()),
-            ) {
-                self.tree_state.path.push(entry.name.clone());
-                self.current_milestone = Some(entry.name.clone());
-                self.selected_entry_index = 0;
-                self.load_tree_view_data();
-            }
-        }
-
-        // Go directly to template field wizard
+        self.promote_selection_to_path_depth(1);
+        self.promote_selection_to_path_depth(2);
+        self.promote_selection_to_path_depth(3);
         self.input_buffer.clear();
+        self.open_template_wizard("task", None);
+    }
 
-        let template = include_str!("../../templates/task.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let mut values = std::collections::HashMap::new();
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
+    fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
+        if self.selected_tree_path.len() >= target_depth {
+            return;
         }
 
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus (this will be NAME/Title)
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        // Target path will be determined later after name is entered
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "task".to_string(),
-            target_path: None, // Will be set when confirmed
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
+        let mut selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+            Some(item) if !item.is_header && !item.name.is_empty() => {
+                self.path_for_sidebar_item(item)
             }
-        } else {
-            self.input_buffer.clear();
+            _ => return,
+        };
+
+        if selected_path.len() < target_depth {
+            let parent = self.selected_tree_path.clone();
+            self.select_first_child_for_path(&parent);
+            selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+                Some(item) if !item.is_header && !item.name.is_empty() => item
+                    .tree_path
+                    .clone()
+                    .unwrap_or_else(|| self.path_for_sidebar_item(item)),
+                _ => return,
+            };
         }
-        self.current_view = ViewType::InputTemplateField;
+
+        if selected_path.len() < target_depth {
+            return;
+        }
+
+        selected_path.truncate(target_depth);
+        self.set_selected_tree_path(selected_path);
+        self.load_tree_view_data();
     }
 
     fn confirm_create_program(&mut self) {
-        let template = include_str!("../../templates/program.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-        let target_path = self
-            .config
-            .workspace
-            .programs_dir()
-            .join(format!("{}.md", self.input_buffer));
-
-        let mut values = std::collections::HashMap::new();
-        values.insert("PROGRAM_NAME".to_string(), self.input_buffer.clone());
-        values.insert("NAME".to_string(), self.input_buffer.clone());
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "program".to_string(),
-            target_path: Some(target_path),
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
-        }
-        self.current_view = ViewType::InputTemplateField;
+        self.open_template_wizard("program", Some(self.input_buffer.clone()));
     }
 
     fn confirm_create_project(&mut self) {
-        let template = include_str!("../../templates/project.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let target_path = self
-            .config
-            .workspace
-            .programs_dir()
-            .join(self.current_program.as_ref().unwrap())
-            .join(format!("{}.md", self.input_buffer));
-
-        let mut values = std::collections::HashMap::new();
-        values.insert("PROJECT_NAME".to_string(), self.input_buffer.clone());
-        values.insert("NAME".to_string(), self.input_buffer.clone());
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "project".to_string(),
-            target_path: Some(target_path),
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
-                .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
-        }
-        self.current_view = ViewType::InputTemplateField;
+        self.open_template_wizard("project", Some(self.input_buffer.clone()));
     }
 
     fn confirm_create_milestone(&mut self) {
-        let template = include_str!("../../templates/milestone.md");
-        let all_fields = crate::storage::parse_template_fields(template);
+        self.open_template_wizard("milestone", Some(self.input_buffer.clone()));
+    }
 
-        let target_path = self
-            .config
-            .workspace
-            .programs_dir()
-            .join(self.current_program.as_ref().unwrap())
-            .join(self.current_project.as_ref().unwrap())
-            .join(format!("{}.md", self.input_buffer));
+    fn confirm_create_task(&mut self) {
+        self.open_template_wizard("task", Some(self.input_buffer.clone()));
+    }
+
+    fn open_template_wizard(&mut self, template_name: &str, seeded_name: Option<String>) {
+        if let Some(name) = seeded_name.as_deref() {
+            if let Err(e) = validate_element_name(name) {
+                tracing::warn!("Invalid {} name '{}': {}", template_name, name, e);
+                return;
+            }
+        }
+
+        let template = match template_name {
+            "program" => include_str!("../../templates/program.md"),
+            "project" => include_str!("../../templates/project.md"),
+            "milestone" => include_str!("../../templates/milestone.md"),
+            "task" => include_str!("../../templates/task.md"),
+            _ => {
+                tracing::warn!("Unknown template requested: {}", template_name);
+                return;
+            }
+        };
+        let all_fields = crate::storage::parse_template_fields(template);
+        tracing::debug!(
+            template = template_name,
+            seeded = seeded_name.is_some(),
+            fields = all_fields.len(),
+            "opening template wizard"
+        );
 
         let mut values = std::collections::HashMap::new();
-        values.insert("MILESTONE_NAME".to_string(), self.input_buffer.clone());
-        values.insert("NAME".to_string(), self.input_buffer.clone());
         values.insert(
             "TODAY".to_string(),
             chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -1650,6 +1285,24 @@ impl App {
         if let Some(default_status) = self.config.workflow.first() {
             values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
         }
+        if let Some(name) = seeded_name.clone() {
+            values.insert("NAME".to_string(), name.clone());
+            match template_name {
+                "program" => {
+                    values.insert("PROGRAM_NAME".to_string(), name);
+                }
+                "project" => {
+                    values.insert("PROJECT_NAME".to_string(), name);
+                }
+                "milestone" => {
+                    values.insert("MILESTONE_NAME".to_string(), name);
+                }
+                "task" => {
+                    values.insert("TASK_NAME".to_string(), name);
+                }
+                _ => {}
+            }
+        }
 
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
@@ -1657,10 +1310,14 @@ impl App {
             .map(|(_, p, _)| p.clone())
             .collect();
 
-        // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+        let seeded_keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+        let base_keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+        let keywords: &[&str] = if seeded_name.is_some() {
+            &seeded_keywords
+        } else {
+            &base_keywords
+        };
 
-        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .enumerate()
@@ -1682,7 +1339,6 @@ impl App {
             })
             .collect();
 
-        // Find first editable field for initial focus
         let initial_focus = fields
             .iter()
             .position(|f| f.is_editable)
@@ -1690,15 +1346,13 @@ impl App {
             .unwrap_or(WizardFocus::ConfirmButton);
 
         self.template_field_state = Some(TemplateFieldState {
-            template_name: "milestone".to_string(),
-            target_path: Some(target_path),
+            template_name: template_name.to_string(),
             fields,
             focus: initial_focus,
             values,
             strip_labels,
         });
 
-        // Load initial field value into buffer
         if let WizardFocus::Field(idx) = initial_focus {
             if let Some(field) = self
                 .template_field_state
@@ -1713,91 +1367,63 @@ impl App {
         self.current_view = ViewType::InputTemplateField;
     }
 
-    fn confirm_create_task(&mut self) {
-        let template = include_str!("../../templates/task.md");
-        let all_fields = crate::storage::parse_template_fields(template);
-
-        let target_path = self
-            .config
-            .workspace
-            .programs_dir()
-            .join(self.current_program.as_ref().unwrap())
-            .join(self.current_project.as_ref().unwrap())
-            .join(self.current_milestone.as_ref().unwrap())
-            .join(format!("{}.md", self.input_buffer));
-
-        let mut values = std::collections::HashMap::new();
-        values.insert("TASK_NAME".to_string(), self.input_buffer.clone());
-        values.insert("NAME".to_string(), self.input_buffer.clone());
-        values.insert(
-            "TODAY".to_string(),
-            chrono::Local::now().format("%Y-%m-%d").to_string(),
-        );
-        values.insert("OWNER".to_string(), self.config.owner.clone());
-        if let Some(default_status) = self.config.workflow.first() {
-            values.insert("DEFAULT_STATUS".to_string(), default_status.clone());
-        }
-
-        let strip_labels: std::collections::HashSet<String> = all_fields
-            .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
-            .collect();
-
-        // Keywords that are prepopulated and not editable
-        let keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-
-        // Convert to FieldInfo structures - include ALL fields, mark as editable or not
-        let fields: Vec<FieldInfo> = all_fields
-            .into_iter()
-            .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                FieldInfo {
-                    label,
-                    placeholder,
-                    value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
-                    display_order: i,
-                }
-            })
-            .collect();
-
-        // Find first editable field for initial focus
-        let initial_focus = fields
-            .iter()
-            .position(|f| f.is_editable)
-            .map(WizardFocus::Field)
-            .unwrap_or(WizardFocus::ConfirmButton);
-
-        self.template_field_state = Some(TemplateFieldState {
-            template_name: "task".to_string(),
-            target_path: Some(target_path),
-            fields,
-            focus: initial_focus,
-            values,
-            strip_labels,
-        });
-
-        // Load initial field value into buffer
-        if let WizardFocus::Field(idx) = initial_focus {
-            if let Some(field) = self
-                .template_field_state
+    fn resolve_template_target_path(
+        &self,
+        template_name: &str,
+        name: &str,
+    ) -> Option<std::path::PathBuf> {
+        match template_name {
+            "program" => Some(
+                self.config
+                    .workspace
+                    .programs_dir()
+                    .join(name)
+                    .join(format!("{}.md", name)),
+            ),
+            "project" => self.current_program.as_ref().map(|prog| {
+                self.config
+                    .workspace
+                    .programs_dir()
+                    .join(prog)
+                    .join("projects")
+                    .join(name)
+                    .join(format!("{}.md", name))
+            }),
+            "milestone" => self
+                .current_program
                 .as_ref()
-                .and_then(|s| s.fields.get(idx))
-            {
-                self.input_buffer = field.value.clone();
-            }
-        } else {
-            self.input_buffer.clear();
+                .zip(self.current_project.as_ref())
+                .map(|(prog, proj)| {
+                    self.config
+                        .workspace
+                        .programs_dir()
+                        .join(prog)
+                        .join("projects")
+                        .join(proj)
+                        .join("milestones")
+                        .join(name)
+                        .join(format!("{}.md", name))
+                }),
+            "task" => self
+                .current_program
+                .as_ref()
+                .zip(self.current_project.as_ref())
+                .zip(self.current_milestone.as_ref())
+                .map(|((prog, proj), milestone)| {
+                    self.config
+                        .workspace
+                        .programs_dir()
+                        .join(prog)
+                        .join("projects")
+                        .join(proj)
+                        .join("milestones")
+                        .join(milestone)
+                        .join("tasks")
+                        .join(name)
+                        .join(format!("{}.md", name))
+                }),
+            _ => None,
         }
-        self.current_view = ViewType::InputTemplateField;
     }
 
     fn confirm_template_field(&mut self) {
@@ -1818,88 +1444,33 @@ impl App {
                     }
 
                     let template_name = state.template_name.clone();
-                    // Templates use "NAME" as the placeholder for the element name
-                    // (not PROGRAM_NAME, PROJECT_NAME, or MILESTONE_NAME)
-                    let name = state.values.get("NAME").cloned();
+                    let values = state.values.clone();
+                    let strip_labels = state.strip_labels.clone();
+                    let name = values.get("NAME").cloned();
+                    let candidate_name = name.as_deref();
 
-                    // Also check for type-specific names for backwards compatibility
-                    let program_name = state.values.get("PROGRAM_NAME").or(name.as_ref()).cloned();
-                    let project_name = state.values.get("PROJECT_NAME").or(name.as_ref()).cloned();
-                    let milestone_name = state
-                        .values
-                        .get("MILESTONE_NAME")
-                        .or(name.as_ref())
-                        .cloned();
+                    if let Some(candidate_name) = candidate_name {
+                        if let Err(e) = validate_element_name(candidate_name) {
+                            tracing::warn!(
+                                "Invalid {} name '{}': {}",
+                                template_name,
+                                candidate_name,
+                                e
+                            );
+                            return;
+                        }
+                    }
 
-                    // Compute target_path based on template_name and current context
-                    let target_path = match template_name.as_str() {
-                        "program" => program_name.as_ref().map(|n| {
-                            self.config
-                                .workspace
-                                .programs_dir()
-                                .join(format!("{}.md", n))
-                        }),
-                        "project" => {
-                            if let (Some(prog), Some(proj)) = (&self.current_program, &project_name)
-                            {
-                                Some(
-                                    self.config
-                                        .workspace
-                                        .programs_dir()
-                                        .join(prog)
-                                        .join(format!("{}.md", proj)),
-                                )
-                            } else {
-                                None
-                            }
-                        }
-                        "milestone" => {
-                            if let (Some(prog), Some(proj), Some(mil)) = (
-                                &self.current_program,
-                                &self.current_project,
-                                &milestone_name,
-                            ) {
-                                Some(
-                                    self.config
-                                        .workspace
-                                        .programs_dir()
-                                        .join(prog)
-                                        .join(proj)
-                                        .join(format!("{}.md", mil)),
-                                )
-                            } else {
-                                None
-                            }
-                        }
-                        "task" => {
-                            if let (Some(prog), Some(proj), Some(mil), Some(t)) = (
-                                &self.current_program,
-                                &self.current_project,
-                                &self.current_milestone,
-                                &name,
-                            ) {
-                                Some(
-                                    self.config
-                                        .workspace
-                                        .programs_dir()
-                                        .join(prog)
-                                        .join(proj)
-                                        .join(mil)
-                                        .join(format!("{}.md", t)),
-                                )
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
+                    let target_path = name.as_deref().and_then(|element_name| {
+                        self.resolve_template_target_path(&template_name, element_name)
+                    });
 
                     if let Some(target) = target_path {
                         if let Err(e) = self.config.workspace.create_from_template(
                             &template_name,
                             &target,
-                            &state.values,
-                            &state.strip_labels,
+                            &values,
+                            &strip_labels,
                         ) {
                             tracing::error!("Failed to create element: {}", e);
                         }
@@ -1910,14 +1481,7 @@ impl App {
                         );
                     }
 
-                    // Determine the name of the newly created element
-                    let new_element_name: Option<String> = match template_name.as_str() {
-                        "program" => program_name.clone(),
-                        "project" => project_name.clone(),
-                        "milestone" => milestone_name.clone(),
-                        "task" => name.clone(),
-                        _ => None,
-                    };
+                    let new_element_name = name.clone();
 
                     // Clear template state before calling load_tree_view_data
                     self.template_field_state = None;
@@ -1966,42 +1530,6 @@ impl App {
         }
     }
 
-    // TODO: These methods are helpers for future keyboard shortcuts for quick navigation
-    #[allow(dead_code)]
-    fn select_program(&mut self) {
-        if let Some(entry) = self.programs.get(self.selected_entry_index) {
-            self.current_program = Some(entry.name.clone());
-            self.current_project = None;
-            self.current_milestone = None;
-            self.show_projects_list();
-        }
-    }
-
-    #[allow(dead_code)]
-    fn select_project(&mut self) {
-        if let Some(entry) = self.projects.get(self.selected_entry_index) {
-            self.current_project = Some(entry.name.clone());
-            self.current_milestone = None;
-            self.show_milestones_list();
-        }
-    }
-
-    #[allow(dead_code)]
-    fn select_milestone(&mut self) {
-        if let Some(entry) = self.milestones.get(self.selected_entry_index) {
-            self.current_milestone = Some(entry.name.clone());
-            self.show_tasks_list();
-        }
-    }
-
-    #[allow(dead_code)]
-    fn open_selected_task(&mut self) {
-        if let Some(entry) = self.tasks.get(self.selected_entry_index) {
-            let path = entry.path.clone();
-            self.launch_editor(&path);
-        }
-    }
-
     fn filter_commands(&mut self) {
         self.command_matches = command::filter_commands(
             &self.command_input,
@@ -2016,6 +1544,10 @@ impl App {
     fn draw(&self, f: &mut Frame) {
         layout::render(f, self);
     }
+}
+
+fn is_same_or_descendant(candidate: &[String], ancestor: &[String]) -> bool {
+    candidate.len() >= ancestor.len() && candidate.starts_with(ancestor)
 }
 
 #[cfg(test)]
@@ -2152,7 +1684,6 @@ mod tests {
 
         app.template_field_state = Some(TemplateFieldState {
             template_name: "test".to_string(),
-            target_path: None,
             fields,
             focus: WizardFocus::Field(0),
             values: std::collections::HashMap::new(),
@@ -2207,8 +1738,10 @@ Test description
             .expect("Failed to create program file");
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2293,8 +1826,10 @@ Test description
         let workspace_path = temp_dir.path().to_path_buf();
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2323,7 +1858,10 @@ Test description
         app.confirm_template_field();
 
         // Verify the file was created on disk
-        let program_path = workspace_path.join("programs").join("MyNewProgram.md");
+        let program_path = workspace_path
+            .join("programs")
+            .join("MyNewProgram")
+            .join("MyNewProgram.md");
         assert!(
             program_path.exists(),
             "Program file should be created at {:?}",
@@ -2363,8 +1901,10 @@ Test description
             .expect("Failed to create program file");
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2394,6 +1934,8 @@ Test description
         let project_path = workspace_path
             .join("programs")
             .join("TestProgram")
+            .join("projects")
+            .join("NewProject")
             .join("NewProject.md");
         assert!(
             project_path.exists(),
@@ -2427,15 +1969,19 @@ Test description
         .expect("Failed to create program file");
 
         // Create project file
+        std::fs::create_dir_all(project_dir.join("projects").join("NewProject"))
+            .expect("Failed to create project directories");
         std::fs::write(
-            project_dir.join("NewProject.md"),
+            project_dir.join("projects").join("NewProject").join("NewProject.md"),
             "---\ntitle: NewProject\nstatus: New\n---\n",
         )
         .expect("Failed to create project file");
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2467,7 +2013,10 @@ Test description
         let milestone_path = workspace_path
             .join("programs")
             .join("TestProgram")
+            .join("projects")
             .join("NewProject")
+            .join("milestones")
+            .join("NewMilestone")
             .join("NewMilestone.md");
         assert!(
             milestone_path.exists(),
@@ -2493,20 +2042,30 @@ Test description
         let milestone_dir = workspace_path
             .join("programs")
             .join("TestProgram")
+            .join("projects")
             .join("NewProject")
+            .join("milestones")
             .join("NewMilestone");
         std::fs::create_dir_all(&milestone_dir).expect("Failed to create directories");
 
         // Create program file
         std::fs::write(
-            workspace_path.join("programs").join("TestProgram.md"),
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("TestProgram.md"),
             "---\ntitle: TestProgram\nstatus: New\n---\n",
         )
         .expect("Failed to create program file");
 
         // Create project file
         std::fs::write(
-            milestone_dir.parent().unwrap().join("NewProject.md"),
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("NewProject.md"),
             "---\ntitle: NewProject\nstatus: New\n---\n",
         )
         .expect("Failed to create project file");
@@ -2519,8 +2078,10 @@ Test description
         .expect("Failed to create milestone file");
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2554,8 +2115,12 @@ Test description
         let task_path = workspace_path
             .join("programs")
             .join("TestProgram")
+            .join("projects")
             .join("NewProject")
+            .join("milestones")
             .join("NewMilestone")
+            .join("tasks")
+            .join("NewTask")
             .join("NewTask.md");
         assert!(
             task_path.exists(),
@@ -2599,8 +2164,10 @@ Test description
             .expect("Failed to create program file");
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2662,8 +2229,10 @@ Test description
         let workspace_path = temp_dir.path().to_path_buf();
 
         // Set up config with temp workspace
-        let mut config = crate::config::Config::default();
-        config.workspace = workspace_path.clone();
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
 
         let mut app = App::new(config);
 
@@ -2703,7 +2272,10 @@ Test description
         app.confirm_template_field();
 
         // Verify the file was created on disk
-        let program_path = workspace_path.join("programs").join("TestProgram.md");
+        let program_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("TestProgram.md");
         assert!(program_path.exists(), "Program file should be created");
 
         // Read the content and verify DESCRIPTION is in the markdown body
@@ -2723,6 +2295,415 @@ Test description
             !yaml_section.to_lowercase().contains("description:"),
             "Description should NOT be in YAML frontmatter, YAML section was: {}",
             yaml_section
+        );
+    }
+
+    #[test]
+    fn test_navigate_left_from_milestone() {
+        // Create temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Create program: programs/TestProgram/TestProgram.md (nested structure)
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        std::fs::create_dir_all(&program_dir).expect("Failed to create program dir");
+        std::fs::write(
+            program_dir.join("TestProgram.md"),
+            "---
+title: TestProgram
+---
+# Test Program",
+        )
+        .expect("Failed to create program file");
+
+        // Create project: programs/TestProgram/projects/TestProject/TestProject.md
+        let project_dir = program_dir.join("projects").join("TestProject");
+        std::fs::create_dir_all(&project_dir).expect("Failed to create project dir");
+        std::fs::write(
+            project_dir.join("TestProject.md"),
+            "---
+title: TestProject
+---
+# Test Project",
+        )
+        .expect("Failed to create project file");
+
+        // Create milestone: programs/TestProgram/projects/TestProject/milestones/TestMilestone/TestMilestone.md
+        let milestone_dir = project_dir.join("milestones").join("TestMilestone");
+        std::fs::create_dir_all(&milestone_dir).expect("Failed to create milestone dir");
+        std::fs::write(
+            milestone_dir.join("TestMilestone.md"),
+            "---
+title: TestMilestone
+---
+# Test Milestone",
+        )
+        .expect("Failed to create milestone file");
+
+        // Set up config with temp workspace
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+
+        let mut app = App::new(config);
+
+        // Navigate into Program (select index 1 because index 0 is "Programs" header)
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Navigate into Project
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "TestProject")
+            .expect("TestProject should be in sidebar");
+        app.selected_entry_index = project_idx;
+        app.open_tree_item();
+
+        // Single right from project now expands and moves selection into milestone.
+        assert_eq!(
+            app.tree_state.path.len(),
+            3,
+            "Should be inside milestone after second navigation"
+        );
+
+        // Now press left arrow to navigate back
+        app.navigate_left();
+
+        // BUG: This should go to project level (path = ["TestProgram", "TestProject"])
+        // but it jumps to program level (path = ["TestProgram"])
+        assert_eq!(
+            app.tree_state.path.len(),
+            2,
+            "Should go back to project level (depth 2), not program level (depth 1)"
+        );
+    }
+
+    #[test]
+    fn test_navigate_left_shows_correct_sidebar() {
+        // Create temp workspace
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        // Create program: programs/TestProgram/TestProgram.md (nested structure)
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        std::fs::create_dir_all(&program_dir).expect("Failed to create program dir");
+        std::fs::write(
+            program_dir.join("TestProgram.md"),
+            "---
+title: TestProgram
+---
+# Test Program",
+        )
+        .expect("Failed to create program file");
+
+        // Create project: programs/TestProgram/projects/TestProject/TestProject.md
+        let project_dir = program_dir.join("projects").join("TestProject");
+        std::fs::create_dir_all(&project_dir).expect("Failed to create project dir");
+        std::fs::write(
+            project_dir.join("TestProject.md"),
+            "---
+title: TestProject
+---
+# Test Project",
+        )
+        .expect("Failed to create project file");
+
+        // Create milestone: programs/TestProgram/projects/TestProject/milestones/TestMilestone/TestMilestone.md
+        let milestone_dir = project_dir.join("milestones").join("TestMilestone");
+        std::fs::create_dir_all(&milestone_dir).expect("Failed to create milestone dir");
+        std::fs::write(
+            milestone_dir.join("TestMilestone.md"),
+            "---
+title: TestMilestone
+---
+# Test Milestone",
+        )
+        .expect("Failed to create milestone file");
+
+        // Set up config with temp workspace
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+
+        let mut app = App::new(config);
+
+        // Navigate into Program.
+        // Right now expands and moves selection to the first project in one step.
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        assert_eq!(app.tree_state.path.len(), 2);
+
+        // Navigate into Project
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "TestProject")
+            .expect("TestProject should be in sidebar");
+        app.selected_entry_index = project_idx;
+        app.open_tree_item();
+        assert_eq!(app.tree_state.path.len(), 3);
+
+        // Now navigate LEFT - this should collapse back to project level
+        app.navigate_left();
+
+        // After collapsing, we should be at project level (depth 2)
+        // path should be ["TestProgram", "TestProject"], not ["TestProgram"]
+        assert_eq!(
+            app.tree_state.path.len(),
+            2,
+            "After collapsing milestone, should be at project level (depth 2), not program level (depth 1)"
+        );
+
+        // The sidebar should show milestones (the children of project level)
+        let has_milestones = app.sidebar_items.iter().any(|i| i.name == "TestMilestone");
+        assert!(
+            has_milestones,
+            "Sidebar should show milestones after navigating back to project level"
+        );
+
+        // Selection should remain valid and on the project node after collapsing back.
+        assert!(
+            app.selected_entry_index < app.sidebar_items.len(),
+            "Selected index should remain in bounds"
+        );
+        let selected = &app.sidebar_items[app.selected_entry_index];
+        assert!(!selected.is_header, "Selection should not land on a header");
+        assert_eq!(selected.name, "TestProject");
+        assert_eq!(selected.indent, 1);
+    }
+
+    #[test]
+    fn test_left_navigation_preserves_project_selection_after_project_milestone_roundtrip() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        std::fs::create_dir_all(&program_dir).expect("Failed to create program dir");
+        std::fs::write(
+            program_dir.join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        // Two projects to exercise up/down before navigating deeper.
+        for project_name in ["AlphaProject", "BetaProject"] {
+            let project_dir = program_dir.join("projects").join(project_name);
+            std::fs::create_dir_all(&project_dir).expect("Failed to create project dir");
+            std::fs::write(
+                project_dir.join(format!("{project_name}.md")),
+                format!("---\ntitle: {project_name}\n---\n"),
+            )
+            .expect("Failed to create project file");
+
+            let milestone_dir = project_dir.join("milestones").join("M1");
+            std::fs::create_dir_all(&milestone_dir).expect("Failed to create milestone dir");
+            std::fs::write(milestone_dir.join("M1.md"), "---\ntitle: M1\n---\n")
+                .expect("Failed to create milestone file");
+        }
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        // Enter the top program.
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        // Move selection in project list and enter BetaProject.
+        if let Some(beta_idx) = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "BetaProject" && i.indent == 1)
+        {
+            app.selected_entry_index = beta_idx;
+        } else {
+            panic!("BetaProject should be selectable");
+        }
+        app.open_tree_item();
+
+        // Single right from project expands and moves to milestone.
+        assert_eq!(app.tree_state.path, vec!["TestProgram", "BetaProject", "M1"]);
+
+        // Collapse back one level.
+        app.navigate_left();
+
+        assert_eq!(app.tree_state.path, vec!["TestProgram", "BetaProject"]);
+        assert!(app.selected_entry_index < app.sidebar_items.len());
+        let selected = &app.sidebar_items[app.selected_entry_index];
+        assert_eq!(selected.name, "BetaProject");
+        assert_eq!(selected.indent, 1);
+        assert!(!selected.is_header);
+    }
+
+    #[test]
+    fn test_tree_navigation_supports_program_with_direct_tasks() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        let tasks_dir = program_dir.join("tasks");
+        std::fs::create_dir_all(&tasks_dir).expect("Failed to create directories");
+        std::fs::write(
+            workspace_path.join("programs").join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+        std::fs::write(
+            tasks_dir.join("DirectTask.md"),
+            "---\ntitle: DirectTask\n---\n",
+        )
+        .expect("Failed to create direct task file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        assert_eq!(app.tree_state.path, vec!["TestProgram", "DirectTask"]);
+
+        app.navigate_left();
+        assert_eq!(app.tree_state.path, vec!["TestProgram"]);
+        assert!(app.selected_entry_index < app.sidebar_items.len());
+    }
+
+    #[test]
+    fn test_tree_navigation_prefers_expandable_variant_for_duplicate_names() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("TestProgram");
+        let project_container = program_dir.join("projects");
+        std::fs::create_dir_all(&project_container).expect("Failed to create directories");
+
+        std::fs::write(
+            workspace_path.join("programs").join("TestProgram.md"),
+            "---\ntitle: TestProgram\n---\n",
+        )
+        .expect("Failed to create program file");
+
+        // Duplicate project name in flat and nested forms.
+        std::fs::write(program_dir.join("Common.md"), "---\ntitle: Common\n---\n")
+            .expect("Failed to create flat duplicate project file");
+        let common_nested_dir = project_container.join("Common");
+        std::fs::create_dir_all(common_nested_dir.join("milestones").join("M1"))
+            .expect("Failed to create nested duplicate hierarchy");
+        std::fs::write(
+            common_nested_dir.join("Common.md"),
+            "---\ntitle: Common\n---\n",
+        )
+        .expect("Failed to create nested duplicate project file");
+        std::fs::write(
+            common_nested_dir
+                .join("milestones")
+                .join("M1")
+                .join("M1.md"),
+            "---\ntitle: M1\n---\n",
+        )
+        .expect("Failed to create milestone file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+        let common_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "Common" && i.indent == 1)
+            .expect("Common should be selectable under program");
+        app.selected_entry_index = common_idx;
+        app.open_tree_item();
+
+        assert_eq!(app.tree_state.path, vec!["TestProgram", "Common", "M1"]);
+        assert!(
+            app.sidebar_items
+                .iter()
+                .any(|i| i.name == "M1" && i.indent == 2),
+            "Expandable duplicate variant should be used, exposing milestones"
+        );
+    }
+
+    #[test]
+    fn test_tree_navigation_does_not_flatten_non_container_dirs() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_dir = workspace_path.join("programs").join("example program");
+        let project_dir = program_dir.join("project 1");
+        std::fs::create_dir_all(&project_dir).expect("Failed to create project dir");
+        std::fs::write(
+            workspace_path.join("programs").join("example program.md"),
+            "---\ntitle: example program\n---\n",
+        )
+        .expect("Failed to create program file");
+        std::fs::write(
+            program_dir.join("project 1.md"),
+            "---\ntitle: project 1\n---\n",
+        )
+        .expect("Failed to create project file");
+        std::fs::write(
+            project_dir.join("milestone 1.md"),
+            "---\ntitle: milestone 1\n---\n",
+        )
+        .expect("Failed to create milestone file");
+        std::fs::write(
+            program_dir.join("project 2.md"),
+            "---\ntitle: project 2\n---\n",
+        )
+        .expect("Failed to create second project file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path,
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.selected_entry_index = 1;
+        app.open_tree_item();
+
+        assert!(
+            app.sidebar_items
+                .iter()
+                .any(|i| i.name == "project 1" && i.indent == 1),
+            "project 1 should exist as a project under program"
+        );
+        assert!(
+            app.sidebar_items
+                .iter()
+                .any(|i| i.name == "project 2" && i.indent == 1),
+            "project 2 should exist as a project under program"
+        );
+        assert!(
+            !app.sidebar_items
+                .iter()
+                .any(|i| i.name == "milestone 1" && i.indent == 1),
+            "milestone 1 must not leak into program level"
+        );
+
+        let project_idx = app
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "project 1" && i.indent == 1)
+            .expect("project 1 should be selectable");
+        app.selected_entry_index = project_idx;
+        app.open_tree_item();
+
+        assert!(
+            app.sidebar_items
+                .iter()
+                .any(|i| i.name == "milestone 1" && i.indent == 2),
+            "milestone 1 should appear only under project 1"
         );
     }
 }

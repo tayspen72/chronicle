@@ -1,12 +1,22 @@
+use crate::commands::task_template::{slugify, write_task_from_template};
+use crate::config::Config;
+use crate::storage::JournalStorage;
 use crate::Result;
 use std::fs;
-use std::path::Path;
 
 /// Naive extractor: scans journal for lines containing `/todo` and writes backlog tasks.
 pub fn run() -> Result<()> {
-    let journal_dir = Path::new("data/journal");
-    let backlog_dir = Path::new("data/backlog");
-    fs::create_dir_all(backlog_dir)?;
+    let config = Config::load_or_create()?;
+    let workspace = config.workspace.clone();
+    let default_status = config
+        .workflow
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "todo".to_string());
+
+    let journal_dir = workspace.journal_dir();
+    let backlog_dir = workspace.join("planning").join("current");
+    fs::create_dir_all(&backlog_dir)?;
 
     if !journal_dir.exists() {
         return Ok(());
@@ -22,17 +32,17 @@ pub fn run() -> Result<()> {
             if let Some(idx) = line.find("/todo") {
                 let todo_text = line[(idx + "/todo".len())..].trim();
                 if !todo_text.is_empty() {
-                    let slug = todo_text
-                        .to_lowercase()
-                        .replace(' ', "-")
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-                        .collect::<String>();
+                    let slug = slugify(todo_text);
                     let fname = backlog_dir.join(format!("backlog-{slug}.md"));
                     if !fname.exists() {
-                        let tmpl = include_str!("../../templates/task.md")
-                            .replace("{{TASK_NAME}}", todo_text);
-                        fs::write(&fname, tmpl)?;
+                        write_task_from_template(
+                            &workspace,
+                            &fname,
+                            todo_text,
+                            "",
+                            &config.owner,
+                            &default_status,
+                        )?;
                         println!("Extracted backlog: {}", fname.display());
                     }
                 }
@@ -40,4 +50,14 @@ pub fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify_for_extract() {
+        assert_eq!(slugify("Backlog Item"), "backlog-item");
+    }
 }

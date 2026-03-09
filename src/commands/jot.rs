@@ -1,12 +1,15 @@
+use crate::config::Config;
+use crate::storage::JournalStorage;
 use crate::Result;
 use chrono::Local;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
 
 pub fn run(text: &str) -> Result<()> {
-    let date = Local::now().format("%Y-%m-%d").to_string();
-    let path = PathBuf::from("data/journal").join(format!("{date}.md"));
+    let config = Config::load_or_create()?;
+    let workspace = config.workspace;
+    let (path, _) = workspace.open_or_create_today_journal()?;
+
     let entry = format!(
         "- {}  {}
 ",
@@ -14,30 +17,10 @@ pub fn run(text: &str) -> Result<()> {
         text
     );
 
-    if path.exists() {
-        fs::OpenOptions::new()
-            .append(true)
-            .open(&path)?
-            .write_all(entry.as_bytes())?;
-    } else {
-        let mut header = String::new();
-        header.push_str(&format!(
-            "# Journal — {date}
-
-"
-        ));
-        header.push_str(
-            "_Use `/todo` to mark actionable items. Use `/note` for highlights._
-
-",
-        );
-        header.push_str(
-            "## Entries
-
-",
-        );
-        fs::write(&path, header + &entry)?;
-    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)?
+        .write_all(entry.as_bytes())?;
 
     println!("Appended journal entry: {}", path.display());
     Ok(())

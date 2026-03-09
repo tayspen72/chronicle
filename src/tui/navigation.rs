@@ -27,6 +27,8 @@ pub struct SidebarItem {
     pub is_journal_item: Option<String>,
     pub indent: usize,
     pub path: Option<std::path::PathBuf>,
+    pub tree_path: Option<Vec<String>>,
+    pub has_children: bool,
     /// If true, this item triggers an action (e.g., "Create Program") rather than navigation
     pub is_create_action: bool,
 }
@@ -44,6 +46,8 @@ impl SidebarItem {
             is_journal_item: None,
             indent: 0,
             path: None,
+            tree_path: None,
+            has_children: false,
             is_create_action: false,
         }
     }

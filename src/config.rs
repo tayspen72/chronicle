@@ -67,6 +67,32 @@ fn default_owner() -> String {
     String::new()
 }
 
+fn default_diagnostics_level() -> String {
+    "debug".to_string()
+}
+
+fn default_diagnostics_enabled() -> bool {
+    false
+}
+
+/// Diagnostics logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsConfig {
+    #[serde(default = "default_diagnostics_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_diagnostics_level")]
+    pub level: String,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_diagnostics_enabled(),
+            level: default_diagnostics_level(),
+        }
+    }
+}
+
 /// User configuration for Chronicle
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -89,6 +115,9 @@ pub struct Config {
     /// Key bindings for navigation
     #[serde(default)]
     pub navigation_keys: NavigationKeys,
+    /// Diagnostics logging for TUI debugging
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
 }
 
 impl Default for Config {
@@ -105,6 +134,7 @@ impl Default for Config {
             navigator_width: 60,
             planning_duration: "biweekly".to_string(),
             navigation_keys: NavigationKeys::default(),
+            diagnostics: DiagnosticsConfig::default(),
         }
     }
 }
@@ -203,6 +233,7 @@ impl Config {
             navigator_width: 60,
             planning_duration: "biweekly".to_string(),
             navigation_keys: NavigationKeys::default(),
+            diagnostics: DiagnosticsConfig::default(),
         })
     }
 }
@@ -250,6 +281,8 @@ down = "j"
         assert_eq!(config.navigation_keys.right, 'l');
         assert_eq!(config.navigation_keys.up, 'k');
         assert_eq!(config.navigation_keys.down, 'j');
+        assert!(!config.diagnostics.enabled);
+        assert_eq!(config.diagnostics.level, "debug");
     }
 
     #[test]
@@ -281,6 +314,8 @@ editor = "vim"
         assert_eq!(config.navigation_keys.right, 'l');
         assert_eq!(config.navigation_keys.up, 'k');
         assert_eq!(config.navigation_keys.down, 'j');
+        assert!(!config.diagnostics.enabled);
+        assert_eq!(config.diagnostics.level, "debug");
     }
 
     #[test]
@@ -331,6 +366,7 @@ editor = "vim"
                 up: 'w',
                 down: 's',
             },
+            diagnostics: DiagnosticsConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize");

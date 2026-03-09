@@ -1,25 +1,49 @@
+use crate::commands::task_template::{slugify, write_task_from_template};
+use crate::config::Config;
 use crate::Result;
 use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
 
 pub fn run(title: &str, scope: Option<&str>) -> Result<()> {
-    let slug = title.to_lowercase().replace([' ', '/', '\\'], "-");
+    let config = Config::load_or_create()?;
+    let workspace = config.workspace.clone();
+    let default_status = config
+        .workflow
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "todo".to_string());
+
+    let slug = slugify(title);
     let ts = Utc::now().format("%Y%m%d").to_string();
 
-    let mut dir = PathBuf::from("data/tasks");
+    let mut dir = workspace.join("planning").join("current");
     if let Some(s) = scope {
-        dir = PathBuf::from(s);
-        if !dir.starts_with("data/") {
-            dir = PathBuf::from("data").join(dir);
+        let scoped = PathBuf::from(s);
+        dir = if scoped.is_absolute() {
+            scoped
+        } else {
+            workspace.join(scoped)
+        };
+        if !dir.starts_with(&workspace) {
+            dir = workspace.join("planning").join("current").join(s);
         }
     }
     fs::create_dir_all(&dir)?;
 
     let path = dir.join(format!("{ts}-{slug}.md"));
-    let content = include_str!("../../templates/task.md");
-    let content = content.replace("{{TITLE}}", title);
-    fs::write(&path, content)?;
+    write_task_from_template(&workspace, &path, title, "", &config.owner, &default_status)?;
     println!("Created task: {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify_title() {
+        assert_eq!(slugify("My Task"), "my-task");
+        assert_eq!(slugify("Task/With\\\\Separators"), "task-with-separators");
+    }
 }
