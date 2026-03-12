@@ -24,6 +24,8 @@ pub enum CommandAction {
     NewMilestone,
     NewTask,
     Refresh,
+    StartPlanningSession,
+    ClosePlanningSession,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -199,6 +201,18 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::Refresh),
+        },
+        CommandMatch {
+            label: "Start Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::StartPlanningSession),
+        },
+        CommandMatch {
+            label: "Close Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::ClosePlanningSession),
         },
         CommandMatch {
             label: "Exit".to_string(),

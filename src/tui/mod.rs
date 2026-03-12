@@ -13,17 +13,17 @@ use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Frame, Terminal};
 use std::io::{self, Write};
 
 use crate::config::Config;
 use crate::storage::{
-    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
+    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
 };
 use chrono::Local;
-use command::{CommandAction, CommandMatch, get_command_list};
+use command::{get_command_list, CommandAction, CommandMatch};
 use navigation::{SidebarItem, SidebarSection};
 use tree::TreeModel;
 
@@ -120,6 +120,11 @@ pub struct App {
     pub current_content_text: Option<String>,
     pub sidebar_items: Vec<SidebarItem>,
     pub template_field_state: Option<TemplateFieldState>,
+    // Planning session state
+    pub planning_session_active: bool,
+    pub planning_session_tasks: Vec<String>, // UUIDs or paths of selected tasks
+    pub planning_session_start_date: Option<String>,
+    pub planning_session_end_date: Option<String>,
 }
 
 impl App {
@@ -152,6 +157,10 @@ impl App {
             current_content_text: None,
             sidebar_items: Vec::new(),
             template_field_state: None,
+            planning_session_active: false,
+            planning_session_tasks: Vec::new(),
+            planning_session_start_date: None,
+            planning_session_end_date: None,
         };
 
         app.load_tree_view_data();
@@ -1070,6 +1079,12 @@ impl App {
             Some(CommandAction::Refresh) => {
                 self.load_tree_view_data();
             }
+            Some(CommandAction::StartPlanningSession) => {
+                self.start_planning_session();
+            }
+            Some(CommandAction::ClosePlanningSession) => {
+                self.close_planning_session();
+            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1219,6 +1234,32 @@ impl App {
         self.promote_selection_to_path_depth(3);
         self.input_buffer.clear();
         self.open_template_wizard("task", None);
+    }
+
+    fn start_planning_session(&mut self) {
+        if self.planning_session_active {
+            println!("A planning session is already active. Please close it first.");
+            return;
+        }
+        self.planning_session_active = true;
+        self.planning_session_start_date =
+            Some(chrono::Local::now().format("%Y-%m-%d").to_string());
+        self.planning_session_end_date = Some(chrono::Local::now().format("%Y-%m-%d").to_string());
+        self.planning_session_tasks.clear();
+        self.current_view = ViewType::WeeklyPlanning;
+    }
+
+    fn close_planning_session(&mut self) {
+        if !self.planning_session_active {
+            println!("No active planning session to close.");
+            return;
+        }
+        println!("Reviewing and closing planning session...");
+        self.planning_session_active = false;
+        self.planning_session_start_date = None;
+        self.planning_session_end_date = None;
+        self.planning_session_tasks.clear();
+        self.current_view = ViewType::TreeView;
     }
 
     fn promote_selection_to_path_depth(&mut self, target_depth: usize) {

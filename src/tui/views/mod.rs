@@ -3,10 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::App;
 use ratatui::{
-    Frame,
+    layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
+    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -181,19 +182,143 @@ pub fn render_backlog(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Renders the Weekly Planning view showing current week and task statistics.
+/// Renders the Weekly Planning view showing tasks organized by hierarchy with workflow columns.
 pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let _ = app;
-    let paragraph = Paragraph::new("Under development")
-        .style(Style::default().fg(Color::White))
+    // Get workflow columns from config
+    let workflow_columns = &app.config.workflow;
+
+    // Build header row with hierarchy columns and workflow status columns
+    let mut header_cells = vec![
+        Cell::from("Program"),
+        Cell::from("Project"),
+        Cell::from("Milestone"),
+        Cell::from("Task"),
+    ];
+
+    for status in workflow_columns {
+        header_cells.push(Cell::from(status.as_str()));
+    }
+
+    let header = Row::new(header_cells)
+        .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+        .height(1);
+
+    // Collect all tasks across the workspace
+    let mut rows = Vec::new();
+
+    // Get all programs
+    if let Ok(programs) = app.config.workspace.list_programs() {
+        for program in programs {
+            // Get all projects for this program
+            if let Ok(projects) = app.config.workspace.list_projects(&program.name) {
+                for project in projects {
+                    // Get all milestones for this project
+                    if let Ok(milestones) = app
+                        .config
+                        .workspace
+                        .list_milestones(&program.name, &project.name)
+                    {
+                        for milestone in milestones {
+                            // Get all tasks for this milestone
+                            if let Ok(tasks) = app.config.workspace.list_tasks(
+                                &program.name,
+                                &project.name,
+                                &milestone.name,
+                            ) {
+                                for task in tasks {
+                                    // Read task content to get status
+                                    let status = if let Ok(content) =
+                                        app.config.workspace.read_md_file(&task.path)
+                                    {
+                                        // Simple status extraction from frontmatter
+                                        extract_status_from_content(&content)
+                                    } else {
+                                        "Unknown".to_string()
+                                    };
+
+                                    // Build row cells
+                                    let mut cells = vec![
+                                        Cell::from(program.name.clone()),
+                                        Cell::from(project.name.clone()),
+                                        Cell::from(milestone.name.clone()),
+                                        Cell::from(task.name.clone()),
+                                    ];
+
+                                    // Add status cells for each workflow column
+                                    for workflow_status in workflow_columns {
+                                        let is_current = workflow_status == &status;
+                                        let cell_style = if is_current {
+                                            Style::default().fg(Color::Black).bg(Color::LightGreen)
+                                        } else {
+                                            Style::default().fg(Color::DarkGray)
+                                        };
+                                        cells.push(Cell::from(" ").style(cell_style));
+                                    }
+
+                                    rows.push(Row::new(cells).height(1));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If no tasks, show a placeholder row
+    if rows.is_empty() {
+        let mut cells = vec![
+            Cell::from("No tasks"),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+        ];
+        for _ in workflow_columns {
+            cells.push(Cell::from(""));
+        }
+        rows.push(Row::new(cells).height(1));
+    }
+
+    // Calculate column widths
+    let _total_columns = 4 + workflow_columns.len();
+    let base_width = 80 / 4; // 20% for each of the 4 hierarchy columns
+    let workflow_width = 20 / workflow_columns.len().max(1) as u16; // Remaining 20% divided among workflow columns
+
+    let mut constraints = vec![
+        Constraint::Percentage(base_width), // Program
+        Constraint::Percentage(base_width), // Project
+        Constraint::Percentage(base_width), // Milestone
+        Constraint::Percentage(base_width), // Task
+    ];
+
+    // Add equal width for each workflow column
+    for _ in workflow_columns {
+        constraints.push(Constraint::Percentage(workflow_width));
+    }
+
+    // Create the table
+    let table = Table::new(rows, &constraints)
+        .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title("Weekly Planning"),
-        );
+        )
+        .column_spacing(1);
 
-    f.render_widget(paragraph, area);
+    f.render_widget(table, area);
+}
+
+/// Extract status from markdown content (simple frontmatter parsing)
+fn extract_status_from_content(content: &str) -> String {
+    // Look for "status: <value>" in the frontmatter
+    for line in content.lines() {
+        if line.starts_with("status:") {
+            return line.trim_start_matches("status:").trim().to_string();
+        }
+    }
+    "Unknown".to_string()
 }
 
 pub fn render_content_viewer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
