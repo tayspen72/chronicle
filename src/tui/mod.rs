@@ -150,7 +150,6 @@ pub struct App {
     pub planning_wizard_selected_tasks: Vec<String>,
     pub planning_wizard_task_index: usize,
     pub planning_wizard_date_error: Option<String>,
-    pub planning_wizard_confirm_step: bool,
     // Task metadata cache for fast lookup
     pub task_cache: SharedTaskCache,
 }
@@ -199,7 +198,6 @@ impl App {
             planning_wizard_selected_tasks: Vec::new(),
             planning_wizard_task_index: 0,
             planning_wizard_date_error: None,
-            planning_wizard_confirm_step: false,
             task_cache: create_shared_cache(),
         };
 
@@ -421,6 +419,14 @@ impl App {
             KeyCode::Char(' ') => {
                 if self.current_view == ViewType::PlanningTaskPicker {
                     self.toggle_planning_task_selection();
+                } else if matches!(
+                    self.current_view,
+                    ViewType::InputProgram
+                        | ViewType::InputProject
+                        | ViewType::InputMilestone
+                        | ViewType::InputTask
+                ) {
+                    self.handle_input_char(' ');
                 }
             }
             KeyCode::Char(c) => {
@@ -1142,7 +1148,6 @@ impl App {
             ViewType::InputPlanningSessionDates => {
                 if self.planning_wizard_focus == 0 {
                     self.planning_wizard_date_error = None;
-                    self.planning_wizard_confirm_step = false;
                     self.planning_wizard_start_date.push(c);
                 }
             }
@@ -1177,7 +1182,6 @@ impl App {
             ViewType::InputPlanningSessionDates => {
                 if self.planning_wizard_focus == 0 {
                     self.planning_wizard_date_error = None;
-                    self.planning_wizard_confirm_step = false;
                     self.planning_wizard_start_date.pop();
                 }
             }
@@ -1447,7 +1451,6 @@ impl App {
         self.planning_wizard_selected_tasks = Vec::new();
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
-        self.planning_wizard_confirm_step = false;
         self.current_view = ViewType::InputPlanningSessionDates;
     }
 
@@ -2305,14 +2308,12 @@ impl App {
     }
 
     fn navigate_planning_dates_up(&mut self) {
-        self.planning_wizard_confirm_step = false;
         if self.planning_wizard_focus > 0 {
             self.planning_wizard_focus -= 1;
         }
     }
 
     fn navigate_planning_dates_down(&mut self) {
-        self.planning_wizard_confirm_step = false;
         if self.planning_wizard_focus < 3 {
             self.planning_wizard_focus += 1;
         }
@@ -2360,11 +2361,25 @@ impl App {
         let mut filtered: Vec<_> = cache
             .iter()
             .filter(|t| {
-                filter_lower.is_empty() || t.task_name.to_lowercase().contains(&filter_lower)
+                if filter_lower.is_empty() {
+                    return true;
+                }
+                // Search across all hierarchy levels
+                t.task_name.to_lowercase().contains(&filter_lower)
+                    || t.program.to_lowercase().contains(&filter_lower)
+                    || t.project.to_lowercase().contains(&filter_lower)
+                    || t.milestone.to_lowercase().contains(&filter_lower)
             })
             .cloned()
             .collect();
-        filtered.sort_by(|a, b| a.task_name.cmp(&b.task_name));
+        // Sort by hierarchy: program > project > milestone > task_name
+        filtered.sort_by(|a, b| {
+            a.program
+                .cmp(&b.program)
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.milestone.cmp(&b.milestone))
+                .then_with(|| a.task_name.cmp(&b.task_name))
+        });
         filtered
     }
 
@@ -2390,22 +2405,15 @@ impl App {
                 self.navigate_planning_dates_down();
             }
             2 => {
-                if !self.planning_wizard_confirm_step {
-                    if chrono::NaiveDate::parse_from_str(
-                        &self.planning_wizard_start_date,
-                        "%Y-%m-%d",
-                    )
+                if chrono::NaiveDate::parse_from_str(&self.planning_wizard_start_date, "%Y-%m-%d")
                     .is_err()
-                    {
-                        self.planning_wizard_date_error =
-                            Some("Invalid date format. Use YYYY-MM-DD".to_string());
-                        return;
-                    }
-                    self.planning_wizard_confirm_step = true;
-                    self.planning_wizard_date_error = None;
-                } else {
-                    self.finalize_planning_wizard_dates();
+                {
+                    self.planning_wizard_date_error =
+                        Some("Invalid date format. Use YYYY-MM-DD".to_string());
+                    return;
                 }
+                self.planning_wizard_date_error = None;
+                self.finalize_planning_wizard_dates();
             }
             3 => {
                 self.cancel_planning_wizard();
@@ -2428,7 +2436,6 @@ impl App {
         self.planning_wizard_selected_tasks = Vec::new();
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
-        self.planning_wizard_confirm_step = false;
         self.current_view = ViewType::TreeView;
         self.mode = Mode::Normal;
     }
