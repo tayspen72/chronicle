@@ -63,6 +63,10 @@ impl TaskCache {
     pub fn len(&self) -> usize {
         self.by_uuid.len()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &TaskMetadata> {
+        self.by_uuid.values()
+    }
 }
 
 pub type SharedTaskCache = Arc<RwLock<TaskCache>>;

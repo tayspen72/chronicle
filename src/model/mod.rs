@@ -110,7 +110,7 @@ impl Task {
 
 /// A task selected for inclusion in a planning session.
 /// Stores context (program/project/milestone) for display in planning view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SelectedTask {
     pub uuid: String,
     pub path: PathBuf,

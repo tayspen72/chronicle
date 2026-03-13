@@ -3,11 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::{App, Mode};
 use ratatui::{
+    Frame,
     layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
-    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -59,7 +59,23 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 match plan_type.as_str() {
                     "WeeklyPlanning" => {
                         title = "Current Plan".to_string();
-                        content_to_show = "Under development".to_string();
+                        if app.planning_session_active {
+                            let start = app.planning_session_start_date.as_deref().unwrap_or("?");
+                            let end = app.planning_session_end_date.as_deref().unwrap_or("?");
+                            let count = app.planning_session_tasks.len();
+                            content_to_show = format!(
+                                "# Current Plan\n\n\
+                                Period: {} to {}\n\
+                                Tasks: {}\n\n\
+                                Press / to access planning commands (Review Session, Close Planning Session, etc.)",
+                                start, end, count
+                            );
+                        } else {
+                            content_to_show = "# Current Plan\n\n\
+                                No active planning session.\n\n\
+                                Press / and type 'Start Planning Session' to begin planning."
+                                .to_string();
+                        }
                     }
                     "Backlog" => {
                         title = "Backlog".to_string();
@@ -1080,6 +1096,243 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .style(Style::default().fg(Color::White));
 
     f.render_widget(list, area);
+}
+
+pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+
+    let start_date_input = &app.planning_wizard_start_date;
+    let duration = &app.planning_wizard_duration;
+    let focus = app.planning_wizard_focus;
+
+    let start_date_display = if start_date_input.is_empty() {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    } else {
+        start_date_input.clone()
+    };
+
+    let days = match duration.as_str() {
+        "biweekly" => 14,
+        "6weekly" => 42,
+        _ => 7,
+    };
+
+    let end_date = chrono::NaiveDate::parse_from_str(&start_date_display, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.checked_add_days(chrono::Days::new(days)))
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| start_date_display.clone());
+
+    let fields = [
+        ("Start date:", start_date_display.as_str(), focus == 0),
+        ("Duration:", duration.as_str(), focus == 1),
+        ("End date:", end_date.as_str(), false),
+    ];
+
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let prompt_line = Line::from(vec![Span::styled(
+        "Start Planning Session",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let instructions_line = Line::from(Span::styled(
+        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![prompt_line, instructions_line]);
+    f.render_widget(header, chunks[0]);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (label, value, is_focused) in fields {
+        let style = if is_focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let line = Line::from(vec![
+            Span::styled(label, Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(value, style),
+        ]);
+        lines.push(line);
+
+        if is_focused && label == "Duration:" {
+            lines.push(Line::from(Span::styled(
+                "  ←/→: Cycle | weekly (7 days), biweekly (14 days), 6weekly (42 days)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    if let Some(ref error) = app.planning_wizard_date_error {
+        lines.push(Line::from(Span::styled(
+            format!("  ⚠ {}", error),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    let content = Paragraph::new(lines);
+    f.render_widget(content, chunks[1]);
+
+    let confirm_text = if app.planning_wizard_confirm_step {
+        "Press Enter again to confirm"
+    } else {
+        "[Confirm]"
+    };
+    let cancel_text = "[Cancel]";
+    let confirm_style = if app.planning_wizard_confirm_step {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else if focus == 2 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    let cancel_style = if focus == 3 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red)
+    };
+
+    let buttons = Paragraph::new(Line::from(vec![
+        Span::styled(confirm_text, confirm_style),
+        Span::styled("     ", Style::default().fg(Color::DarkGray)),
+        Span::styled(cancel_text, cancel_style),
+    ]));
+    f.render_widget(buttons, chunks[2]);
+}
+
+pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{List, ListItem, Paragraph};
+
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let prompt_line = Line::from(vec![Span::styled(
+        "Select Tasks for Planning Session",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let date_info = Line::from(Span::styled(
+        format!(
+            "{} → {}",
+            app.planning_session_start_date.as_deref().unwrap_or("?"),
+            app.planning_session_end_date.as_deref().unwrap_or("?")
+        ),
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![prompt_line, date_info]);
+    f.render_widget(header, chunks[0]);
+
+    let filter_prompt = Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            app.planning_wizard_task_filter.as_str(),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled("_", Style::default().fg(Color::Yellow)),
+    ]);
+    let filter_para = Paragraph::new(filter_prompt)
+        .block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::BOTTOM));
+    f.render_widget(filter_para, chunks[1]);
+
+    let filter_lower = app.planning_wizard_task_filter.to_lowercase();
+    let selected_set: std::collections::HashSet<_> =
+        app.planning_wizard_selected_tasks.iter().cloned().collect();
+
+    let cache = match app.task_cache.read() {
+        Ok(c) => c,
+        Err(_) => {
+            let empty = Paragraph::new("Unable to load tasks");
+            f.render_widget(empty, chunks[2]);
+            return;
+        }
+    };
+
+    let mut filtered_tasks: Vec<_> = cache
+        .iter()
+        .filter(|t| filter_lower.is_empty() || t.task_name.to_lowercase().contains(&filter_lower))
+        .collect();
+    filtered_tasks.sort_by(|a, b| a.task_name.cmp(&b.task_name));
+
+    let total_count = cache.len();
+    let selected_count = app.planning_wizard_selected_tasks.len();
+
+    let items: Vec<ListItem> = filtered_tasks
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| {
+            let is_selected = selected_set.contains(&task.uuid);
+            let is_focused = idx == app.planning_wizard_task_index;
+            let check = if is_selected { "[x]" } else { "[ ]" };
+            let name_style = if is_focused {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .bg(Color::DarkGray)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let path_display = format!("{} > {} > {}", task.program, task.project, task.milestone);
+            ListItem::new(Line::from(vec![
+                Span::styled(check, Style::default().fg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(&task.task_name, name_style),
+                Span::styled(
+                    format!(" ({})", path_display),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::NONE)
+            .title(format!(
+                "Tasks ({}/{} selected)",
+                selected_count, total_count
+            )),
+    );
+    f.render_widget(list, chunks[2]);
+
+    let confirm_style = if app.planning_wizard_selected_tasks.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    let buttons = Paragraph::new(Line::from(vec![
+        Span::styled("[Confirm]", confirm_style),
+        Span::styled("     ", Style::default().fg(Color::DarkGray)),
+        Span::styled("[Cancel]", Style::default().fg(Color::Red)),
+    ]));
+    f.render_widget(buttons, chunks[3]);
 }
 
 #[cfg(test)]

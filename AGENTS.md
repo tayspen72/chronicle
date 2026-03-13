@@ -7,10 +7,10 @@ Update it whenever an agent makes a mistake — commit the change so the whole t
 
 ## Project
 
-- **Domain**: [your domain — e.g. embedded firmware, web app, CLI tool]
-- **Languages**: [e.g. C/C++, TypeScript, Python]
-- **Build system**: [e.g. CMake, bun, cargo]
-- **Test framework**: [e.g. Unity/CMock, vitest, pytest]
+- **Domain**: CLI tool / TUI application (Markdown-native planner and journal)
+- **Languages**: Rust (2024 edition)
+- **Build system**: Cargo
+- **Test framework**: Built-in Rust testing (cargo test with tempfile for fixtures)
 
 ---
 
@@ -19,11 +19,16 @@ Update it whenever an agent makes a mistake — commit the change so the whole t
 Every agent must know these before touching anything.
 
 ```
-build:     <your build command>
-typecheck: <your typecheck command>
-test:      <your test command>
-lint:      <your lint command>
-format:    <your format command>
+build:     cargo build --release
+typecheck: cargo check
+test:      cargo test
+lint:      cargo clippy
+format:    cargo fmt
+```
+
+To run a **single test**:
+```
+cargo test <test_name>
 ```
 
 Run them in that order. Never suppress a warning to make a step pass.
@@ -34,16 +39,66 @@ Run them in that order. Never suppress a warning to make a step pass.
 
 ```
 /src        — production code
-/include    — public headers (if applicable)
-/test       — tests
+  /commands — CLI commands (init, new_task, jot, extract, task_template)
+  /model    — domain models (Program, Project, Milestone, Task)
+  /storage  — file I/O and persistence
+  /tui      — terminal UI components
+/tests      — integration tests (if any)
 /docs       — documentation
-/scripts    — helper scripts
+/templates  — markdown templates for elements
 ```
+
+---
+
+## Code Style
+
+### Imports
+- Use absolute imports within the crate (`crate::module::Item`)
+- Group std, external crates, and crate imports with blank lines between
+- Order: std → external → crate
+
+### Formatting
+- Run `cargo fmt` before committing
+- Use 4 spaces for indentation
+- Keep lines under 100 characters when practical
+- Use blank lines between function definitions
+
+### Types and Derives
+- Most structs use: `#[derive(Debug, Clone, Serialize, Deserialize, Default)]`
+- Error types use: `#[derive(Error, Debug)]` with `thiserror`
+- Add `#[must_use]` to functions that return important values
+
+### Naming Conventions
+- **Types**: PascalCase (`struct App`, `enum Mode`)
+- **Functions/variables**: snake_case (`let config = ...`, `fn load_config()`)
+- **Constants**: SCREAMING_SNAKE_CASE
+- **Modules**: snake_case (`mod storage`, `mod tui`)
+- **Files**: snake_case (`error.rs`, `mod.rs`)
+
+### Error Handling
+- Library code uses `crate::Result<T>` (wrapped with `thiserror`)
+- Binary entry point uses `anyhow::Result`
+- Convert errors at boundaries with `.map_err(|e| anyhow::anyhow!("{e}"))?`
+- Use descriptive error messages: `#[error("Configuration error: {0}")]`
+
+### Documentation
+- Module-level: `//! Description` at top of file
+- Public APIs: `/// Description` above items
+- Keep docs concise; focus on "what" and "why", not "how"
+
+### Testing
+- Use `tempfile` crate for tests needing temp directories
+- Integration tests go in `/tests` or can be in-module with `#[cfg(test)]`
 
 ---
 
 ## Conventions
 
+- **Serialization**: Use `serde` with YAML for configs, TOML for user settings
+- **Logging**: Use `tracing` with `tracing-subscriber` and `tracing-appender`
+- **TUI**: Uses `ratatui` + `crossterm` for terminal UI
+- **Date handling**: Use `chrono` with `DateTime<Utc>` for storage, `Local` for display
+- **IDs**: Use `uuid` v4 for unique identifiers
 
 ---
 
@@ -51,6 +106,8 @@ Run them in that order. Never suppress a warning to make a step pass.
 
 Do not touch these without an explicit instruction in the current session:
 
+- Release build optimizations in Cargo.toml (`lto = true`, `opt-level = "z"`)
+- Session files (`session-*.md`)
 
 ---
 
@@ -77,7 +134,7 @@ These five subagents are available. Use them in this order:
 
 Before any PR is opened:
 1. `@verify-app` reports all green
-2. Commit message follows [your convention, e.g. conventional commits]
+2. Commit message follows conventional commits
 3. No build artifacts, `.env` files, or lockfile changes unless intentional
 4. Docs updated if behavior changed
 
@@ -88,4 +145,4 @@ Before any PR is opened:
 _Append a rule here whenever an agent makes a mistake. One line, specific, actionable._
 
 <!-- example: Never use enums — prefer string literal unions -->
-<!-- example: Always run `bun run typecheck` before `bun run test` — type errors mask test failures -->
+<!-- example: Always run `cargo check` before `cargo test` — type errors mask test failures -->

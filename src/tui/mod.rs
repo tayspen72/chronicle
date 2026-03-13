@@ -14,24 +14,24 @@ use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend};
 use std::io::{self, Write};
 
 use crate::config::Config;
 use crate::model::{PlanningSession, SelectedTask, SessionStatus};
+use crate::storage::md::parse_element;
 use crate::storage::planning::{
-    archive_planning_session, create_planning_session, generate_session_uuid,
-    list_active_sessions, load_planning_session, save_planning_session,
+    archive_planning_session, create_planning_session, generate_session_uuid, list_active_sessions,
+    load_planning_session, save_planning_session,
 };
 use crate::storage::{
-    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
+    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
-use crate::storage::md::parse_element;
-use cache::{create_shared_cache, SharedTaskCache, TaskMetadata};
+use cache::{SharedTaskCache, TaskMetadata, create_shared_cache};
 use chrono::Local;
-use command::{get_command_list, CommandAction, CommandMatch};
+use command::{CommandAction, CommandMatch, get_command_list};
 use navigation::{SidebarItem, SidebarSection};
 use tree::TreeModel;
 
@@ -104,6 +104,8 @@ pub enum ViewType {
     InputMilestone,
     InputTask,
     InputTemplateField,
+    InputPlanningSessionDates,
+    PlanningTaskPicker,
 }
 
 pub struct App {
@@ -140,6 +142,15 @@ pub struct App {
     pub planning_session_end_date: Option<String>,
     pub rolled_over_tasks: Vec<String>,
     pub review_selection_index: usize,
+    // Planning wizard state (Step 1: dates, Step 2: task selection)
+    pub planning_wizard_start_date: String,
+    pub planning_wizard_duration: String,
+    pub planning_wizard_focus: usize,
+    pub planning_wizard_task_filter: String,
+    pub planning_wizard_selected_tasks: Vec<String>,
+    pub planning_wizard_task_index: usize,
+    pub planning_wizard_date_error: Option<String>,
+    pub planning_wizard_confirm_step: bool,
     // Task metadata cache for fast lookup
     pub task_cache: SharedTaskCache,
 }
@@ -181,6 +192,14 @@ impl App {
             planning_session_end_date: None,
             rolled_over_tasks: Vec::new(),
             review_selection_index: 0,
+            planning_wizard_start_date: String::new(),
+            planning_wizard_duration: "weekly".to_string(),
+            planning_wizard_focus: 0,
+            planning_wizard_task_filter: String::new(),
+            planning_wizard_selected_tasks: Vec::new(),
+            planning_wizard_task_index: 0,
+            planning_wizard_date_error: None,
+            planning_wizard_confirm_step: false,
             task_cache: create_shared_cache(),
         };
 
@@ -331,6 +350,10 @@ impl App {
                         state.focus = WizardFocus::CancelButton;
                         self.input_buffer.clear();
                     }
+                } else if self.current_view == ViewType::InputPlanningSessionDates
+                    || self.current_view == ViewType::PlanningTaskPicker
+                {
+                    self.cancel_planning_wizard();
                 } else if self.current_view == ViewType::TreeView {
                     // In TreeView, only navigate back if we're at root (empty path).
                     // When inside the tree (path not empty), do nothing because Left arrow
@@ -346,14 +369,30 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                self.navigate_right();
+                if self.current_view == ViewType::InputPlanningSessionDates
+                    && self.planning_wizard_focus == 1
+                {
+                    self.cycle_duration_right();
+                } else {
+                    self.navigate_right();
+                }
             }
             KeyCode::Left => {
-                self.navigate_left();
+                if self.current_view == ViewType::InputPlanningSessionDates
+                    && self.planning_wizard_focus == 1
+                {
+                    self.cycle_duration_left();
+                } else {
+                    self.navigate_left();
+                }
             }
             KeyCode::Up => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_up();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_up();
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    self.navigate_planning_tasks_up();
                 } else {
                     self.navigate_up();
                 }
@@ -361,6 +400,10 @@ impl App {
             KeyCode::Down => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_down();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_down();
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    self.navigate_planning_tasks_down();
                 } else {
                     self.navigate_down();
                 }
@@ -371,6 +414,13 @@ impl App {
             KeyCode::Tab => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_down();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_down();
+                }
+            }
+            KeyCode::Char(' ') => {
+                if self.current_view == ViewType::PlanningTaskPicker {
+                    self.toggle_planning_task_selection();
                 }
             }
             KeyCode::Char(c) => {
@@ -546,11 +596,31 @@ impl App {
     fn navigate_up(&mut self) {
         self.selected_entry_index =
             navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
+        self.sync_scope_from_sidebar_selection();
     }
 
     fn navigate_down(&mut self) {
         self.selected_entry_index =
             navigation::navigate_down(&self.sidebar_items, self.selected_entry_index);
+        self.sync_scope_from_sidebar_selection();
+    }
+
+    fn sync_scope_from_sidebar_selection(&mut self) {
+        let idx = self.selected_entry_index;
+        if idx >= self.sidebar_items.len() {
+            return;
+        }
+        let Some(path) = self.sidebar_items[idx].tree_path.clone() else {
+            return;
+        };
+        if path != self.tree_model.selected_path() {
+            self.set_selected_tree_path(path.clone());
+        }
+        // Also update current_* fields so wizard scope is accurate
+        self.current_program = path.first().cloned();
+        self.current_project = path.get(1).cloned();
+        self.current_milestone = path.get(2).cloned();
+        self.current_task = path.get(3).cloned();
     }
 
     fn open_tree_item(&mut self) {
@@ -577,8 +647,15 @@ impl App {
         }
 
         if let Some(plan_type) = &item.is_planning_item {
-            let _ = plan_type;
-            // Planning entries are placeholders for now; Enter should do nothing.
+            match plan_type.as_str() {
+                "WeeklyPlanning" => {
+                    self.current_view = ViewType::WeeklyPlanning;
+                }
+                "Backlog" => {
+                    self.current_view = ViewType::Backlog;
+                }
+                _ => {}
+            }
             return;
         }
 
@@ -1032,6 +1109,12 @@ impl App {
             ViewType::InputTemplateField => {
                 self.confirm_template_field();
             }
+            ViewType::InputPlanningSessionDates => {
+                self.confirm_planning_dates();
+            }
+            ViewType::PlanningTaskPicker => {
+                self.confirm_planning_tasks();
+            }
             _ => {}
         }
     }
@@ -1056,6 +1139,17 @@ impl App {
                     field.value.push(c);
                 }
             }
+            ViewType::InputPlanningSessionDates => {
+                if self.planning_wizard_focus == 0 {
+                    self.planning_wizard_date_error = None;
+                    self.planning_wizard_confirm_step = false;
+                    self.planning_wizard_start_date.push(c);
+                }
+            }
+            ViewType::PlanningTaskPicker => {
+                self.planning_wizard_task_filter.push(c);
+                self.planning_wizard_task_index = 0;
+            }
             _ => {}
         }
     }
@@ -1079,6 +1173,16 @@ impl App {
                     self.input_buffer.pop();
                     field.value.pop();
                 }
+            }
+            ViewType::InputPlanningSessionDates => {
+                if self.planning_wizard_focus == 0 {
+                    self.planning_wizard_date_error = None;
+                    self.planning_wizard_confirm_step = false;
+                    self.planning_wizard_start_date.pop();
+                }
+            }
+            ViewType::PlanningTaskPicker => {
+                self.planning_wizard_task_filter.pop();
             }
             _ => {}
         }
@@ -1109,7 +1213,10 @@ impl App {
                 {
                     self.execute_command(&cmd);
                 }
-                self.mode = Mode::Normal;
+                // Only reset mode if we're not entering a special mode that should persist
+                if !matches!(self.mode, Mode::TaskSelection | Mode::ReviewSession) {
+                    self.mode = Mode::Normal;
+                }
                 self.command_input.clear();
                 self.command_selection_index = 0;
             }
@@ -1328,36 +1435,88 @@ impl App {
     }
 
     fn start_planning_session(&mut self) {
-        self.planning_session_active = true;
-        let uuid = generate_session_uuid();
-        self.planning_session_uuid = Some(uuid.clone());
-        let start_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        self.planning_session_start_date = Some(start_date.clone());
-        let days = match self.config.planning_duration.as_str() {
+        self.open_planning_wizard();
+    }
+
+    fn open_planning_wizard(&mut self) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        self.planning_wizard_start_date = today;
+        self.planning_wizard_duration = self.config.planning_duration.clone();
+        self.planning_wizard_focus = 0;
+        self.planning_wizard_task_filter = String::new();
+        self.planning_wizard_selected_tasks = Vec::new();
+        self.planning_wizard_task_index = 0;
+        self.planning_wizard_date_error = None;
+        self.planning_wizard_confirm_step = false;
+        self.current_view = ViewType::InputPlanningSessionDates;
+    }
+
+    fn finalize_planning_wizard_dates(&mut self) {
+        let start_date =
+            match chrono::NaiveDate::parse_from_str(&self.planning_wizard_start_date, "%Y-%m-%d") {
+                Ok(d) => d,
+                Err(_) => {
+                    self.planning_wizard_date_error =
+                        Some("Invalid date format. Use YYYY-MM-DD".to_string());
+                    return;
+                }
+            };
+
+        let days = match self.planning_wizard_duration.as_str() {
             "biweekly" => 14,
             "6weekly" => 42,
             _ => 7,
         };
-        let end_date = chrono::Local::now()
-            .date_naive()
+
+        let end_date = start_date
             .checked_add_days(chrono::Days::new(days))
             .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_default();
-        self.planning_session_end_date = Some(end_date.clone());
+            .unwrap_or_else(|| start_date.format("%Y-%m-%d").to_string());
+
+        self.planning_wizard_date_error = None;
+        self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
+        self.planning_session_end_date = Some(end_date);
+        self.current_view = ViewType::PlanningTaskPicker;
+    }
+
+    fn finalize_planning_session(&mut self) {
+        let uuid = generate_session_uuid();
+        self.planning_session_uuid = Some(uuid.clone());
+        self.planning_session_active = true;
         self.planning_session_tasks.clear();
         self.rolled_over_tasks.clear();
+
+        let cache = match self.task_cache.read() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        for task_uuid in self.planning_wizard_selected_tasks.drain(..) {
+            if let Some(meta) = cache.get_by_uuid(&task_uuid) {
+                self.planning_session_tasks.push(SelectedTask {
+                    uuid: meta.uuid.clone(),
+                    path: meta.path.clone(),
+                    program: meta.program.clone(),
+                    project: meta.project.clone(),
+                    milestone: meta.milestone.clone(),
+                    task_name: meta.task_name.clone(),
+                    status: meta.status.clone(),
+                });
+            }
+        }
 
         if let Err(e) = create_planning_session(
             &self.config.workspace,
             &uuid,
-            &start_date,
-            &end_date,
-            &self.config.planning_duration,
+            self.planning_session_start_date.as_ref().unwrap(),
+            self.planning_session_end_date.as_ref().unwrap(),
+            &self.planning_wizard_duration,
         ) {
             eprintln!("Failed to create planning session file: {e}");
         }
 
-        self.mode = Mode::TaskSelection;
+        self.current_view = ViewType::WeeklyPlanning;
+        self.mode = Mode::Normal;
     }
 
     fn close_planning_session(&mut self) {
@@ -1369,9 +1528,10 @@ impl App {
         let rolled_tasks = std::mem::take(&mut self.rolled_over_tasks);
 
         if let Some(start_date) = &self.planning_session_start_date
-            && let Err(e) = archive_planning_session(&self.config.workspace, start_date) {
-                eprintln!("Failed to archive planning session: {e}");
-            }
+            && let Err(e) = archive_planning_session(&self.config.workspace, start_date)
+        {
+            eprintln!("Failed to archive planning session: {e}");
+        }
 
         self.planning_session_active = false;
         self.planning_session_uuid = None;
@@ -1388,7 +1548,9 @@ impl App {
 
     fn start_planning_session_with_rolled_tasks(&mut self, task_uuids: Vec<String>) {
         // Resolve task UUIDs to SelectedTask from cache
-        let tasks: Vec<_> = self.task_cache.read()
+        let tasks: Vec<_> = self
+            .task_cache
+            .read()
             .ok()
             .and_then(|cache| {
                 task_uuids
@@ -1410,9 +1572,15 @@ impl App {
     }
 
     fn save_current_planning_session(&mut self) {
-        let Some(uuid) = &self.planning_session_uuid else { return };
-        let Some(start_date) = &self.planning_session_start_date else { return };
-        let Some(end_date) = &self.planning_session_end_date else { return };
+        let Some(uuid) = &self.planning_session_uuid else {
+            return;
+        };
+        let Some(start_date) = &self.planning_session_start_date else {
+            return;
+        };
+        let Some(end_date) = &self.planning_session_end_date else {
+            return;
+        };
 
         let session = PlanningSession {
             element_type: "planning".to_string(),
@@ -1421,7 +1589,11 @@ impl App {
             end_date: end_date.clone(),
             duration: self.config.planning_duration.clone(),
             status: SessionStatus::Active,
-            tasks: self.planning_session_tasks.iter().map(|t| t.uuid.clone()).collect(),
+            tasks: self
+                .planning_session_tasks
+                .iter()
+                .map(|t| t.uuid.clone())
+                .collect(),
         };
 
         if let Err(e) = save_planning_session(&self.config.workspace, &session) {
@@ -1434,11 +1606,17 @@ impl App {
             return;
         }
 
-        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else { return };
-        if item.is_header || item.indent < 3 { return; }
+        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else {
+            return;
+        };
+        if item.is_header || item.indent < 3 {
+            return;
+        }
         let Some(path) = &item.path else { return };
 
-        let selected_task = self.task_cache.read()
+        let selected_task = self
+            .task_cache
+            .read()
             .ok()
             .and_then(|cache| cache.get_by_path(path).cloned())
             .map(SelectedTask::from)
@@ -1446,7 +1624,11 @@ impl App {
 
         let Some(task) = selected_task else { return };
 
-        if let Some(pos) = self.planning_session_tasks.iter().position(|t| t.uuid == task.uuid) {
+        if let Some(pos) = self
+            .planning_session_tasks
+            .iter()
+            .position(|t| t.uuid == task.uuid)
+        {
             self.planning_session_tasks.remove(pos);
         } else {
             self.planning_session_tasks.push(task);
@@ -1456,10 +1638,16 @@ impl App {
         self.save_current_planning_session();
     }
 
-    fn read_task_from_file(&self, path: &std::path::Path, item: &SidebarItem) -> Option<SelectedTask> {
+    fn read_task_from_file(
+        &self,
+        path: &std::path::Path,
+        item: &SidebarItem,
+    ) -> Option<SelectedTask> {
         let content = self.config.workspace.read_md_file(path).ok()?;
         let parsed = parse_element(&content).ok().flatten()?;
-        let crate::model::Element::Task(task) = parsed else { return None };
+        let crate::model::Element::Task(task) = parsed else {
+            return None;
+        };
 
         let tree_path = item.tree_path.clone().unwrap_or_default();
         let program = tree_path.first()?.clone();
@@ -1480,12 +1668,17 @@ impl App {
     fn cancel_task_selection(&mut self) {
         // Delete the planning session file if it exists
         if let Some(start_date) = &self.planning_session_start_date {
-            let path = self.config.workspace.join("planning").join("current")
+            let path = self
+                .config
+                .workspace
+                .join("planning")
+                .join("current")
                 .join(format!("{}-planning.md", start_date));
             if path.exists()
-                && let Err(e) = std::fs::remove_file(&path) {
-                    eprintln!("Failed to delete planning session file: {e}");
-                }
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                eprintln!("Failed to delete planning session file: {e}");
+            }
         }
 
         self.planning_session_active = false;
@@ -1518,7 +1711,9 @@ impl App {
     }
 
     fn cycle_task_status(&mut self) {
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+            return;
+        };
         let workflow = &self.config.workflow;
         if workflow.is_empty() {
             return;
@@ -1534,7 +1729,12 @@ impl App {
     }
 
     fn update_review_task_status(&mut self, new_status: &str) {
-        let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else { return };
+        let Some(task) = self
+            .planning_session_tasks
+            .get_mut(self.review_selection_index)
+        else {
+            return;
+        };
         let old_status = task.status.clone();
         if old_status == new_status {
             return;
@@ -1551,18 +1751,21 @@ impl App {
 
         // Update cache
         if let Ok(mut cache) = self.task_cache.write()
-            && let Some(meta) = cache.get_by_path(&task.path) {
-                let mut updated = meta.clone();
-                updated.status = new_status.to_string();
-                cache.insert(updated);
-            }
+            && let Some(meta) = cache.get_by_path(&task.path)
+        {
+            let mut updated = meta.clone();
+            updated.status = new_status.to_string();
+            cache.insert(updated);
+        }
 
         // Save session file
         self.save_current_planning_session();
     }
 
     fn toggle_rollover(&mut self) {
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+            return;
+        };
         let uuid = &task.uuid;
 
         if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == uuid) {
@@ -1576,7 +1779,9 @@ impl App {
         if self.planning_session_tasks.is_empty() {
             return;
         }
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+            return;
+        };
 
         // Remove from rolled_over if present
         if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == &task.uuid) {
@@ -1584,10 +1789,13 @@ impl App {
         }
 
         // Remove from planning session tasks
-        self.planning_session_tasks.remove(self.review_selection_index);
+        self.planning_session_tasks
+            .remove(self.review_selection_index);
 
         // Adjust selection index
-        if self.review_selection_index >= self.planning_session_tasks.len() && self.review_selection_index > 0 {
+        if self.review_selection_index >= self.planning_session_tasks.len()
+            && self.review_selection_index > 0
+        {
             self.review_selection_index -= 1;
         }
 
@@ -1596,7 +1804,9 @@ impl App {
     }
 
     fn launch_editor_for_review_task(&mut self) {
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+            return;
+        };
         let path = task.path.clone();
         self.launch_editor(&path);
     }
@@ -1607,11 +1817,25 @@ impl App {
         };
 
         for program in programs {
-            let Ok(projects) = self.config.workspace.list_projects(&program.name) else { continue };
+            let Ok(projects) = self.config.workspace.list_projects(&program.name) else {
+                continue;
+            };
             for project in projects {
-                let Ok(milestones) = self.config.workspace.list_milestones(&program.name, &project.name) else { continue };
+                let Ok(milestones) = self
+                    .config
+                    .workspace
+                    .list_milestones(&program.name, &project.name)
+                else {
+                    continue;
+                };
                 for milestone in milestones {
-                    let Ok(tasks) = self.config.workspace.list_tasks(&program.name, &project.name, &milestone.name) else { continue };
+                    let Ok(tasks) = self.config.workspace.list_tasks(
+                        &program.name,
+                        &project.name,
+                        &milestone.name,
+                    ) else {
+                        continue;
+                    };
                     for task in tasks {
                         self.cache_task_from_file(
                             &task.path,
@@ -1625,10 +1849,22 @@ impl App {
         }
     }
 
-    fn cache_task_from_file(&self, path: &std::path::Path, program: &str, project: &str, milestone: &str) {
-        let Ok(content) = self.config.workspace.read_md_file(path) else { return };
-        let Some(parsed) = parse_element(&content).ok().flatten() else { return };
-        let crate::model::Element::Task(t) = parsed else { return };
+    fn cache_task_from_file(
+        &self,
+        path: &std::path::Path,
+        program: &str,
+        project: &str,
+        milestone: &str,
+    ) {
+        let Ok(content) = self.config.workspace.read_md_file(path) else {
+            return;
+        };
+        let Some(parsed) = parse_element(&content).ok().flatten() else {
+            return;
+        };
+        let crate::model::Element::Task(t) = parsed else {
+            return;
+        };
 
         if let Ok(mut cache) = self.task_cache.write() {
             cache.insert(TaskMetadata {
@@ -1644,11 +1880,18 @@ impl App {
     }
 
     pub fn resume_planning_session(&mut self) {
-        let Ok(sessions) = list_active_sessions(&self.config.workspace) else { return };
-        let Some(session_path) = sessions.first() else { return };
+        let Ok(sessions) = list_active_sessions(&self.config.workspace) else {
+            return;
+        };
+        let Some(session_path) = sessions.first() else {
+            return;
+        };
 
         let Ok(session) = load_planning_session(session_path) else {
-            eprintln!("Failed to load planning session from {}", session_path.display());
+            eprintln!(
+                "Failed to load planning session from {}",
+                session_path.display()
+            );
             return;
         };
 
@@ -1666,7 +1909,8 @@ impl App {
 
         for uuid in &session.tasks {
             if let Some(meta) = cache.get_by_uuid(uuid) {
-                self.planning_session_tasks.push(SelectedTask::from(meta.clone()));
+                self.planning_session_tasks
+                    .push(SelectedTask::from(meta.clone()));
             }
         }
     }
@@ -1789,7 +2033,30 @@ impl App {
             &base_keywords
         };
 
-        let fields: Vec<FieldInfo> = all_fields
+        // Build scope string showing where the new element will be created
+        let scope_value = match template_name {
+            "program" => "Programs (root level)".to_string(),
+            "project" => self.current_program.clone().unwrap_or_default(),
+            "milestone" | "task" => {
+                let mut parts = Vec::new();
+                if let Some(ref p) = self.current_program {
+                    parts.push(p.clone());
+                }
+                if let Some(ref p) = self.current_project {
+                    parts.push(p.clone());
+                }
+                if template_name == "task"
+                    && let Some(ref p) = self.current_milestone
+                {
+                    parts.push(p.clone());
+                }
+                parts.join(" > ")
+            }
+            "journal" => "Journal".to_string(),
+            _ => "".to_string(),
+        };
+
+        let mut fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .enumerate()
             .map(|(i, (label, placeholder, _))| {
@@ -1803,12 +2070,23 @@ impl App {
                     label,
                     placeholder,
                     value,
-                    is_focused: i == 0 && !is_keyword,
+                    is_focused: false,
                     is_editable: !is_keyword,
-                    display_order: i,
+                    display_order: i + 1,
                 }
             })
             .collect();
+
+        // Add scope field at the beginning (non-editable, shows creation path)
+        let scope_field = FieldInfo {
+            label: "Creating in:".to_string(),
+            placeholder: "SCOPE".to_string(),
+            value: scope_value,
+            is_focused: false,
+            is_editable: false,
+            display_order: 0,
+        };
+        fields.insert(0, scope_field);
 
         let initial_focus = fields
             .iter()
@@ -1976,6 +2254,10 @@ impl App {
                             .position(|item| !item.is_header && item.name == *element_name)
                         {
                             self.selected_entry_index = pos;
+                            // Also update tree_model.selected_path to sync the breadcrumb
+                            if let Some(ref tree_path) = self.sidebar_items[pos].tree_path {
+                                self.tree_model.set_selected_path(tree_path.clone());
+                            }
                         }
                     }
 
@@ -2020,6 +2302,135 @@ impl App {
 
     fn draw(&self, f: &mut Frame) {
         layout::render(f, self);
+    }
+
+    fn navigate_planning_dates_up(&mut self) {
+        self.planning_wizard_confirm_step = false;
+        if self.planning_wizard_focus > 0 {
+            self.planning_wizard_focus -= 1;
+        }
+    }
+
+    fn navigate_planning_dates_down(&mut self) {
+        self.planning_wizard_confirm_step = false;
+        if self.planning_wizard_focus < 3 {
+            self.planning_wizard_focus += 1;
+        }
+    }
+
+    fn cycle_duration_left(&mut self) {
+        self.planning_wizard_duration = match self.planning_wizard_duration.as_str() {
+            "weekly" => "6weekly".to_string(),
+            "biweekly" => "weekly".to_string(),
+            "6weekly" => "biweekly".to_string(),
+            _ => "weekly".to_string(),
+        };
+    }
+
+    fn cycle_duration_right(&mut self) {
+        self.planning_wizard_duration = match self.planning_wizard_duration.as_str() {
+            "weekly" => "biweekly".to_string(),
+            "biweekly" => "6weekly".to_string(),
+            "6weekly" => "weekly".to_string(),
+            _ => "weekly".to_string(),
+        };
+    }
+
+    fn navigate_planning_tasks_up(&mut self) {
+        let filtered = self.get_filtered_tasks();
+        if !filtered.is_empty() && self.planning_wizard_task_index > 0 {
+            self.planning_wizard_task_index -= 1;
+        }
+    }
+
+    fn navigate_planning_tasks_down(&mut self) {
+        let filtered = self.get_filtered_tasks();
+        let max_idx = filtered.len().saturating_sub(1);
+        if self.planning_wizard_task_index < max_idx {
+            self.planning_wizard_task_index += 1;
+        }
+    }
+
+    fn get_filtered_tasks(&self) -> Vec<crate::tui::cache::TaskMetadata> {
+        let cache = match self.task_cache.read() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let filter_lower = self.planning_wizard_task_filter.to_lowercase();
+        let mut filtered: Vec<_> = cache
+            .iter()
+            .filter(|t| {
+                filter_lower.is_empty() || t.task_name.to_lowercase().contains(&filter_lower)
+            })
+            .cloned()
+            .collect();
+        filtered.sort_by(|a, b| a.task_name.cmp(&b.task_name));
+        filtered
+    }
+
+    fn toggle_planning_task_selection(&mut self) {
+        let filtered_tasks = self.get_filtered_tasks();
+        if let Some(task) = filtered_tasks.get(self.planning_wizard_task_index) {
+            let uuid = task.uuid.clone();
+            if let Some(pos) = self
+                .planning_wizard_selected_tasks
+                .iter()
+                .position(|u| *u == uuid)
+            {
+                self.planning_wizard_selected_tasks.remove(pos);
+            } else {
+                self.planning_wizard_selected_tasks.push(uuid);
+            }
+        }
+    }
+
+    fn confirm_planning_dates(&mut self) {
+        match self.planning_wizard_focus {
+            0 | 1 => {
+                self.navigate_planning_dates_down();
+            }
+            2 => {
+                if !self.planning_wizard_confirm_step {
+                    if chrono::NaiveDate::parse_from_str(
+                        &self.planning_wizard_start_date,
+                        "%Y-%m-%d",
+                    )
+                    .is_err()
+                    {
+                        self.planning_wizard_date_error =
+                            Some("Invalid date format. Use YYYY-MM-DD".to_string());
+                        return;
+                    }
+                    self.planning_wizard_confirm_step = true;
+                    self.planning_wizard_date_error = None;
+                } else {
+                    self.finalize_planning_wizard_dates();
+                }
+            }
+            3 => {
+                self.cancel_planning_wizard();
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_planning_tasks(&mut self) {
+        if !self.planning_wizard_selected_tasks.is_empty() {
+            self.finalize_planning_session();
+        }
+    }
+
+    fn cancel_planning_wizard(&mut self) {
+        self.planning_wizard_start_date = String::new();
+        self.planning_wizard_duration = "weekly".to_string();
+        self.planning_wizard_focus = 0;
+        self.planning_wizard_task_filter = String::new();
+        self.planning_wizard_selected_tasks = Vec::new();
+        self.planning_wizard_task_index = 0;
+        self.planning_wizard_date_error = None;
+        self.planning_wizard_confirm_step = false;
+        self.current_view = ViewType::TreeView;
+        self.mode = Mode::Normal;
     }
 }
 
