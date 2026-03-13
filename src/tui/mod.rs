@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod command;
 pub mod layout;
 pub mod navigation;
@@ -19,9 +20,16 @@ use ratatui::{backend::CrosstermBackend, Frame, Terminal};
 use std::io::{self, Write};
 
 use crate::config::Config;
+use crate::model::{PlanningSession, SelectedTask, SessionStatus};
+use crate::storage::planning::{
+    archive_planning_session, create_planning_session, generate_session_uuid,
+    list_active_sessions, load_planning_session, save_planning_session,
+};
 use crate::storage::{
     validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
 };
+use crate::storage::md::parse_element;
+use cache::{create_shared_cache, SharedTaskCache, TaskMetadata};
 use chrono::Local;
 use command::{get_command_list, CommandAction, CommandMatch};
 use navigation::{SidebarItem, SidebarSection};
@@ -37,6 +45,10 @@ pub enum Mode {
     /// User is inputting data (e.g., creating element)
     #[allow(dead_code)]
     Input, // TODO: Will be used for input mode in future sprint
+    /// User is selecting tasks for a planning session
+    TaskSelection,
+    /// User is reviewing tasks in a planning session
+    ReviewSession,
 }
 
 #[derive(Debug, Clone)]
@@ -122,9 +134,14 @@ pub struct App {
     pub template_field_state: Option<TemplateFieldState>,
     // Planning session state
     pub planning_session_active: bool,
-    pub planning_session_tasks: Vec<String>, // UUIDs or paths of selected tasks
+    pub planning_session_uuid: Option<String>,
+    pub planning_session_tasks: Vec<SelectedTask>,
     pub planning_session_start_date: Option<String>,
     pub planning_session_end_date: Option<String>,
+    pub rolled_over_tasks: Vec<String>,
+    pub review_selection_index: usize,
+    // Task metadata cache for fast lookup
+    pub task_cache: SharedTaskCache,
 }
 
 impl App {
@@ -158,12 +175,18 @@ impl App {
             sidebar_items: Vec::new(),
             template_field_state: None,
             planning_session_active: false,
+            planning_session_uuid: None,
             planning_session_tasks: Vec::new(),
             planning_session_start_date: None,
             planning_session_end_date: None,
+            rolled_over_tasks: Vec::new(),
+            review_selection_index: 0,
+            task_cache: create_shared_cache(),
         };
 
         app.load_tree_view_data();
+        app.build_task_cache();
+        app.resume_planning_session();
         app
     }
 
@@ -220,6 +243,71 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode) {
+        // Handle TaskSelection mode specially
+        if self.mode == Mode::TaskSelection {
+            match code {
+                KeyCode::Char(' ') => {
+                    self.toggle_task_selection();
+                }
+                KeyCode::Enter => {
+                    if !self.planning_session_tasks.is_empty() {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::WeeklyPlanning;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.cancel_task_selection();
+                }
+                KeyCode::Right => {
+                    self.navigate_right();
+                }
+                KeyCode::Left => {
+                    self.navigate_left();
+                }
+                KeyCode::Up => {
+                    self.navigate_up();
+                }
+                KeyCode::Down => {
+                    self.navigate_down();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle ReviewSession mode specially
+        if self.mode == Mode::ReviewSession {
+            match code {
+                KeyCode::Char('s') => {
+                    self.cycle_task_status();
+                }
+                KeyCode::Char('r') => {
+                    self.toggle_rollover();
+                }
+                KeyCode::Char('d') => {
+                    self.mark_task_done();
+                }
+                KeyCode::Char('x') => {
+                    self.remove_task_from_session();
+                }
+                KeyCode::Enter => {
+                    self.launch_editor_for_review_task();
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.current_view = ViewType::WeeklyPlanning;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.navigate_review(-1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.navigate_review(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('/') => {
                 self.mode = Mode::CommandPalette;
@@ -876,7 +964,7 @@ impl App {
         self.sidebar_items
             .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
         self.sidebar_items.push(
-            SidebarItem::new("Weekly Planning", SidebarSection::Planning)
+            SidebarItem::new("Current Plan", SidebarSection::Planning)
                 .planning_item("WeeklyPlanning"),
         );
         self.sidebar_items
@@ -1085,6 +1173,9 @@ impl App {
             Some(CommandAction::ClosePlanningSession) => {
                 self.close_planning_session();
             }
+            Some(CommandAction::ReviewSession) => {
+                self.start_review_session();
+            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1237,16 +1328,36 @@ impl App {
     }
 
     fn start_planning_session(&mut self) {
-        if self.planning_session_active {
-            println!("A planning session is already active. Please close it first.");
-            return;
-        }
         self.planning_session_active = true;
-        self.planning_session_start_date =
-            Some(chrono::Local::now().format("%Y-%m-%d").to_string());
-        self.planning_session_end_date = Some(chrono::Local::now().format("%Y-%m-%d").to_string());
+        let uuid = generate_session_uuid();
+        self.planning_session_uuid = Some(uuid.clone());
+        let start_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        self.planning_session_start_date = Some(start_date.clone());
+        let days = match self.config.planning_duration.as_str() {
+            "biweekly" => 14,
+            "6weekly" => 42,
+            _ => 7,
+        };
+        let end_date = chrono::Local::now()
+            .date_naive()
+            .checked_add_days(chrono::Days::new(days))
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+        self.planning_session_end_date = Some(end_date.clone());
         self.planning_session_tasks.clear();
-        self.current_view = ViewType::WeeklyPlanning;
+        self.rolled_over_tasks.clear();
+
+        if let Err(e) = create_planning_session(
+            &self.config.workspace,
+            &uuid,
+            &start_date,
+            &end_date,
+            &self.config.planning_duration,
+        ) {
+            eprintln!("Failed to create planning session file: {e}");
+        }
+
+        self.mode = Mode::TaskSelection;
     }
 
     fn close_planning_session(&mut self) {
@@ -1254,12 +1365,310 @@ impl App {
             println!("No active planning session to close.");
             return;
         }
-        println!("Reviewing and closing planning session...");
+
+        let rolled_tasks = std::mem::take(&mut self.rolled_over_tasks);
+
+        if let Some(start_date) = &self.planning_session_start_date
+            && let Err(e) = archive_planning_session(&self.config.workspace, start_date) {
+                eprintln!("Failed to archive planning session: {e}");
+            }
+
         self.planning_session_active = false;
+        self.planning_session_uuid = None;
         self.planning_session_start_date = None;
         self.planning_session_end_date = None;
         self.planning_session_tasks.clear();
-        self.current_view = ViewType::TreeView;
+
+        if !rolled_tasks.is_empty() {
+            self.start_planning_session_with_rolled_tasks(rolled_tasks);
+        } else {
+            self.current_view = ViewType::TreeView;
+        }
+    }
+
+    fn start_planning_session_with_rolled_tasks(&mut self, task_uuids: Vec<String>) {
+        // Resolve task UUIDs to SelectedTask from cache
+        let tasks: Vec<_> = self.task_cache.read()
+            .ok()
+            .and_then(|cache| {
+                task_uuids
+                    .iter()
+                    .filter_map(|uuid| cache.get_by_uuid(uuid).cloned())
+                    .map(SelectedTask::from)
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .unwrap_or_default();
+
+        // Start a fresh session and add the rolled tasks
+        self.start_planning_session();
+        self.planning_session_tasks = tasks;
+        self.rolled_over_tasks = task_uuids;
+        self.save_current_planning_session();
+        self.mode = Mode::Normal;
+        self.current_view = ViewType::WeeklyPlanning;
+    }
+
+    fn save_current_planning_session(&mut self) {
+        let Some(uuid) = &self.planning_session_uuid else { return };
+        let Some(start_date) = &self.planning_session_start_date else { return };
+        let Some(end_date) = &self.planning_session_end_date else { return };
+
+        let session = PlanningSession {
+            element_type: "planning".to_string(),
+            uuid: uuid.clone(),
+            start_date: start_date.clone(),
+            end_date: end_date.clone(),
+            duration: self.config.planning_duration.clone(),
+            status: SessionStatus::Active,
+            tasks: self.planning_session_tasks.iter().map(|t| t.uuid.clone()).collect(),
+        };
+
+        if let Err(e) = save_planning_session(&self.config.workspace, &session) {
+            eprintln!("Failed to save planning session: {e}");
+        }
+    }
+
+    fn toggle_task_selection(&mut self) {
+        if self.mode != Mode::TaskSelection {
+            return;
+        }
+
+        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else { return };
+        if item.is_header || item.indent < 3 { return; }
+        let Some(path) = &item.path else { return };
+
+        let selected_task = self.task_cache.read()
+            .ok()
+            .and_then(|cache| cache.get_by_path(path).cloned())
+            .map(SelectedTask::from)
+            .or_else(|| self.read_task_from_file(path, item));
+
+        let Some(task) = selected_task else { return };
+
+        if let Some(pos) = self.planning_session_tasks.iter().position(|t| t.uuid == task.uuid) {
+            self.planning_session_tasks.remove(pos);
+        } else {
+            self.planning_session_tasks.push(task);
+        }
+
+        // Save session to file
+        self.save_current_planning_session();
+    }
+
+    fn read_task_from_file(&self, path: &std::path::Path, item: &SidebarItem) -> Option<SelectedTask> {
+        let content = self.config.workspace.read_md_file(path).ok()?;
+        let parsed = parse_element(&content).ok().flatten()?;
+        let crate::model::Element::Task(task) = parsed else { return None };
+
+        let tree_path = item.tree_path.clone().unwrap_or_default();
+        let program = tree_path.first()?.clone();
+        let project = tree_path.get(1)?.clone();
+        let milestone = tree_path.get(2)?.clone();
+
+        Some(SelectedTask {
+            uuid: task.uuid,
+            path: path.to_path_buf(),
+            program,
+            project,
+            milestone,
+            task_name: task.title,
+            status: task.status,
+        })
+    }
+
+    fn cancel_task_selection(&mut self) {
+        // Delete the planning session file if it exists
+        if let Some(start_date) = &self.planning_session_start_date {
+            let path = self.config.workspace.join("planning").join("current")
+                .join(format!("{}-planning.md", start_date));
+            if path.exists()
+                && let Err(e) = std::fs::remove_file(&path) {
+                    eprintln!("Failed to delete planning session file: {e}");
+                }
+        }
+
+        self.planning_session_active = false;
+        self.planning_session_uuid = None;
+        self.planning_session_tasks.clear();
+        self.planning_session_start_date = None;
+        self.planning_session_end_date = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn start_review_session(&mut self) {
+        if !self.planning_session_active || self.planning_session_tasks.is_empty() {
+            return;
+        }
+        self.review_selection_index = 0;
+        self.rolled_over_tasks.clear();
+        self.mode = Mode::ReviewSession;
+    }
+
+    fn navigate_review(&mut self, direction: isize) {
+        if self.planning_session_tasks.is_empty() {
+            return;
+        }
+        let new_idx = if direction < 0 {
+            self.review_selection_index.saturating_sub(1)
+        } else {
+            (self.review_selection_index + 1).min(self.planning_session_tasks.len() - 1)
+        };
+        self.review_selection_index = new_idx;
+    }
+
+    fn cycle_task_status(&mut self) {
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let workflow = &self.config.workflow;
+        if workflow.is_empty() {
+            return;
+        }
+        let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
+        let next_idx = (current_idx + 1) % workflow.len();
+        let new_status = workflow[next_idx].clone();
+        self.update_review_task_status(&new_status);
+    }
+
+    fn mark_task_done(&mut self) {
+        self.update_review_task_status("done");
+    }
+
+    fn update_review_task_status(&mut self, new_status: &str) {
+        let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else { return };
+        let old_status = task.status.clone();
+        if old_status == new_status {
+            return;
+        }
+
+        // Update task file
+        if let Err(e) = crate::storage::md::update_task_status(&task.path, new_status) {
+            eprintln!("Failed to update task status: {e}");
+            return;
+        }
+
+        // Update in-memory state
+        task.status = new_status.to_string();
+
+        // Update cache
+        if let Ok(mut cache) = self.task_cache.write()
+            && let Some(meta) = cache.get_by_path(&task.path) {
+                let mut updated = meta.clone();
+                updated.status = new_status.to_string();
+                cache.insert(updated);
+            }
+
+        // Save session file
+        self.save_current_planning_session();
+    }
+
+    fn toggle_rollover(&mut self) {
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let uuid = &task.uuid;
+
+        if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == uuid) {
+            self.rolled_over_tasks.remove(pos);
+        } else {
+            self.rolled_over_tasks.push(uuid.clone());
+        }
+    }
+
+    fn remove_task_from_session(&mut self) {
+        if self.planning_session_tasks.is_empty() {
+            return;
+        }
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+
+        // Remove from rolled_over if present
+        if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == &task.uuid) {
+            self.rolled_over_tasks.remove(pos);
+        }
+
+        // Remove from planning session tasks
+        self.planning_session_tasks.remove(self.review_selection_index);
+
+        // Adjust selection index
+        if self.review_selection_index >= self.planning_session_tasks.len() && self.review_selection_index > 0 {
+            self.review_selection_index -= 1;
+        }
+
+        // Save session file
+        self.save_current_planning_session();
+    }
+
+    fn launch_editor_for_review_task(&mut self) {
+        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else { return };
+        let path = task.path.clone();
+        self.launch_editor(&path);
+    }
+
+    pub fn build_task_cache(&mut self) {
+        let Ok(programs) = self.config.workspace.list_programs() else {
+            return;
+        };
+
+        for program in programs {
+            let Ok(projects) = self.config.workspace.list_projects(&program.name) else { continue };
+            for project in projects {
+                let Ok(milestones) = self.config.workspace.list_milestones(&program.name, &project.name) else { continue };
+                for milestone in milestones {
+                    let Ok(tasks) = self.config.workspace.list_tasks(&program.name, &project.name, &milestone.name) else { continue };
+                    for task in tasks {
+                        self.cache_task_from_file(
+                            &task.path,
+                            &program.name,
+                            &project.name,
+                            &milestone.name,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn cache_task_from_file(&self, path: &std::path::Path, program: &str, project: &str, milestone: &str) {
+        let Ok(content) = self.config.workspace.read_md_file(path) else { return };
+        let Some(parsed) = parse_element(&content).ok().flatten() else { return };
+        let crate::model::Element::Task(t) = parsed else { return };
+
+        if let Ok(mut cache) = self.task_cache.write() {
+            cache.insert(TaskMetadata {
+                uuid: t.uuid,
+                path: path.to_path_buf(),
+                program: program.to_string(),
+                project: project.to_string(),
+                milestone: milestone.to_string(),
+                task_name: t.title,
+                status: t.status,
+            });
+        }
+    }
+
+    pub fn resume_planning_session(&mut self) {
+        let Ok(sessions) = list_active_sessions(&self.config.workspace) else { return };
+        let Some(session_path) = sessions.first() else { return };
+
+        let Ok(session) = load_planning_session(session_path) else {
+            eprintln!("Failed to load planning session from {}", session_path.display());
+            return;
+        };
+
+        // Restore session state
+        self.planning_session_active = true;
+        self.planning_session_uuid = Some(session.uuid);
+        self.planning_session_start_date = Some(session.start_date);
+        self.planning_session_end_date = Some(session.end_date);
+
+        // Rebuild task list from UUIDs using cache
+        let cache = match self.task_cache.read() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        for uuid in &session.tasks {
+            if let Some(meta) = cache.get_by_uuid(uuid) {
+                self.planning_session_tasks.push(SelectedTask::from(meta.clone()));
+            }
+        }
     }
 
     fn promote_selection_to_path_depth(&mut self, target_depth: usize) {

@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Program - top-level container for projects.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -64,6 +65,8 @@ fn default_creation_date() -> DateTime<Utc> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Task {
     #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub status: String,
@@ -85,6 +88,7 @@ impl Task {
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
+            uuid: String::new(),
             title: title.into(),
             status: "todo".to_string(),
             creation_date: Utc::now(),
@@ -102,6 +106,19 @@ impl Task {
     pub fn is_complete(&self) -> bool {
         self.status == "done"
     }
+}
+
+/// A task selected for inclusion in a planning session.
+/// Stores context (program/project/milestone) for display in planning view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectedTask {
+    pub uuid: String,
+    pub path: PathBuf,
+    pub program: String,
+    pub project: String,
+    pub milestone: String,
+    pub task_name: String,
+    pub status: String,
 }
 
 /// Element kind enum for type identification.
@@ -212,4 +229,35 @@ impl LegacyTask {
     pub fn is_complete(&self) -> bool {
         matches!(self.status.as_deref(), Some("done"))
     }
+}
+
+/// Status of a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SessionStatus {
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "completed")]
+    Completed,
+    #[serde(rename = "archived")]
+    Archived,
+}
+
+impl Default for SessionStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+/// Planning session for tracking selected tasks over a time period.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSession {
+    #[serde(rename = "type")]
+    pub element_type: String,
+    pub uuid: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub duration: String,
+    #[serde(default)]
+    pub status: SessionStatus,
+    pub tasks: Vec<String>,
 }

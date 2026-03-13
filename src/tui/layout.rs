@@ -71,59 +71,82 @@ fn calculate_sidebar_width(app: &App) -> u16 {
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let idx = app.selected_entry_index;
+    let in_selection_mode = app.mode == Mode::TaskSelection;
 
-    let items: Vec<ListItem> = app
-        .sidebar_items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let is_selected = i == idx;
-            let indent_str = "    ".repeat(item.indent);
+    let items: Vec<ListItem> =
+        app.sidebar_items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let is_selected = i == idx;
+                let indent_str = "    ".repeat(item.indent);
 
-            let prefix = if item.is_header || item.indent == 0 {
-                item.name.clone()
-            } else {
-                let is_last = app
-                    .sidebar_items
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|p| p.indent == item.indent)
-                    .next()
-                    .is_none();
-                if is_last {
-                    format!("└── {}", item.name)
+                // Determine checkbox prefix for TaskSelection mode
+                let checkbox_prefix = (in_selection_mode && !item.is_header && item.indent >= 3)
+                    .then(|| {
+                        let is_selected = item.path.as_ref().is_some_and(|p| {
+                            app.planning_session_tasks.iter().any(|t| t.path == *p)
+                        });
+                        if is_selected {
+                            "[x] "
+                        } else {
+                            "[ ] "
+                        }
+                    });
+
+                let prefix = if item.is_header || item.indent == 0 {
+                    item.name.clone()
                 } else {
-                    format!("├── {}", item.name)
-                }
-            };
+                    let is_last = app
+                        .sidebar_items
+                        .iter()
+                        .skip(i + 1)
+                        .take_while(|p| p.indent == item.indent)
+                        .next()
+                        .is_none();
+                    if is_last {
+                        format!("└── {}", item.name)
+                    } else {
+                        format!("├── {}", item.name)
+                    }
+                };
 
-            let full_label = format!("{}{}", indent_str, prefix);
+                let full_label = if let Some(cb) = checkbox_prefix {
+                    format!(
+                        "{}{}{}",
+                        indent_str,
+                        cb,
+                        prefix.trim_start_matches("└── ").trim_start_matches("├── ")
+                    )
+                } else {
+                    format!("{}{}", indent_str, prefix)
+                };
 
-            let style = if item.is_header {
-                Style::default().fg(Color::DarkGray)
-            } else if item.is_create_action {
-                // Style create action items with dimmed cyan to indicate it's an action
-                if is_selected {
+                let style = if item.is_header {
+                    Style::default().fg(Color::DarkGray)
+                } else if item.is_create_action {
+                    // Style create action items with dimmed cyan to indicate it's an action
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                    } else {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                    }
+                } else if is_selected {
                     Style::default()
                         .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                        .bg(Color::LightBlue)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                }
-            } else if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(full_label).style(style)
-        })
-        .collect();
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(full_label).style(style)
+            })
+            .collect();
 
     let list = List::new(items)
         .block(
@@ -244,6 +267,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Normal => ("NORMAL", Color::Green),
         Mode::CommandPalette => ("COMMAND", Color::Yellow),
         Mode::Input => ("INPUT", Color::Cyan),
+        Mode::TaskSelection => ("SELECT", Color::Magenta),
+        Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections

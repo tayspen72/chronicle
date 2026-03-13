@@ -4,7 +4,7 @@
 //! They are used by tests but not yet wired into the TUI.
 //! TODO: Wire up parse_element and element_to_markdown for element modification features.
 
-use crate::error::{ModelError, Result};
+use crate::error::{Error, ModelError, Result};
 use crate::model::{Element, LegacyTask, Milestone, Program, Project, Task};
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
@@ -273,6 +273,25 @@ pub fn element_to_markdown(element: &Element) -> String {
             )
         }
     }
+}
+
+/// Update the status field in a task file's YAML frontmatter.
+pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let Some(parsed) = parse_element(&content).ok().flatten() else {
+        return Err(Error::Model(ModelError::Parse(
+            "Failed to parse element".into(),
+        )));
+    };
+
+    let Element::Task(mut task) = parsed else {
+        return Err(Error::Model(ModelError::Parse("Not a task file".into())));
+    };
+
+    task.status = new_status.to_string();
+    let new_content = element_to_markdown(&Element::Task(task));
+    std::fs::write(path, new_content)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -232,8 +232,7 @@ pub fn build_sidebar_items(
     // Planning section
     items.push(SidebarItem::new("Planning", SidebarSection::Planning).header());
     items.push(
-        SidebarItem::new("Weekly Planning", SidebarSection::Planning)
-            .planning_item("WeeklyPlanning"),
+        SidebarItem::new("Current Plan", SidebarSection::Planning).planning_item("WeeklyPlanning"),
     );
     items.push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
 
