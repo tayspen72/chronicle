@@ -27,6 +27,7 @@ pub enum CommandAction {
     StartPlanningSession,
     ClosePlanningSession,
     ReviewSession,
+    BrowseTasks,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -154,6 +155,12 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::Backlog,
             exit: false,
             action: None,
+        },
+        CommandMatch {
+            label: "Browse Tasks".to_string(),
+            view: ViewType::HierarchicalTaskPicker,
+            exit: false,
+            action: Some(CommandAction::BrowseTasks),
         },
         CommandMatch {
             label: "Current Plan".to_string(),

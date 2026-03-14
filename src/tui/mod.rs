@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod command;
+pub mod hierarchical_picker;
 pub mod layout;
 pub mod navigation;
 pub mod tree;
@@ -32,6 +33,7 @@ use crate::storage::{
 use cache::TaskMetadata;
 use chrono::Local;
 use command::{CommandAction, CommandMatch, get_command_list};
+use hierarchical_picker::HierarchicalPickerState;
 use navigation::{SidebarItem, SidebarSection};
 use tree::TreeModel;
 
@@ -49,6 +51,8 @@ pub enum Mode {
     TaskSelection,
     /// User is reviewing tasks in a planning session
     ReviewSession,
+    /// User is navigating hierarchical task picker
+    HierarchicalSelection,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +110,7 @@ pub enum ViewType {
     InputTemplateField,
     InputPlanningSessionDates,
     PlanningTaskPicker,
+    HierarchicalTaskPicker,
 }
 
 pub struct App {
@@ -151,6 +156,8 @@ pub struct App {
     pub planning_wizard_task_index: usize,
     pub planning_wizard_date_error: Option<String>,
     pub planning_wizard_tasks: Vec<TaskMetadata>,
+    // Hierarchical task picker state
+    pub hierarchical_picker: HierarchicalPickerState,
 }
 
 impl App {
@@ -198,6 +205,7 @@ impl App {
             planning_wizard_task_index: 0,
             planning_wizard_date_error: None,
             planning_wizard_tasks: Vec::new(),
+            hierarchical_picker: HierarchicalPickerState::new(),
         };
 
         app.load_tree_view_data();
@@ -284,6 +292,38 @@ impl App {
                 }
                 KeyCode::Down => {
                     self.navigate_down();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle HierarchicalSelection mode specially
+        if self.mode == Mode::HierarchicalSelection {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.hierarchical_picker.navigate_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.hierarchical_picker.navigate_down();
+                }
+                KeyCode::Enter => {
+                    if let Some((new_level, _name)) = self.hierarchical_picker.select_current() {
+                        self.load_hierarchical_picker_level(new_level);
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    self.hierarchical_picker.toggle_task_selection();
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    if !self.hierarchical_picker.go_back() {
+                        self.cancel_hierarchical_picker();
+                    } else {
+                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
+                    }
+                }
+                KeyCode::Char('q') => {
+                    self.cancel_hierarchical_picker();
                 }
                 _ => {}
             }
@@ -1285,6 +1325,9 @@ impl App {
             Some(CommandAction::ReviewSession) => {
                 self.start_review_session();
             }
+            Some(CommandAction::BrowseTasks) => {
+                self.start_hierarchical_picker();
+            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1760,6 +1803,51 @@ impl App {
         self.planning_session_start_date = None;
         self.planning_session_end_date = None;
         self.mode = Mode::Normal;
+    }
+
+    fn start_hierarchical_picker(&mut self) {
+        self.hierarchical_picker = HierarchicalPickerState::new();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn load_hierarchical_picker_level(&mut self, level: hierarchical_picker::PickerLevel) {
+        use hierarchical_picker::PickerLevel;
+        
+        let entries = match level {
+            PickerLevel::Programs => self.config.workspace.list_programs().unwrap_or_default(),
+            PickerLevel::Projects => {
+                let Some(program) = &self.hierarchical_picker.selected_program else { return };
+                self.config.workspace.list_projects(program).unwrap_or_default()
+            }
+            PickerLevel::Milestones => {
+                let Some(program) = &self.hierarchical_picker.selected_program else { return };
+                let Some(project) = &self.hierarchical_picker.selected_project else { return };
+                self.config.workspace.list_milestones(program, project).unwrap_or_default()
+            }
+            PickerLevel::Tasks => {
+                let Some(program) = &self.hierarchical_picker.selected_program else { return };
+                let Some(project) = &self.hierarchical_picker.selected_project else { return };
+                let Some(milestone) = &self.hierarchical_picker.selected_milestone else { return };
+                self.config.workspace.list_tasks(program, project, milestone).unwrap_or_default()
+            }
+        };
+        self.hierarchical_picker.set_items(entries);
+    }
+
+    fn cancel_hierarchical_picker(&mut self) {
+        self.hierarchical_picker = HierarchicalPickerState::new();
+        self.mode = Mode::Normal;
+        self.return_from_view();
+    }
+
+    #[allow(dead_code)]
+    fn confirm_hierarchical_picker(&mut self) {
+        // TODO: Use selected tasks for planning session or other operations
+        self.hierarchical_picker = HierarchicalPickerState::new();
+        self.mode = Mode::Normal;
+        self.return_from_view();
     }
 
     fn start_review_session(&mut self) {

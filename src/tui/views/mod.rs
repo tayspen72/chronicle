@@ -1369,6 +1369,112 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
     f.render_widget(buttons, chunks[3]);
 }
 
+pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use crate::tui::hierarchical_picker::PickerLevel;
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{List, ListItem, Paragraph};
+
+    let picker = &app.hierarchical_picker;
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let title_line = Line::from(vec![Span::styled(
+        "Browse Tasks",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let breadcrumb_line = Line::from(Span::styled(
+        picker.breadcrumb(),
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![title_line, breadcrumb_line]);
+    f.render_widget(header, chunks[0]);
+
+    let filter_prompt = Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            picker.filter_text.as_str(),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled("_", Style::default().fg(Color::LightBlue)),
+    ]);
+    let filter_para = Paragraph::new(filter_prompt)
+        .block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::BOTTOM));
+    f.render_widget(filter_para, chunks[1]);
+
+    let filtered_items = picker.filtered_items();
+    let items: Vec<ListItem> = filtered_items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            let is_selected = idx == picker.cursor_index;
+            let is_task = picker.level == PickerLevel::Tasks;
+            let task_selected = is_task
+                && picker
+                    .selected_tasks
+                    .contains(&item.path.to_string_lossy().to_string());
+            let check = if task_selected {
+                "[x] "
+            } else if is_task {
+                "[ ] "
+            } else {
+                ""
+            };
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightBlue)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let name = format!("{}{}", check, item.name);
+            ListItem::new(name).style(style)
+        })
+        .collect();
+
+    let level_title = format!(
+        "{} ({}/{} shown)",
+        picker.level_title(),
+        filtered_items.len(),
+        picker.items.len()
+    );
+    let list = List::new(items).block(
+        ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::NONE)
+            .title(level_title),
+    );
+    f.render_widget(list, chunks[2]);
+
+    let hint_text = match picker.level {
+        PickerLevel::Programs => "↑/↓: Navigate | Enter: Select | Esc: Cancel",
+        PickerLevel::Projects => "↑/↓: Navigate | Enter: Select | Esc: Back",
+        PickerLevel::Milestones => "↑/↓: Navigate | Enter: Select | Esc: Back",
+        PickerLevel::Tasks => "↑/↓: Navigate | Space: Toggle | Enter: Done | Esc: Back",
+    };
+    let selected_count = picker.selected_count();
+    let count_text = if selected_count > 0 {
+        format!("{} | Selected: {} tasks", hint_text, selected_count)
+    } else {
+        hint_text.to_string()
+    };
+    let buttons = Paragraph::new(Line::from(Span::styled(
+        count_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(buttons, chunks[3]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

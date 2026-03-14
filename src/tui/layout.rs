@@ -1,10 +1,10 @@
 use super::views;
 use crate::tui::{App, Mode, ViewType};
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
 };
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -87,7 +87,11 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                         let is_selected = item.path.as_ref().is_some_and(|p| {
                             app.planning_session_tasks.iter().any(|t| t.path == *p)
                         });
-                        if is_selected { "[x] " } else { "[ ] " }
+                        if is_selected {
+                            "[x] "
+                        } else {
+                            "[ ] "
+                        }
                     });
 
                 let prefix = if item.is_header || item.indent == 0 {
@@ -183,6 +187,9 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::PlanningTaskPicker => {
             views::render_planning_task_picker(f, app, area);
         }
+        ViewType::HierarchicalTaskPicker => {
+            views::render_hierarchical_task_picker(f, app, area);
+        }
     }
 }
 
@@ -271,6 +278,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Input => ("INPUT", Color::Cyan),
         Mode::TaskSelection => ("SELECT", Color::Magenta),
         Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
+        Mode::HierarchicalSelection => ("BROWSE", Color::LightCyan),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections
