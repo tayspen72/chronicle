@@ -144,7 +144,7 @@ pub struct App {
     pub planning_session_uuid: Option<String>,
     pub planning_session_tasks: Vec<SelectedTask>,
     pub planning_session_start_date: Option<String>,
-    pub planning_session_end_date: Option<String>,
+    pub planning_session_due_date: Option<String>,
     pub rolled_over_tasks: Vec<String>,
     pub review_selection_index: usize,
     // Planning wizard state (Step 1: dates, Step 2: task selection)
@@ -161,6 +161,10 @@ pub struct App {
 }
 
 impl App {
+    const FOCUS_ASSIGNED_TO: usize = 100;
+    const FOCUS_START_DATE: usize = 101;
+    const FOCUS_DUE_DATE: usize = 102;
+
     pub fn new(config: Config) -> Self {
         let command_matches = get_command_list();
 
@@ -194,7 +198,7 @@ impl App {
             planning_session_uuid: None,
             planning_session_tasks: Vec::new(),
             planning_session_start_date: None,
-            planning_session_end_date: None,
+            planning_session_due_date: None,
             rolled_over_tasks: Vec::new(),
             review_selection_index: 0,
             planning_wizard_start_date: String::new(),
@@ -385,7 +389,7 @@ impl App {
                         .get(self.review_selection_index)
                         .and_then(|t| t.assigned_to.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = 100; // Marker for assigned_to input
+                    self.planning_wizard_focus = Self::FOCUS_ASSIGNED_TO;
                 }
                 KeyCode::Char('b') => {
                     // Set start date - use input mode
@@ -394,16 +398,16 @@ impl App {
                         .get(self.review_selection_index)
                         .and_then(|t| t.start_date.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = 101; // Marker for start_date input
+                    self.planning_wizard_focus = Self::FOCUS_START_DATE;
                 }
                 KeyCode::Char('e') => {
                     // Set due date - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self.planning_session_tasks
                         .get(self.review_selection_index)
-                        .and_then(|t| t.end_date.clone())
+                        .and_then(|t| t.due_date.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = 102; // Marker for due_date input
+                    self.planning_wizard_focus = Self::FOCUS_DUE_DATE;
                 }
                 KeyCode::Enter => {
                     // Confirm and finalize session
@@ -452,7 +456,7 @@ impl App {
                 {
                     self.cancel_planning_wizard();
                 } else if self.mode == Mode::Input 
-                    && matches!(self.planning_wizard_focus, 100 | 101 | 102) 
+                    && matches!(self.planning_wizard_focus, Self::FOCUS_ASSIGNED_TO | Self::FOCUS_START_DATE | Self::FOCUS_DUE_DATE) 
                 {
                     // Cancel task metadata input and return to ReviewSession
                     self.input_buffer.clear();
@@ -1201,21 +1205,21 @@ impl App {
         // Handle input mode for review session task metadata
         if self.mode == Mode::Input {
             match self.planning_wizard_focus {
-                100 => {
+                Self::FOCUS_ASSIGNED_TO => {
                     // assigned_to
                     let name = self.input_buffer.clone();
                     self.set_task_assigned_to(name);
                     self.input_buffer.clear();
                     self.mode = Mode::ReviewSession;
                 }
-                101 => {
+                Self::FOCUS_START_DATE => {
                     // start_date
                     let date = self.input_buffer.clone();
                     self.set_task_start_date(date);
                     self.input_buffer.clear();
                     self.mode = Mode::ReviewSession;
                 }
-                102 => {
+                Self::FOCUS_DUE_DATE => {
                     // due_date
                     let date = self.input_buffer.clone();
                     self.set_task_due_date(date);
@@ -1682,14 +1686,14 @@ impl App {
             _ => 7,
         };
 
-        let end_date = start_date
+        let due_date = start_date
             .checked_add_days(chrono::Days::new(days))
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| start_date.format("%Y-%m-%d").to_string());
 
         self.planning_wizard_date_error = None;
         self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
-        self.planning_session_end_date = Some(end_date);
+        self.planning_session_due_date = Some(due_date);
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
         self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
         self.mode = Mode::HierarchicalSelection;
@@ -1717,7 +1721,7 @@ impl App {
                         status: meta.status.clone(),
                         assigned_to: None,
                         start_date: None,
-                        end_date: None,
+                        due_date: None,
                         priority: None,
                     });
                 }
@@ -1732,7 +1736,7 @@ impl App {
             &self.config.workspace,
             &uuid,
             self.planning_session_start_date.as_ref().unwrap(),
-            self.planning_session_end_date.as_ref().unwrap(),
+            self.planning_session_due_date.as_ref().unwrap(),
             &self.planning_wizard_duration,
         ) {
             eprintln!("Failed to create planning session file: {e}");
@@ -1743,9 +1747,9 @@ impl App {
     }
 
     fn finalize_planning_session_from_picker(&mut self) {
-        use crate::storage::md::parse_element;
         use crate::model::Element;
-
+        use crate::storage::md::parse_element;
+        
         let selected_paths: Vec<String> = self.hierarchical_picker.selected_tasks.iter().cloned().collect();
         let mut selected_uuids = Vec::new();
         let mut selected_tasks_with_metadata = Vec::new();
@@ -1769,7 +1773,7 @@ impl App {
                             status: t.status.clone(),
                             assigned_to: t.assigned_to.clone(),
                             start_date: t.start_date.clone(),
-                            end_date: t.due_date.clone(),
+                            due_date: t.due_date.clone(),
                             priority: t.priority.clone(),
                         });
                     }
@@ -1804,7 +1808,7 @@ impl App {
         self.planning_session_active = false;
         self.planning_session_uuid = None;
         self.planning_session_start_date = None;
-        self.planning_session_end_date = None;
+        self.planning_session_due_date = None;
         self.planning_session_tasks.clear();
 
         if !rolled_tasks.is_empty() {
@@ -1844,7 +1848,7 @@ impl App {
         let Some(start_date) = &self.planning_session_start_date else {
             return;
         };
-        let Some(end_date) = &self.planning_session_end_date else {
+        let Some(due_date) = &self.planning_session_due_date else {
             return;
         };
 
@@ -1852,7 +1856,7 @@ impl App {
             element_type: "planning".to_string(),
             uuid: uuid.clone(),
             start_date: start_date.clone(),
-            end_date: end_date.clone(),
+            end_date: due_date.clone(),
             duration: self.config.planning_duration.clone(),
             status: SessionStatus::Active,
             tasks: self
@@ -1930,7 +1934,7 @@ impl App {
             status: task.status,
             assigned_to: task.assigned_to.clone(),
             start_date: task.start_date.clone(),
-            end_date: task.due_date.clone(),
+            due_date: task.due_date.clone(),
             priority: task.priority.clone(),
         })
     }
@@ -1955,7 +1959,7 @@ impl App {
         self.planning_session_uuid = None;
         self.planning_session_tasks.clear();
         self.planning_session_start_date = None;
-        self.planning_session_end_date = None;
+        self.planning_session_due_date = None;
         self.mode = Mode::Normal;
     }
 
@@ -2035,7 +2039,7 @@ impl App {
         let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else {
             return;
         };
-        task.end_date = Some(date.clone());
+        task.due_date = Some(date.clone());
         if let Err(e) = crate::storage::md::update_task_fields(
             &task.path,
             [("due_date", Some(date))].into_iter().collect(),
@@ -2166,7 +2170,7 @@ impl App {
         self.planning_session_active = true;
         self.planning_session_uuid = Some(session.uuid);
         self.planning_session_start_date = Some(session.start_date);
-        self.planning_session_end_date = Some(session.end_date);
+        self.planning_session_due_date = Some(session.end_date);
 
         // Rebuild task list from UUIDs by loading tasks on-demand
         let all_tasks = self.load_all_tasks();

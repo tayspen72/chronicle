@@ -61,7 +61,7 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                         title = "Current Plan".to_string();
                         if app.planning_session_active {
                             let start = app.planning_session_start_date.as_deref().unwrap_or("?");
-                            let end = app.planning_session_end_date.as_deref().unwrap_or("?");
+                            let end = app.planning_session_due_date.as_deref().unwrap_or("?");
                             let count = app.planning_session_tasks.len();
                             content_to_show = format!(
                                 "# Current Plan\n\n\
@@ -259,7 +259,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
     // Show action hints in review mode
     if app.mode == Mode::ReviewSession {
         let hints = Paragraph::new(
-            "s: cycle status | r: roll to next | d: done | x: remove | Enter: edit | Esc: done",
+            "s: status | r: roll | d: done | x: remove | a: assign | b: start | e: due | m: add | c: close | Enter: confirm | Esc: cancel",
         )
         .style(Style::default().fg(Color::DarkGray));
         let hint_area =
@@ -1289,7 +1289,7 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
         format!(
             "{} → {}",
             app.planning_session_start_date.as_deref().unwrap_or("?"),
-            app.planning_session_end_date.as_deref().unwrap_or("?")
+            app.planning_session_due_date.as_deref().unwrap_or("?")
         ),
         Style::default().fg(Color::DarkGray),
     ));

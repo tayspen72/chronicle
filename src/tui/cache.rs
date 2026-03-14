@@ -24,7 +24,7 @@ impl From<TaskMetadata> for SelectedTask {
             status: meta.status,
             assigned_to: None,
             start_date: None,
-            end_date: None,
+            due_date: None,
             priority: None,
         }
     }

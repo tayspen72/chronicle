@@ -125,7 +125,7 @@ pub struct SelectedTask {
     pub status: String,
     pub assigned_to: Option<String>,
     pub start_date: Option<String>,
-    pub end_date: Option<String>,
+    pub due_date: Option<String>,
     pub priority: Option<String>,
 }
 
