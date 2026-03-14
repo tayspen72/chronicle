@@ -1854,13 +1854,6 @@ impl App {
         self.mode = Mode::Normal;
     }
 
-    fn start_hierarchical_picker(&mut self) {
-        self.hierarchical_picker = HierarchicalPickerState::new();
-        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
-        self.mode = Mode::HierarchicalSelection;
-        self.current_view = ViewType::HierarchicalTaskPicker;
-    }
-
     fn load_hierarchical_picker_level(&mut self, level: hierarchical_picker::PickerLevel) {
         use hierarchical_picker::PickerLevel;
         
@@ -1883,20 +1876,6 @@ impl App {
             }
         };
         self.hierarchical_picker.set_items(entries);
-    }
-
-    fn cancel_hierarchical_picker(&mut self) {
-        self.hierarchical_picker = HierarchicalPickerState::new();
-        self.mode = Mode::Normal;
-        self.return_from_view();
-    }
-
-    #[allow(dead_code)]
-    fn confirm_hierarchical_picker(&mut self) {
-        // TODO: Use selected tasks for planning session or other operations
-        self.hierarchical_picker = HierarchicalPickerState::new();
-        self.mode = Mode::Normal;
-        self.return_from_view();
     }
 
     fn start_review_session(&mut self) {
