@@ -64,6 +64,11 @@ impl TaskCache {
         self.by_uuid.len()
     }
 
+    pub fn clear(&mut self) {
+        self.by_uuid.clear();
+        self.by_path.clear();
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &TaskMetadata> {
         self.by_uuid.values()
     }

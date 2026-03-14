@@ -1451,7 +1451,60 @@ impl App {
         self.planning_wizard_selected_tasks = Vec::new();
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
+        self.populate_task_cache();
         self.current_view = ViewType::InputPlanningSessionDates;
+    }
+
+    fn populate_task_cache(&mut self) {
+        use crate::storage::WorkspaceStorage;
+        use crate::tui::cache::TaskMetadata;
+
+        if let Ok(mut cache) = self.task_cache.write() {
+            cache.clear();
+
+            // Iterate over all programs
+            if let Ok(programs) = self.config.workspace.list_programs() {
+                for program_entry in programs {
+                    let program = &program_entry.name;
+                    if let Ok(projects) = self.config.workspace.list_projects(program) {
+                        for project_entry in projects {
+                            let project = &project_entry.name;
+                            if let Ok(milestones) =
+                                self.config.workspace.list_milestones(program, project)
+                            {
+                                for milestone_entry in milestones {
+                                    let milestone = &milestone_entry.name;
+                                    if let Ok(tasks) = self
+                                        .config
+                                        .workspace
+                                        .list_tasks(program, project, milestone)
+                                    {
+                                        for task_entry in tasks {
+                                            let task_path = task_entry.path.clone();
+                                            if let Ok(content) = std::fs::read_to_string(&task_path)
+                                                && let Some(parsed) =
+                                                    parse_element(&content).ok().flatten()
+                                                && let crate::model::Element::Task(t) = parsed
+                                            {
+                                                cache.insert(TaskMetadata {
+                                                    uuid: t.uuid,
+                                                    path: task_path,
+                                                    program: program.clone(),
+                                                    project: project.clone(),
+                                                    milestone: milestone.clone(),
+                                                    task_name: t.title,
+                                                    status: t.status,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn finalize_planning_wizard_dates(&mut self) {
