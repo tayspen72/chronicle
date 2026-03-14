@@ -1501,20 +1501,23 @@ impl App {
         tasks
     }
 
-    fn get_filtered_tasks(&self) -> Vec<TaskMetadata> {
+    pub fn get_filtered_tasks(&self) -> Vec<&TaskMetadata> {
         let filter_lower = self.planning_wizard_task_filter.to_lowercase();
-        let mut tasks = self.planning_wizard_tasks.clone();
 
-        if !filter_lower.is_empty() {
-            tasks.retain(|t| {
-                t.task_name.to_lowercase().contains(&filter_lower)
-                    || t.program.to_lowercase().contains(&filter_lower)
-                    || t.project.to_lowercase().contains(&filter_lower)
-                    || t.milestone.to_lowercase().contains(&filter_lower)
-            });
-        }
+        let mut tasks: Vec<_> = if filter_lower.is_empty() {
+            self.planning_wizard_tasks.iter().collect()
+        } else {
+            self.planning_wizard_tasks
+                .iter()
+                .filter(|t| {
+                    t.task_name.to_lowercase().contains(&filter_lower)
+                        || t.program.to_lowercase().contains(&filter_lower)
+                        || t.project.to_lowercase().contains(&filter_lower)
+                        || t.milestone.to_lowercase().contains(&filter_lower)
+                })
+                .collect()
+        };
 
-        // Sort by hierarchy: program > project > milestone > task_name
         tasks.sort_by(|a, b| {
             a.program
                 .cmp(&b.program)
@@ -1551,8 +1554,6 @@ impl App {
         self.planning_wizard_date_error = None;
         self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
         self.planning_session_end_date = Some(end_date);
-        // Load all tasks for the picker
-        self.planning_wizard_tasks = self.load_all_tasks();
         self.current_view = ViewType::PlanningTaskPicker;
     }
 

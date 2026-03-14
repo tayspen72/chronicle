@@ -3,11 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::{App, Mode};
 use ratatui::{
-    Frame,
     layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
+    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -1312,30 +1312,7 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
     let selected_set: std::collections::HashSet<_> =
         app.planning_wizard_selected_tasks.iter().cloned().collect();
 
-    let filter_lower = app.planning_wizard_task_filter.to_lowercase();
-    let mut filtered_tasks: Vec<_> = app
-        .planning_wizard_tasks
-        .iter()
-        .filter(|t| {
-            if filter_lower.is_empty() {
-                return true;
-            }
-            // Search across all hierarchy levels
-            t.task_name.to_lowercase().contains(&filter_lower)
-                || t.program.to_lowercase().contains(&filter_lower)
-                || t.project.to_lowercase().contains(&filter_lower)
-                || t.milestone.to_lowercase().contains(&filter_lower)
-        })
-        .collect();
-    // Sort by hierarchy: program > project > milestone > task_name
-    filtered_tasks.sort_by(|a, b| {
-        a.program
-            .cmp(&b.program)
-            .then_with(|| a.project.cmp(&b.project))
-            .then_with(|| a.milestone.cmp(&b.milestone))
-            .then_with(|| a.task_name.cmp(&b.task_name))
-    });
-
+    let filtered_tasks = app.get_filtered_tasks();
     let total_count = app.planning_wizard_tasks.len();
     let selected_count = app.planning_wizard_selected_tasks.len();
 
