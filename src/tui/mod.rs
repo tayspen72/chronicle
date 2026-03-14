@@ -150,7 +150,6 @@ pub struct App {
     pub planning_wizard_selected_tasks: Vec<String>,
     pub planning_wizard_task_index: usize,
     pub planning_wizard_date_error: Option<String>,
-    // Cached tasks for planning wizard - loaded when wizard opens
     pub planning_wizard_tasks: Vec<TaskMetadata>,
 }
 
@@ -1552,6 +1551,8 @@ impl App {
         self.planning_wizard_date_error = None;
         self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
         self.planning_session_end_date = Some(end_date);
+        // Load all tasks for the picker
+        self.planning_wizard_tasks = self.load_all_tasks();
         self.current_view = ViewType::PlanningTaskPicker;
     }
 
@@ -2391,6 +2392,7 @@ impl App {
         self.planning_wizard_selected_tasks = Vec::new();
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
+        self.planning_wizard_tasks = Vec::new();
         self.current_view = ViewType::TreeView;
         self.mode = Mode::Normal;
     }
