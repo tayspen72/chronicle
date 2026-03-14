@@ -1312,17 +1312,9 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
     let selected_set: std::collections::HashSet<_> =
         app.planning_wizard_selected_tasks.iter().cloned().collect();
 
-    let cache = match app.task_cache.read() {
-        Ok(c) => c,
-        Err(_) => {
-            let empty = Paragraph::new("Unable to load tasks");
-            f.render_widget(empty, chunks[2]);
-            return;
-        }
-    };
-
     let filter_lower = app.planning_wizard_task_filter.to_lowercase();
-    let mut filtered_tasks: Vec<_> = cache
+    let mut filtered_tasks: Vec<_> = app
+        .planning_wizard_tasks
         .iter()
         .filter(|t| {
             if filter_lower.is_empty() {
@@ -1344,7 +1336,7 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
             .then_with(|| a.task_name.cmp(&b.task_name))
     });
 
-    let total_count = cache.len();
+    let total_count = app.planning_wizard_tasks.len();
     let selected_count = app.planning_wizard_selected_tasks.len();
 
     let items: Vec<ListItem> = filtered_tasks

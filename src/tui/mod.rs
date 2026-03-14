@@ -29,7 +29,7 @@ use crate::storage::planning::{
 use crate::storage::{
     DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
-use cache::{SharedTaskCache, TaskMetadata, create_shared_cache};
+use cache::TaskMetadata;
 use chrono::Local;
 use command::{CommandAction, CommandMatch, get_command_list};
 use navigation::{SidebarItem, SidebarSection};
@@ -150,8 +150,8 @@ pub struct App {
     pub planning_wizard_selected_tasks: Vec<String>,
     pub planning_wizard_task_index: usize,
     pub planning_wizard_date_error: Option<String>,
-    // Task metadata cache for fast lookup
-    pub task_cache: SharedTaskCache,
+    // Cached tasks for planning wizard - loaded when wizard opens
+    pub planning_wizard_tasks: Vec<TaskMetadata>,
 }
 
 impl App {
@@ -198,11 +198,10 @@ impl App {
             planning_wizard_selected_tasks: Vec::new(),
             planning_wizard_task_index: 0,
             planning_wizard_date_error: None,
-            task_cache: create_shared_cache(),
+            planning_wizard_tasks: Vec::new(),
         };
 
         app.load_tree_view_data();
-        app.build_task_cache();
         app.resume_planning_session();
         app
     }
@@ -1451,51 +1450,45 @@ impl App {
         self.planning_wizard_selected_tasks = Vec::new();
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
-        self.populate_task_cache();
+        self.planning_wizard_tasks = self.load_all_tasks();
         self.current_view = ViewType::InputPlanningSessionDates;
     }
 
-    fn populate_task_cache(&mut self) {
-        use crate::storage::WorkspaceStorage;
-        use crate::tui::cache::TaskMetadata;
+    fn load_all_tasks(&self) -> Vec<TaskMetadata> {
+        let mut tasks = Vec::new();
 
-        if let Ok(mut cache) = self.task_cache.write() {
-            cache.clear();
-
-            // Iterate over all programs
-            if let Ok(programs) = self.config.workspace.list_programs() {
-                for program_entry in programs {
-                    let program = &program_entry.name;
-                    if let Ok(projects) = self.config.workspace.list_projects(program) {
-                        for project_entry in projects {
-                            let project = &project_entry.name;
-                            if let Ok(milestones) =
-                                self.config.workspace.list_milestones(program, project)
-                            {
-                                for milestone_entry in milestones {
-                                    let milestone = &milestone_entry.name;
-                                    if let Ok(tasks) = self
-                                        .config
-                                        .workspace
-                                        .list_tasks(program, project, milestone)
-                                    {
-                                        for task_entry in tasks {
-                                            let task_path = task_entry.path.clone();
-                                            if let Ok(content) = std::fs::read_to_string(&task_path)
-                                                && let Some(parsed) =
-                                                    parse_element(&content).ok().flatten()
-                                                && let crate::model::Element::Task(t) = parsed
-                                            {
-                                                cache.insert(TaskMetadata {
-                                                    uuid: t.uuid,
-                                                    path: task_path,
-                                                    program: program.clone(),
-                                                    project: project.clone(),
-                                                    milestone: milestone.clone(),
-                                                    task_name: t.title,
-                                                    status: t.status,
-                                                });
-                                            }
+        if let Ok(programs) = self.config.workspace.list_programs() {
+            for program_entry in programs {
+                let program = &program_entry.name;
+                if let Ok(projects) = self.config.workspace.list_projects(program) {
+                    for project_entry in projects {
+                        let project = &project_entry.name;
+                        if let Ok(milestones) =
+                            self.config.workspace.list_milestones(program, project)
+                        {
+                            for milestone_entry in milestones {
+                                let milestone = &milestone_entry.name;
+                                if let Ok(task_entries) = self
+                                    .config
+                                    .workspace
+                                    .list_tasks(program, project, milestone)
+                                {
+                                    for task_entry in task_entries {
+                                        let task_path = task_entry.path.clone();
+                                        if let Ok(content) = std::fs::read_to_string(&task_path)
+                                            && let Some(parsed) =
+                                                parse_element(&content).ok().flatten()
+                                            && let crate::model::Element::Task(t) = parsed
+                                        {
+                                            tasks.push(TaskMetadata {
+                                                uuid: t.uuid,
+                                                path: task_path,
+                                                program: program.clone(),
+                                                project: project.clone(),
+                                                milestone: milestone.clone(),
+                                                task_name: t.title,
+                                                status: t.status,
+                                            });
                                         }
                                     }
                                 }
@@ -1505,6 +1498,33 @@ impl App {
                 }
             }
         }
+
+        tasks
+    }
+
+    fn get_filtered_tasks(&self) -> Vec<TaskMetadata> {
+        let filter_lower = self.planning_wizard_task_filter.to_lowercase();
+        let mut tasks = self.planning_wizard_tasks.clone();
+
+        if !filter_lower.is_empty() {
+            tasks.retain(|t| {
+                t.task_name.to_lowercase().contains(&filter_lower)
+                    || t.program.to_lowercase().contains(&filter_lower)
+                    || t.project.to_lowercase().contains(&filter_lower)
+                    || t.milestone.to_lowercase().contains(&filter_lower)
+            });
+        }
+
+        // Sort by hierarchy: program > project > milestone > task_name
+        tasks.sort_by(|a, b| {
+            a.program
+                .cmp(&b.program)
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.milestone.cmp(&b.milestone))
+                .then_with(|| a.task_name.cmp(&b.task_name))
+        });
+
+        tasks
     }
 
     fn finalize_planning_wizard_dates(&mut self) {
@@ -1542,13 +1562,10 @@ impl App {
         self.planning_session_tasks.clear();
         self.rolled_over_tasks.clear();
 
-        let cache = match self.task_cache.read() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
+        // Load all tasks and find the selected ones by UUID
+        let all_tasks = self.load_all_tasks();
         for task_uuid in self.planning_wizard_selected_tasks.drain(..) {
-            if let Some(meta) = cache.get_by_uuid(&task_uuid) {
+            if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
                 self.planning_session_tasks.push(SelectedTask {
                     uuid: meta.uuid.clone(),
                     path: meta.path.clone(),
@@ -1603,20 +1620,18 @@ impl App {
     }
 
     fn start_planning_session_with_rolled_tasks(&mut self, task_uuids: Vec<String>) {
-        // Resolve task UUIDs to SelectedTask from cache
-        let tasks: Vec<_> = self
-            .task_cache
-            .read()
-            .ok()
-            .and_then(|cache| {
-                task_uuids
+        // Resolve task UUIDs to SelectedTask by loading tasks on-demand
+        let all_tasks = self.load_all_tasks();
+        let tasks: Vec<_> = task_uuids
+            .iter()
+            .filter_map(|uuid| {
+                all_tasks
                     .iter()
-                    .filter_map(|uuid| cache.get_by_uuid(uuid).cloned())
+                    .find(|t| &t.uuid == uuid)
+                    .cloned()
                     .map(SelectedTask::from)
-                    .collect::<Vec<_>>()
-                    .into()
             })
-            .unwrap_or_default();
+            .collect();
 
         // Start a fresh session and add the rolled tasks
         self.start_planning_session();
@@ -1670,11 +1685,11 @@ impl App {
         }
         let Some(path) = &item.path else { return };
 
-        let selected_task = self
-            .task_cache
-            .read()
-            .ok()
-            .and_then(|cache| cache.get_by_path(path).cloned())
+        let all_tasks = self.load_all_tasks();
+        let selected_task = all_tasks
+            .iter()
+            .find(|t| &t.path == path)
+            .cloned()
             .map(SelectedTask::from)
             .or_else(|| self.read_task_from_file(path, item));
 
@@ -1805,15 +1820,6 @@ impl App {
         // Update in-memory state
         task.status = new_status.to_string();
 
-        // Update cache
-        if let Ok(mut cache) = self.task_cache.write()
-            && let Some(meta) = cache.get_by_path(&task.path)
-        {
-            let mut updated = meta.clone();
-            updated.status = new_status.to_string();
-            cache.insert(updated);
-        }
-
         // Save session file
         self.save_current_planning_session();
     }
@@ -1867,74 +1873,6 @@ impl App {
         self.launch_editor(&path);
     }
 
-    pub fn build_task_cache(&mut self) {
-        let Ok(programs) = self.config.workspace.list_programs() else {
-            return;
-        };
-
-        for program in programs {
-            let Ok(projects) = self.config.workspace.list_projects(&program.name) else {
-                continue;
-            };
-            for project in projects {
-                let Ok(milestones) = self
-                    .config
-                    .workspace
-                    .list_milestones(&program.name, &project.name)
-                else {
-                    continue;
-                };
-                for milestone in milestones {
-                    let Ok(tasks) = self.config.workspace.list_tasks(
-                        &program.name,
-                        &project.name,
-                        &milestone.name,
-                    ) else {
-                        continue;
-                    };
-                    for task in tasks {
-                        self.cache_task_from_file(
-                            &task.path,
-                            &program.name,
-                            &project.name,
-                            &milestone.name,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn cache_task_from_file(
-        &self,
-        path: &std::path::Path,
-        program: &str,
-        project: &str,
-        milestone: &str,
-    ) {
-        let Ok(content) = self.config.workspace.read_md_file(path) else {
-            return;
-        };
-        let Some(parsed) = parse_element(&content).ok().flatten() else {
-            return;
-        };
-        let crate::model::Element::Task(t) = parsed else {
-            return;
-        };
-
-        if let Ok(mut cache) = self.task_cache.write() {
-            cache.insert(TaskMetadata {
-                uuid: t.uuid,
-                path: path.to_path_buf(),
-                program: program.to_string(),
-                project: project.to_string(),
-                milestone: milestone.to_string(),
-                task_name: t.title,
-                status: t.status,
-            });
-        }
-    }
-
     pub fn resume_planning_session(&mut self) {
         let Ok(sessions) = list_active_sessions(&self.config.workspace) else {
             return;
@@ -1957,16 +1895,11 @@ impl App {
         self.planning_session_start_date = Some(session.start_date);
         self.planning_session_end_date = Some(session.end_date);
 
-        // Rebuild task list from UUIDs using cache
-        let cache = match self.task_cache.read() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
+        // Rebuild task list from UUIDs by loading tasks on-demand
+        let all_tasks = self.load_all_tasks();
         for uuid in &session.tasks {
-            if let Some(meta) = cache.get_by_uuid(uuid) {
-                self.planning_session_tasks
-                    .push(SelectedTask::from(meta.clone()));
+            if let Some(meta) = all_tasks.iter().find(|t| &t.uuid == uuid).cloned() {
+                self.planning_session_tasks.push(SelectedTask::from(meta));
             }
         }
     }
@@ -2403,37 +2336,6 @@ impl App {
         if self.planning_wizard_task_index < max_idx {
             self.planning_wizard_task_index += 1;
         }
-    }
-
-    fn get_filtered_tasks(&self) -> Vec<crate::tui::cache::TaskMetadata> {
-        let cache = match self.task_cache.read() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        let filter_lower = self.planning_wizard_task_filter.to_lowercase();
-        let mut filtered: Vec<_> = cache
-            .iter()
-            .filter(|t| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                // Search across all hierarchy levels
-                t.task_name.to_lowercase().contains(&filter_lower)
-                    || t.program.to_lowercase().contains(&filter_lower)
-                    || t.project.to_lowercase().contains(&filter_lower)
-                    || t.milestone.to_lowercase().contains(&filter_lower)
-            })
-            .cloned()
-            .collect();
-        // Sort by hierarchy: program > project > milestone > task_name
-        filtered.sort_by(|a, b| {
-            a.program
-                .cmp(&b.program)
-                .then_with(|| a.project.cmp(&b.project))
-                .then_with(|| a.milestone.cmp(&b.milestone))
-                .then_with(|| a.task_name.cmp(&b.task_name))
-        });
-        filtered
     }
 
     fn toggle_planning_task_selection(&mut self) {
