@@ -1630,23 +1630,32 @@ impl App {
         let uuid = generate_session_uuid();
         self.planning_session_uuid = Some(uuid.clone());
         self.planning_session_active = true;
-        self.planning_session_tasks.clear();
-        self.rolled_over_tasks.clear();
-
-        // Load all tasks and find the selected ones by UUID
-        let all_tasks = self.load_all_tasks();
-        for task_uuid in self.planning_wizard_selected_tasks.drain(..) {
-            if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
-                self.planning_session_tasks.push(SelectedTask {
-                    uuid: meta.uuid.clone(),
-                    path: meta.path.clone(),
-                    program: meta.program.clone(),
-                    project: meta.project.clone(),
-                    milestone: meta.milestone.clone(),
-                    task_name: meta.task_name.clone(),
-                    status: meta.status.clone(),
-                });
+        
+        // If tasks are already loaded (from picker flow), use them; otherwise load from UUIDs
+        if self.planning_session_tasks.is_empty() {
+            self.rolled_over_tasks.clear();
+            let all_tasks = self.load_all_tasks();
+            for task_uuid in self.planning_wizard_selected_tasks.drain(..) {
+                if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
+                    self.planning_session_tasks.push(SelectedTask {
+                        uuid: meta.uuid.clone(),
+                        path: meta.path.clone(),
+                        program: meta.program.clone(),
+                        project: meta.project.clone(),
+                        milestone: meta.milestone.clone(),
+                        task_name: meta.task_name.clone(),
+                        status: meta.status.clone(),
+                        assigned_to: None,
+                        start_date: None,
+                        end_date: None,
+                        priority: None,
+                    });
+                }
             }
+        } else {
+            // Tasks already loaded with metadata from picker - just clear wizard state
+            self.planning_wizard_selected_tasks.clear();
+            self.rolled_over_tasks.clear();
         }
 
         if let Err(e) = create_planning_session(
@@ -1669,21 +1678,43 @@ impl App {
 
         let selected_paths: Vec<String> = self.hierarchical_picker.selected_tasks.iter().cloned().collect();
         let mut selected_uuids = Vec::new();
+        let mut selected_tasks_with_metadata = Vec::new();
 
         for path_str in selected_paths {
             let path = std::path::PathBuf::from(&path_str);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(parsed) = parse_element(&content) {
                     if let Some(Element::Task(t)) = parsed {
-                        selected_uuids.push(t.uuid);
+                        let uuid = t.uuid.clone();
+                        selected_uuids.push(uuid.clone());
+                        
+                        // Extract metadata from task file
+                        selected_tasks_with_metadata.push(SelectedTask {
+                            uuid,
+                            path: path.clone(),
+                            program: self.hierarchical_picker.selected_program.clone().unwrap_or_default(),
+                            project: self.hierarchical_picker.selected_project.clone().unwrap_or_default(),
+                            milestone: self.hierarchical_picker.selected_milestone.clone().unwrap_or_default(),
+                            task_name: t.title.clone(),
+                            status: t.status.clone(),
+                            assigned_to: t.assigned_to.clone(),
+                            start_date: t.start_date.clone(),
+                            end_date: t.due_date.clone(),
+                            priority: t.priority.clone(),
+                        });
                     }
                 }
             }
         }
 
         self.planning_wizard_selected_tasks = selected_uuids;
+        self.planning_session_tasks = selected_tasks_with_metadata;
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
-        self.finalize_planning_session();
+        
+        // Transition to review mode instead of immediately finalizing
+        self.review_selection_index = 0;
+        self.mode = Mode::ReviewSession;
+        self.current_view = ViewType::WeeklyPlanning;
     }
 
     fn close_planning_session(&mut self) {
@@ -1827,6 +1858,10 @@ impl App {
             milestone,
             task_name: task.title,
             status: task.status,
+            assigned_to: task.assigned_to.clone(),
+            start_date: task.start_date.clone(),
+            end_date: task.due_date.clone(),
+            priority: task.priority.clone(),
         })
     }
 

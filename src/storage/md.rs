@@ -294,6 +294,41 @@ pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()
     Ok(())
 }
 
+/// Update multiple fields in a task file's YAML frontmatter.
+/// Fields are: assigned_to, start_date, due_date, priority
+pub fn update_task_fields(
+    path: &std::path::Path,
+    updates: std::collections::HashMap<&str, Option<String>>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let Some(parsed) = parse_element(&content).ok().flatten() else {
+        return Err(Error::Model(ModelError::Parse(
+            "Failed to parse element".into(),
+        )));
+    };
+
+    let Element::Task(mut task) = parsed else {
+        return Err(Error::Model(ModelError::Parse("Not a task file".into())));
+    };
+
+    if let Some(assigned_to) = updates.get("assigned_to") {
+        task.assigned_to = assigned_to.clone();
+    }
+    if let Some(start_date) = updates.get("start_date") {
+        task.start_date = start_date.clone();
+    }
+    if let Some(due_date) = updates.get("due_date") {
+        task.due_date = due_date.clone();
+    }
+    if let Some(priority) = updates.get("priority") {
+        task.priority = priority.clone();
+    }
+
+    let new_content = element_to_markdown(&Element::Task(task));
+    std::fs::write(path, new_content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

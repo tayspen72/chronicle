@@ -22,6 +22,10 @@ impl From<TaskMetadata> for SelectedTask {
             milestone: meta.milestone,
             task_name: meta.task_name,
             status: meta.status,
+            assigned_to: None,
+            start_date: None,
+            end_date: None,
+            priority: None,
         }
     }
 }

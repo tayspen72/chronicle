@@ -74,7 +74,9 @@ pub struct Task {
     pub creation_date: DateTime<Utc>,
     pub created_by: Option<String>,
     pub assigned_to: Option<String>,
+    pub start_date: Option<String>,
     pub due_date: Option<String>,
+    pub priority: Option<String>,
     #[serde(rename = "type")]
     pub element_type: Option<String>,
     #[serde(default)]
@@ -94,7 +96,9 @@ impl Task {
             creation_date: Utc::now(),
             created_by: None,
             assigned_to: None,
+            start_date: None,
             due_date: None,
+            priority: None,
             element_type: Some("task".to_string()),
             description: String::new(),
             tags: Vec::new(),
@@ -119,6 +123,10 @@ pub struct SelectedTask {
     pub milestone: String,
     pub task_name: String,
     pub status: String,
+    pub assigned_to: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub priority: Option<String>,
 }
 
 /// Element kind enum for type identification.
