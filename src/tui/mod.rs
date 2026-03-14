@@ -371,8 +371,16 @@ impl App {
                 KeyCode::Char('x') => {
                     self.remove_task_from_session();
                 }
+                KeyCode::Char('a') => {
+                    // Add more tasks - go back to picker
+                    self.add_more_tasks_to_session();
+                }
+                KeyCode::Char('c') => {
+                    self.close_planning_session();
+                }
                 KeyCode::Enter => {
-                    self.launch_editor_for_review_task();
+                    // Confirm and finalize session
+                    self.finalize_planning_session();
                 }
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
@@ -2016,6 +2024,17 @@ impl App {
 
         // Save session file
         self.save_current_planning_session();
+    }
+
+    fn add_more_tasks_to_session(&mut self) {
+        // Save current session state before adding more tasks
+        self.save_current_planning_session();
+        
+        // Go back to hierarchical picker to add more tasks
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
     }
 
     fn launch_editor_for_review_task(&mut self) {
