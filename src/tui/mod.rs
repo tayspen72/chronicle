@@ -313,9 +313,24 @@ impl App {
                     }
                 }
                 KeyCode::Char(' ') => {
-                    self.hierarchical_picker.toggle_task_selection();
+                    // Space toggles task selection at Tasks level, otherwise adds to filter
+                    if self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks {
+                        self.hierarchical_picker.toggle_task_selection();
+                    } else {
+                        self.hierarchical_picker.filter_text.push(' ');
+                    }
                 }
-                KeyCode::Esc | KeyCode::Backspace => {
+                KeyCode::Backspace => {
+                    // Backspace deletes from filter if not empty, otherwise goes back
+                    if !self.hierarchical_picker.filter_text.is_empty() {
+                        self.hierarchical_picker.filter_text.pop();
+                    } else if !self.hierarchical_picker.go_back() {
+                        self.cancel_hierarchical_picker();
+                    } else {
+                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
+                    }
+                }
+                KeyCode::Esc => {
                     if !self.hierarchical_picker.go_back() {
                         self.cancel_hierarchical_picker();
                     } else {
@@ -324,6 +339,10 @@ impl App {
                 }
                 KeyCode::Char('q') => {
                     self.cancel_hierarchical_picker();
+                }
+                KeyCode::Char(c) => {
+                    // All other characters go to the filter
+                    self.hierarchical_picker.filter_text.push(c);
                 }
                 _ => {}
             }
@@ -1256,7 +1275,7 @@ impl App {
                     self.execute_command(&cmd);
                 }
                 // Only reset mode if we're not entering a special mode that should persist
-                if !matches!(self.mode, Mode::TaskSelection | Mode::ReviewSession) {
+                if !matches!(self.mode, Mode::TaskSelection | Mode::ReviewSession | Mode::HierarchicalSelection) {
                     self.mode = Mode::Normal;
                 }
                 self.command_input.clear();

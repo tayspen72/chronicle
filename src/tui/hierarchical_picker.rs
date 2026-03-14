@@ -200,3 +200,145 @@ impl HierarchicalPickerState {
         self.selected_tasks.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_text_allows_spaces() {
+        let mut picker = HierarchicalPickerState::new();
+        picker.filter_text = "test".to_string();
+        picker.filter_text.push(' ');
+        picker.filter_text.push_str("word");
+        assert_eq!(picker.filter_text, "test word");
+    }
+
+    #[test]
+    fn test_filtered_items_matches_case_insensitive() {
+        let mut picker = HierarchicalPickerState::new();
+        picker.items = vec![
+            PickerItem {
+                name: "MyProgram".to_string(),
+                path: std::path::PathBuf::from("/test"),
+                is_dir: true,
+            },
+            PickerItem {
+                name: "OtherProgram".to_string(),
+                path: std::path::PathBuf::from("/test2"),
+                is_dir: true,
+            },
+        ];
+
+        // Empty filter returns all items
+        assert_eq!(picker.filtered_items().len(), 2);
+
+        // Case-insensitive filter
+        picker.filter_text = "my".to_string();
+        assert_eq!(picker.filtered_items().len(), 1);
+        assert_eq!(picker.filtered_items()[0].name, "MyProgram");
+
+        // Filter with space
+        picker.filter_text = "program".to_string();
+        assert_eq!(picker.filtered_items().len(), 2);
+    }
+
+    #[test]
+    fn test_navigation_updates_cursor() {
+        let mut picker = HierarchicalPickerState::new();
+        picker.items = vec![
+            PickerItem {
+                name: "A".to_string(),
+                path: std::path::PathBuf::from("/a"),
+                is_dir: true,
+            },
+            PickerItem {
+                name: "B".to_string(),
+                path: std::path::PathBuf::from("/b"),
+                is_dir: true,
+            },
+            PickerItem {
+                name: "C".to_string(),
+                path: std::path::PathBuf::from("/c"),
+                is_dir: true,
+            },
+        ];
+
+        assert_eq!(picker.cursor_index, 0);
+
+        picker.navigate_down();
+        assert_eq!(picker.cursor_index, 1);
+
+        picker.navigate_down();
+        assert_eq!(picker.cursor_index, 2);
+
+        // Can't go past end
+        picker.navigate_down();
+        assert_eq!(picker.cursor_index, 2);
+
+        picker.navigate_up();
+        assert_eq!(picker.cursor_index, 1);
+
+        picker.navigate_up();
+        assert_eq!(picker.cursor_index, 0);
+
+        // Can't go before start
+        picker.navigate_up();
+        assert_eq!(picker.cursor_index, 0);
+    }
+
+    #[test]
+    fn test_select_current_navigates_levels() {
+        let mut picker = HierarchicalPickerState::new();
+        picker.items = vec![PickerItem {
+            name: "TestProgram".to_string(),
+            path: std::path::PathBuf::from("/test"),
+            is_dir: true,
+        }];
+        picker.level = PickerLevel::Programs;
+
+        let result = picker.select_current();
+        assert!(result.is_some());
+        let (new_level, name) = result.unwrap();
+        assert_eq!(new_level, PickerLevel::Projects);
+        assert_eq!(name, "TestProgram");
+        assert_eq!(picker.selected_program, Some("TestProgram".to_string()));
+        assert_eq!(picker.level, PickerLevel::Projects);
+    }
+
+    #[test]
+    fn test_go_back_navigates_hierarchy() {
+        let mut picker = HierarchicalPickerState::new();
+        picker.level = PickerLevel::Tasks;
+        picker.selected_program = Some("Prog".to_string());
+        picker.selected_project = Some("Proj".to_string());
+        picker.selected_milestone = Some("Mile".to_string());
+
+        // Go back from Tasks -> Milestones
+        // Note: go_back() clears selections based on the PARENT level, not the current level
+        // When going to Milestones, nothing is cleared (Milestones branch in match is empty)
+        let went_back = picker.go_back();
+        assert!(went_back);
+        assert_eq!(picker.level, PickerLevel::Milestones);
+        // selected_milestone is NOT cleared when going TO Milestones
+        assert!(picker.selected_milestone.is_some());
+
+        // Go back from Milestones -> Projects
+        // When going to Projects, selected_milestone is cleared
+        let went_back = picker.go_back();
+        assert!(went_back);
+        assert_eq!(picker.level, PickerLevel::Projects);
+        assert!(picker.selected_milestone.is_none());
+
+        // Go back from Projects -> Programs
+        // When going to Programs, selected_project and selected_milestone are cleared
+        let went_back = picker.go_back();
+        assert!(went_back);
+        assert_eq!(picker.level, PickerLevel::Programs);
+        assert!(picker.selected_project.is_none());
+
+        // Can't go back from Programs
+        let went_back = picker.go_back();
+        assert!(!went_back);
+    }
+}
