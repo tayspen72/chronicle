@@ -371,12 +371,39 @@ impl App {
                 KeyCode::Char('x') => {
                     self.remove_task_from_session();
                 }
-                KeyCode::Char('a') => {
+                KeyCode::Char('m') => {
                     // Add more tasks - go back to picker
                     self.add_more_tasks_to_session();
                 }
                 KeyCode::Char('c') => {
                     self.close_planning_session();
+                }
+                KeyCode::Char('a') => {
+                    // Set assigned to - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self.planning_session_tasks
+                        .get(self.review_selection_index)
+                        .and_then(|t| t.assigned_to.clone())
+                        .unwrap_or_default();
+                    self.planning_wizard_focus = 100; // Marker for assigned_to input
+                }
+                KeyCode::Char('b') => {
+                    // Set start date - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self.planning_session_tasks
+                        .get(self.review_selection_index)
+                        .and_then(|t| t.start_date.clone())
+                        .unwrap_or_default();
+                    self.planning_wizard_focus = 101; // Marker for start_date input
+                }
+                KeyCode::Char('e') => {
+                    // Set due date - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self.planning_session_tasks
+                        .get(self.review_selection_index)
+                        .and_then(|t| t.end_date.clone())
+                        .unwrap_or_default();
+                    self.planning_wizard_focus = 102; // Marker for due_date input
                 }
                 KeyCode::Enter => {
                     // Confirm and finalize session
@@ -424,6 +451,12 @@ impl App {
                     || self.current_view == ViewType::PlanningTaskPicker
                 {
                     self.cancel_planning_wizard();
+                } else if self.mode == Mode::Input 
+                    && matches!(self.planning_wizard_focus, 100 | 101 | 102) 
+                {
+                    // Cancel task metadata input and return to ReviewSession
+                    self.input_buffer.clear();
+                    self.mode = Mode::ReviewSession;
                 } else if self.current_view == ViewType::TreeView {
                     // In TreeView, only navigate back if we're at root (empty path).
                     // When inside the tree (path not empty), do nothing because Left arrow
@@ -1165,6 +1198,35 @@ impl App {
     }
 
     fn handle_enter(&mut self) {
+        // Handle input mode for review session task metadata
+        if self.mode == Mode::Input {
+            match self.planning_wizard_focus {
+                100 => {
+                    // assigned_to
+                    let name = self.input_buffer.clone();
+                    self.set_task_assigned_to(name);
+                    self.input_buffer.clear();
+                    self.mode = Mode::ReviewSession;
+                }
+                101 => {
+                    // start_date
+                    let date = self.input_buffer.clone();
+                    self.set_task_start_date(date);
+                    self.input_buffer.clear();
+                    self.mode = Mode::ReviewSession;
+                }
+                102 => {
+                    // due_date
+                    let date = self.input_buffer.clone();
+                    self.set_task_due_date(date);
+                    self.input_buffer.clear();
+                    self.mode = Mode::ReviewSession;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match &self.current_view {
             ViewType::TreeView => {
                 self.open_tree_item();
@@ -1954,6 +2016,45 @@ impl App {
         let next_idx = (current_idx + 1) % workflow.len();
         let new_status = workflow[next_idx].clone();
         self.update_review_task_status(&new_status);
+    }
+
+    fn set_task_start_date(&mut self, date: String) {
+        let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else {
+            return;
+        };
+        task.start_date = Some(date.clone());
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task.path,
+            [("start_date", Some(date))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task start date: {e}");
+        }
+    }
+
+    fn set_task_due_date(&mut self, date: String) {
+        let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else {
+            return;
+        };
+        task.end_date = Some(date.clone());
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task.path,
+            [("due_date", Some(date))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task due date: {e}");
+        }
+    }
+
+    fn set_task_assigned_to(&mut self, name: String) {
+        let Some(task) = self.planning_session_tasks.get_mut(self.review_selection_index) else {
+            return;
+        };
+        task.assigned_to = Some(name.clone());
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task.path,
+            [("assigned_to", Some(name))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task assigned_to: {e}");
+        }
     }
 
     fn mark_task_done(&mut self) {
