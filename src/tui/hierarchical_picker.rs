@@ -46,6 +46,7 @@ pub struct HierarchicalPickerState {
     pub filter_text: String,
     pub items: Vec<PickerItem>,
     pub cursor_index: usize,
+    pub is_wizard_mode: bool,
 }
 
 impl Default for HierarchicalPickerState {
@@ -59,6 +60,7 @@ impl Default for HierarchicalPickerState {
             filter_text: String::new(),
             items: Vec::new(),
             cursor_index: 0,
+            is_wizard_mode: false,
         }
     }
 }
@@ -66,6 +68,20 @@ impl Default for HierarchicalPickerState {
 impl HierarchicalPickerState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn new_wizard() -> Self {
+        Self {
+            level: PickerLevel::Programs,
+            selected_program: None,
+            selected_project: None,
+            selected_milestone: None,
+            selected_tasks: HashSet::new(),
+            filter_text: String::new(),
+            items: Vec::new(),
+            cursor_index: 0,
+            is_wizard_mode: true,
+        }
     }
 
     pub fn breadcrumb(&self) -> String {

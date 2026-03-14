@@ -308,7 +308,14 @@ impl App {
                     self.hierarchical_picker.navigate_down();
                 }
                 KeyCode::Enter => {
-                    if let Some((new_level, _name)) = self.hierarchical_picker.select_current() {
+                    let is_wizard = self.hierarchical_picker.is_wizard_mode;
+                    let at_tasks_level = self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks;
+                    let has_selections = !self.hierarchical_picker.selected_tasks.is_empty();
+                    
+                    // In wizard mode at Tasks level with selections, finalize the session
+                    if is_wizard && at_tasks_level && has_selections {
+                        self.finalize_planning_session_from_picker();
+                    } else if let Some((new_level, _name)) = self.hierarchical_picker.select_current() {
                         self.load_hierarchical_picker_level(new_level);
                     }
                 }
@@ -325,20 +332,20 @@ impl App {
                     if !self.hierarchical_picker.filter_text.is_empty() {
                         self.hierarchical_picker.filter_text.pop();
                     } else if !self.hierarchical_picker.go_back() {
-                        self.cancel_hierarchical_picker();
+                        self.cancel_planning_wizard();
                     } else {
                         self.load_hierarchical_picker_level(self.hierarchical_picker.level);
                     }
                 }
                 KeyCode::Esc => {
                     if !self.hierarchical_picker.go_back() {
-                        self.cancel_hierarchical_picker();
+                        self.cancel_planning_wizard();
                     } else {
                         self.load_hierarchical_picker_level(self.hierarchical_picker.level);
                     }
                 }
                 KeyCode::Char('q') => {
-                    self.cancel_hierarchical_picker();
+                    self.cancel_planning_wizard();
                 }
                 KeyCode::Char(c) => {
                     // All other characters go to the filter
@@ -1344,9 +1351,6 @@ impl App {
             Some(CommandAction::ReviewSession) => {
                 self.start_review_session();
             }
-            Some(CommandAction::BrowseTasks) => {
-                self.start_hierarchical_picker();
-            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1616,7 +1620,10 @@ impl App {
         self.planning_wizard_date_error = None;
         self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
         self.planning_session_end_date = Some(end_date);
-        self.current_view = ViewType::PlanningTaskPicker;
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
     }
 
     fn finalize_planning_session(&mut self) {
@@ -1654,6 +1661,29 @@ impl App {
 
         self.current_view = ViewType::WeeklyPlanning;
         self.mode = Mode::Normal;
+    }
+
+    fn finalize_planning_session_from_picker(&mut self) {
+        use crate::storage::md::parse_element;
+        use crate::model::Element;
+
+        let selected_paths: Vec<String> = self.hierarchical_picker.selected_tasks.iter().cloned().collect();
+        let mut selected_uuids = Vec::new();
+
+        for path_str in selected_paths {
+            let path = std::path::PathBuf::from(&path_str);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(parsed) = parse_element(&content) {
+                    if let Some(Element::Task(t)) = parsed {
+                        selected_uuids.push(t.uuid);
+                    }
+                }
+            }
+        }
+
+        self.planning_wizard_selected_tasks = selected_uuids;
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
+        self.finalize_planning_session();
     }
 
     fn close_planning_session(&mut self) {
@@ -2501,6 +2531,7 @@ impl App {
         self.planning_wizard_task_index = 0;
         self.planning_wizard_date_error = None;
         self.planning_wizard_tasks = Vec::new();
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
         self.current_view = ViewType::TreeView;
         self.mode = Mode::Normal;
     }
