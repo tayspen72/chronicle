@@ -111,6 +111,44 @@ Do not touch these without an explicit instruction in the current session:
 
 ---
 
+## Git workflow
+
+The main agent handles all git operations. Branch names are auto-generated from the task/goal description.
+
+### Branch Naming
+
+```
+<type>/<slug>
+```
+
+| Type | When |
+|------|------|
+| `feature/` | New functionality |
+| `fix/` | Bug fixes |
+| `refactor/` | Code restructuring without behavior change |
+| `docs/` | Documentation only |
+
+Examples:
+- "implement planning wizard" → `feature/planning-wizard`
+- "fix navigation scope bug" → `fix/navigation-scope`
+
+### Workflow Steps
+
+1. **Start**: Create branch from `develop` with generated name
+2. **Work**: Implement changes (may call subagents)
+3. **Simplify**: Run `@code-simplifier`
+4. **Commit**: Commit with auto-generated conventional commit message
+5. **Verify**: Run `@verify-app`
+6. **Merge**: Merge branch to `develop`
+
+### Rules
+
+- **Never merge to master** — only `develop`. User handles develop → master merges manually.
+- **Stop on merge conflicts** — ask user to resolve manually.
+- **Conventional commits** — format: `<type>(<scope>): <description>`
+
+---
+
 ## Agent workflow
 
 These five subagents are available. Use them in this order:

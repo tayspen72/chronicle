@@ -16,6 +16,15 @@ Run all of these before opening a PR. Never suppress warnings to make a build pa
 - Use `@code-simplifier` after every implementation.
 - Use `@verify-app` before every PR.
 
+## Git Workflow
+- All git operations handled by main agent, not subagents.
+- Branch names auto-generated from task/goal: `<type>/<slug>` (e.g., `feature/planning-wizard`).
+- Branch types: `feature/`, `fix/`, `refactor/`, `docs/`.
+- Create branch from `develop`, merge back to `develop` only.
+- Never merge to `master` — user handles develop → master manually.
+- Stop on merge conflicts and ask user to resolve.
+- Commit messages follow conventional commits: `<type>(<scope>): <description>`.
+
 ## Rules
 <!-- This section grows over time. When the model makes a mistake, add a rule here and commit it. -->
 
