@@ -515,4 +515,59 @@ First release with core features.
         assert_eq!(parsed.kind(), ElementKind::Task);
         assert_eq!(parsed.title(), "Test Task");
     }
+
+    #[test]
+    fn test_parse_element_task_with_unquoted_date() {
+        // Test that unquoted date-only format works (Issue #3 fix)
+        let content = r#"---
+id: "34dce5f7-1198-4da4-accb-9641cde6e827"
+title: "Bug fixes 3"
+status: "Done"
+creation_date: 2026-03-13
+type: task
+---
+
+# Description
+Task with unquoted date.
+"#;
+        let element = parse_element(content).unwrap().expect("Should parse task");
+        assert_eq!(element.kind(), ElementKind::Task);
+        assert_eq!(element.title(), "Bug fixes 3");
+
+        if let Element::Task(task) = element {
+            assert_eq!(
+                task.creation_date.format("%Y-%m-%d").to_string(),
+                "2026-03-13"
+            );
+        } else {
+            panic!("Expected Task element");
+        }
+    }
+
+    #[test]
+    fn test_parse_element_task_with_quoted_date() {
+        // Test that quoted date string also works
+        let content = r#"---
+id: "test-id"
+title: "Test Task"
+status: "todo"
+creation_date: "2026-03-15"
+type: task
+---
+
+# Description
+Task with quoted date.
+"#;
+        let element = parse_element(content).unwrap().expect("Should parse task");
+        assert_eq!(element.kind(), ElementKind::Task);
+
+        if let Element::Task(task) = element {
+            assert_eq!(
+                task.creation_date.format("%Y-%m-%d").to_string(),
+                "2026-03-15"
+            );
+        } else {
+            panic!("Expected Task element");
+        }
+    }
 }

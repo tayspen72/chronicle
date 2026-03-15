@@ -43,8 +43,6 @@ pub struct HierarchicalPickerState {
     pub selected_project: Option<String>,
     pub selected_milestone: Option<String>,
     pub selected_tasks: HashSet<String>,
-    pub filter_text: String,
-    pub filter_focused: bool,
     pub items: Vec<PickerItem>,
     pub cursor_index: usize,
     pub is_wizard_mode: bool,
@@ -58,8 +56,6 @@ impl Default for HierarchicalPickerState {
             selected_project: None,
             selected_milestone: None,
             selected_tasks: HashSet::new(),
-            filter_text: String::new(),
-            filter_focused: false,
             items: Vec::new(),
             cursor_index: 0,
             is_wizard_mode: false,
@@ -79,8 +75,6 @@ impl HierarchicalPickerState {
             selected_project: None,
             selected_milestone: None,
             selected_tasks: HashSet::new(),
-            filter_text: String::new(),
-            filter_focused: false,
             items: Vec::new(),
             cursor_index: 0,
             is_wizard_mode: true,
@@ -113,17 +107,6 @@ impl HierarchicalPickerState {
         }
     }
 
-    pub fn filtered_items(&self) -> Vec<&PickerItem> {
-        if self.filter_text.is_empty() {
-            return self.items.iter().collect();
-        }
-        let filter_lower = self.filter_text.to_lowercase();
-        self.items
-            .iter()
-            .filter(|item| item.name.to_lowercase().contains(&filter_lower))
-            .collect()
-    }
-
     pub fn navigate_up(&mut self) {
         if self.cursor_index > 0 {
             self.cursor_index -= 1;
@@ -131,8 +114,7 @@ impl HierarchicalPickerState {
     }
 
     pub fn navigate_down(&mut self) {
-        let filtered = self.filtered_items();
-        let max_idx = filtered.len().saturating_sub(1);
+        let max_idx = self.items.len().saturating_sub(1);
         if self.cursor_index < max_idx {
             self.cursor_index += 1;
         }
@@ -141,7 +123,6 @@ impl HierarchicalPickerState {
     pub fn go_back(&mut self) -> bool {
         if let Some(parent_level) = self.level.parent() {
             self.level = parent_level;
-            // Clear selections for levels we're navigating away from
             match parent_level {
                 PickerLevel::Programs => {
                     self.selected_project = None;
@@ -153,7 +134,6 @@ impl HierarchicalPickerState {
                 _ => {}
             }
             self.cursor_index = 0;
-            self.filter_text.clear();
             true
         } else {
             false
@@ -161,8 +141,7 @@ impl HierarchicalPickerState {
     }
 
     pub fn select_current(&mut self) -> Option<(PickerLevel, String)> {
-        let filtered = self.filtered_items();
-        let item = filtered.get(self.cursor_index)?;
+        let item = self.items.get(self.cursor_index)?;
         let name = item.name.clone();
 
         match self.level {
@@ -179,7 +158,6 @@ impl HierarchicalPickerState {
             }
         }
 
-        // Navigate to child level for non-task selections
         if !matches!(self.level, PickerLevel::Tasks)
             && let Some(child_level) = self.level.child()
         {
@@ -187,13 +165,11 @@ impl HierarchicalPickerState {
         }
 
         self.cursor_index = 0;
-        self.filter_text.clear();
         Some((self.level, name))
     }
 
     pub fn toggle_task_selection(&mut self) {
-        let filtered = self.filtered_items();
-        if let Some(item) = filtered.get(self.cursor_index) {
+        if let Some(item) = self.items.get(self.cursor_index) {
             let path_str = item.path.to_string_lossy().to_string();
             if self.selected_tasks.contains(&path_str) {
                 self.selected_tasks.remove(&path_str);
@@ -225,44 +201,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_filter_text_allows_spaces() {
-        let mut picker = HierarchicalPickerState::new();
-        picker.filter_text = "test".to_string();
-        picker.filter_text.push(' ');
-        picker.filter_text.push_str("word");
-        assert_eq!(picker.filter_text, "test word");
-    }
-
-    #[test]
-    fn test_filtered_items_matches_case_insensitive() {
-        let mut picker = HierarchicalPickerState::new();
-        picker.items = vec![
-            PickerItem {
-                name: "MyProgram".to_string(),
-                path: std::path::PathBuf::from("/test"),
-                is_dir: true,
-            },
-            PickerItem {
-                name: "OtherProgram".to_string(),
-                path: std::path::PathBuf::from("/test2"),
-                is_dir: true,
-            },
-        ];
-
-        // Empty filter returns all items
-        assert_eq!(picker.filtered_items().len(), 2);
-
-        // Case-insensitive filter
-        picker.filter_text = "my".to_string();
-        assert_eq!(picker.filtered_items().len(), 1);
-        assert_eq!(picker.filtered_items()[0].name, "MyProgram");
-
-        // Filter with space
-        picker.filter_text = "program".to_string();
-        assert_eq!(picker.filtered_items().len(), 2);
-    }
-
-    #[test]
     fn test_navigation_updates_cursor() {
         let mut picker = HierarchicalPickerState::new();
         picker.items = vec![
@@ -291,7 +229,6 @@ mod tests {
         picker.navigate_down();
         assert_eq!(picker.cursor_index, 2);
 
-        // Can't go past end
         picker.navigate_down();
         assert_eq!(picker.cursor_index, 2);
 
@@ -301,7 +238,6 @@ mod tests {
         picker.navigate_up();
         assert_eq!(picker.cursor_index, 0);
 
-        // Can't go before start
         picker.navigate_up();
         assert_eq!(picker.cursor_index, 0);
     }
@@ -333,30 +269,21 @@ mod tests {
         picker.selected_project = Some("Proj".to_string());
         picker.selected_milestone = Some("Mile".to_string());
 
-        // Go back from Tasks -> Milestones
-        // Note: go_back() clears selections based on the PARENT level, not the current level
-        // When going to Milestones, nothing is cleared (Milestones branch in match is empty)
         let went_back = picker.go_back();
         assert!(went_back);
         assert_eq!(picker.level, PickerLevel::Milestones);
-        // selected_milestone is NOT cleared when going TO Milestones
         assert!(picker.selected_milestone.is_some());
 
-        // Go back from Milestones -> Projects
-        // When going to Projects, selected_milestone is cleared
         let went_back = picker.go_back();
         assert!(went_back);
         assert_eq!(picker.level, PickerLevel::Projects);
         assert!(picker.selected_milestone.is_none());
 
-        // Go back from Projects -> Programs
-        // When going to Programs, selected_project and selected_milestone are cleared
         let went_back = picker.go_back();
         assert!(went_back);
         assert_eq!(picker.level, PickerLevel::Programs);
         assert!(picker.selected_project.is_none());
 
-        // Can't go back from Programs
         let went_back = picker.go_back();
         assert!(!went_back);
     }

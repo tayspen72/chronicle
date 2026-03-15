@@ -1,10 +1,12 @@
 ---
-type: planning
 uuid: {{UUID}}
+title: {{NAME}}
+creation_date: {{TODAY}}
+created_by: {{OWNER}}
 start_date: {{START_DATE}}
 end_date: {{END_DATE}}
 duration: {{DURATION}}
-status: active
+type: planning
 tasks: []
 ---
 

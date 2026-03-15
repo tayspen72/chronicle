@@ -1,10 +1,10 @@
 use super::views;
 use crate::tui::{App, Mode, ViewType};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -62,11 +62,19 @@ fn calculate_sidebar_width(app: &App) -> u16 {
     max_len = max_len.max("Navigator".len());
 
     for item in &app.sidebar_items {
-        let len = item.name.len() + (item.indent * 4);
+        // Account for: indent spaces (4 per level) + tree prefix (4 chars for "├── "/"└── ") + name
+        // Tree prefix only applies to non-header, indented items
+        let tree_prefix_len = if item.is_header || item.indent == 0 {
+            0
+        } else {
+            4 // "├── " or "└── "
+        };
+        let len = item.name.len() + (item.indent * 4) + tree_prefix_len;
         max_len = max_len.max(len);
     }
 
-    (max_len + 4).clamp(15, 60) as u16
+    // +6 for borders (2) and internal padding (4)
+    (max_len + 6).clamp(15, 60) as u16
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -87,11 +95,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                         let is_selected = item.path.as_ref().is_some_and(|p| {
                             app.planning_session_tasks.iter().any(|t| t.path == *p)
                         });
-                        if is_selected {
-                            "[x] "
-                        } else {
-                            "[ ] "
-                        }
+                        if is_selected { "[x] " } else { "[ ] " }
                     });
 
                 let prefix = if item.is_header || item.indent == 0 {
@@ -193,7 +197,7 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::PlanningPreview => {
             views::render_planning_preview(f, app, area);
         }
-        ViewType::TaskDetailWizard => {
+        ViewType::TaskDetailWizard | ViewType::InputTaskDetailField => {
             views::render_task_detail_wizard(f, app, area);
         }
     }
@@ -284,9 +288,10 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Input => ("INPUT", Color::Cyan),
         Mode::TaskSelection => ("SELECT", Color::Magenta),
         Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
-        Mode::HierarchicalSelection => ("BROWSE", Color::LightCyan),
+        Mode::HierarchicalSelection => ("ADD TASKS", Color::LightCyan),
         Mode::PlanningPreview => ("PREVIEW", Color::LightBlue),
         Mode::TaskDetailWizard => ("EDIT TASK", Color::LightYellow),
+        Mode::InputTaskDetailField => ("INPUT", Color::Cyan),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections

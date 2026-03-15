@@ -55,6 +55,8 @@ pub fn list_active_sessions(workspace: &Path) -> Result<Vec<PathBuf>> {
 pub fn create_planning_session(
     workspace: &Path,
     uuid: &str,
+    title: &str,
+    creation_date: &str,
     start_date: &str,
     end_date: &str,
     duration: &str,
@@ -67,10 +69,13 @@ pub fn create_planning_session(
 
     let mut values = HashMap::new();
     values.insert("UUID".to_string(), uuid.to_string());
+    values.insert("NAME".to_string(), title.to_string());
+    values.insert("TODAY".to_string(), creation_date.to_string());
     values.insert("START_DATE".to_string(), start_date.to_string());
     values.insert("END_DATE".to_string(), end_date.to_string());
     values.insert("DURATION".to_string(), duration.to_string());
     values.insert("STATUS".to_string(), "active".to_string());
+    values.insert("OWNER".to_string(), "".to_string());
 
     let template = include_str!("../../templates/planning_session.md");
     let content = resolve_template(template, &values);
@@ -184,8 +189,16 @@ mod tests {
     fn test_create_planning_session() {
         let dir = tempdir().unwrap();
         let uuid = generate_session_uuid();
-        let path = create_planning_session(dir.path(), &uuid, "2026-03-12", "2026-03-19", "weekly")
-            .unwrap();
+        let path = create_planning_session(
+            dir.path(),
+            &uuid,
+            "Weekly Plan",
+            "2026-03-12",
+            "2026-03-12",
+            "2026-03-19",
+            "weekly",
+        )
+        .unwrap();
         assert!(path.exists());
         assert!(path.to_string_lossy().contains("2026-03-12-planning.md"));
     }
@@ -196,6 +209,9 @@ mod tests {
         let session = PlanningSession {
             element_type: "planning".to_string(),
             uuid: "ses_test".to_string(),
+            title: "Weekly Plan".to_string(),
+            creation_date: "2026-03-12".to_string(),
+            created_by: None,
             start_date: "2026-03-12".to_string(),
             end_date: "2026-03-19".to_string(),
             duration: "weekly".to_string(),
@@ -216,7 +232,16 @@ mod tests {
     fn test_archive_session() {
         let dir = tempdir().unwrap();
         let uuid = generate_session_uuid();
-        create_planning_session(dir.path(), &uuid, "2026-03-12", "2026-03-19", "weekly").unwrap();
+        create_planning_session(
+            dir.path(),
+            &uuid,
+            "Weekly Plan",
+            "2026-03-12",
+            "2026-03-12",
+            "2026-03-19",
+            "weekly",
+        )
+        .unwrap();
 
         let history_path = archive_planning_session(dir.path(), "2026-03-12").unwrap();
         assert!(history_path.exists());
