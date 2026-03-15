@@ -1730,7 +1730,20 @@ impl App {
     }
 
     fn start_planning_session(&mut self) {
+        // If a session already exists, go directly to the task picker to edit it
+        if self.planning_session_active {
+            self.open_hierarchical_task_picker_for_existing_session();
+            return;
+        }
         self.open_planning_wizard();
+    }
+
+    fn open_hierarchical_task_picker_for_existing_session(&mut self) {
+        // Open task picker for an existing session
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
     }
 
     fn open_planning_wizard(&mut self) {
@@ -1974,11 +1987,13 @@ impl App {
         // Save the session with selected tasks
         self.save_current_planning_session();
 
-        // Transition to preview page
+        // Clear wizard state and return to normal mode (skip review page)
         self.planning_wizard_focus = 0;
-        self.planning_preview_focus = 0;
-        self.mode = Mode::PlanningPreview;
-        self.current_view = ViewType::PlanningPreview;
+        self.planning_wizard_start_date.clear();
+        self.planning_wizard_end_date.clear();
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
+        self.mode = Mode::Normal;
+        self.current_view = ViewType::TreeView;
     }
 
     fn close_planning_session(&mut self) {
@@ -3018,11 +3033,11 @@ impl App {
                     .unwrap_or_default(),
                 task_name: t.title.clone(),
                 status: t.status.clone(),
-                // Start with empty fields - user can add info if desired
-                assigned_to: None,
-                start_date: None,
-                due_date: None,
-                priority: None,
+                // Dynamically load existing values from task, or None if not present
+                assigned_to: t.assigned_to.clone(),
+                start_date: t.start_date.clone(),
+                due_date: t.due_date.clone(),
+                priority: t.priority.clone(),
             },
             _ => {
                 tracing::debug!(path = ?item.path, "open_task_detail_wizard: parsed element is not a Task");
