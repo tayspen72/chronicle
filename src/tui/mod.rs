@@ -53,6 +53,8 @@ pub enum Mode {
     ReviewSession,
     /// User is navigating hierarchical task picker
     HierarchicalSelection,
+    /// User is previewing tasks before confirming plan
+    PlanningPreview,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +113,7 @@ pub enum ViewType {
     InputPlanningSessionDates,
     PlanningTaskPicker,
     HierarchicalTaskPicker,
+    PlanningPreview,
 }
 
 pub struct App {
@@ -147,6 +150,7 @@ pub struct App {
     pub planning_session_due_date: Option<String>,
     pub rolled_over_tasks: Vec<String>,
     pub review_selection_index: usize,
+    pub planning_preview_focus: usize,
     // Planning wizard state (Step 1: dates, Step 2: task selection)
     pub planning_wizard_start_date: String,
     pub planning_wizard_duration: String,
@@ -201,6 +205,7 @@ impl App {
             planning_session_due_date: None,
             rolled_over_tasks: Vec::new(),
             review_selection_index: 0,
+            planning_preview_focus: 0,
             planning_wizard_start_date: String::new(),
             planning_wizard_duration: "weekly".to_string(),
             planning_wizard_focus: 0,
@@ -311,11 +316,27 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.hierarchical_picker.navigate_down();
                 }
+                KeyCode::Left => {
+                    // Go back up hierarchy
+                    if !self.hierarchical_picker.go_back() {
+                        self.cancel_planning_wizard();
+                    } else {
+                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
+                    }
+                }
+                KeyCode::Right => {
+                    // Drill down (same as Enter for navigation)
+                    if self.hierarchical_picker.level != hierarchical_picker::PickerLevel::Tasks {
+                        if let Some((new_level, _name)) = self.hierarchical_picker.select_current() {
+                            self.load_hierarchical_picker_level(new_level);
+                        }
+                    }
+                }
                 KeyCode::Enter => {
                     let is_wizard = self.hierarchical_picker.is_wizard_mode;
                     let at_tasks_level = self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks;
                     let has_selections = !self.hierarchical_picker.selected_tasks.is_empty();
-                    
+
                     // In wizard mode at Tasks level with selections, finalize the session
                     if is_wizard && at_tasks_level && has_selections {
                         self.finalize_planning_session_from_picker();
@@ -323,17 +344,30 @@ impl App {
                         self.load_hierarchical_picker_level(new_level);
                     }
                 }
-                KeyCode::Char(' ') => {
-                    // Space toggles task selection at Tasks level, otherwise adds to filter
+                KeyCode::Char('a') => {
+                    // 'a' for "Add to plan" - toggles task selection at Tasks level
                     if self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks {
                         self.hierarchical_picker.toggle_task_selection();
-                    } else {
-                        self.hierarchical_picker.filter_text.push(' ');
                     }
                 }
+                KeyCode::Char('f') => {
+                    // 'f' for "Finish plan" - finalize if in wizard mode with selections
+                    if self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks
+                        && !self.hierarchical_picker.selected_tasks.is_empty()
+                        && self.hierarchical_picker.is_wizard_mode
+                    {
+                        self.finalize_planning_session_from_picker();
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    // Space moves focus to filter input
+                    self.hierarchical_picker.filter_focused = !self.hierarchical_picker.filter_focused;
+                }
                 KeyCode::Backspace => {
-                    // Backspace deletes from filter if not empty, otherwise goes back
-                    if !self.hierarchical_picker.filter_text.is_empty() {
+                    // Backspace deletes from filter if focused/has content, otherwise goes back
+                    if self.hierarchical_picker.filter_focused && !self.hierarchical_picker.filter_text.is_empty() {
+                        self.hierarchical_picker.filter_text.pop();
+                    } else if !self.hierarchical_picker.filter_text.is_empty() {
                         self.hierarchical_picker.filter_text.pop();
                     } else if !self.hierarchical_picker.go_back() {
                         self.cancel_planning_wizard();
@@ -352,7 +386,7 @@ impl App {
                     self.cancel_planning_wizard();
                 }
                 KeyCode::Char(c) => {
-                    // All other characters go to the filter
+                    // All other characters go to filter
                     self.hierarchical_picker.filter_text.push(c);
                 }
                 _ => {}
@@ -422,6 +456,44 @@ impl App {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.navigate_review(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle PlanningPreview mode specially
+        if self.mode == Mode::PlanningPreview {
+            match code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if self.planning_preview_focus > 0 {
+                        self.planning_preview_focus -= 1;
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if self.planning_preview_focus < 2 {
+                        self.planning_preview_focus += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    match self.planning_preview_focus {
+                        0 => self.add_more_tasks_to_session(),
+                        1 => {
+                            // Activate session and start review
+                            self.planning_session_active = true;
+                            if self.planning_session_uuid.is_none() {
+                                self.planning_session_uuid =
+                                    Some(crate::storage::planning::generate_session_uuid());
+                            }
+                            self.save_current_planning_session();
+                            self.start_review_session();
+                        }
+                        2 => self.cancel_planning_wizard(),
+                        _ => {}
+                    }
+                }
+                KeyCode::Esc => {
+                    self.cancel_planning_wizard();
                 }
                 _ => {}
             }
@@ -534,6 +606,8 @@ impl App {
                         | ViewType::InputProject
                         | ViewType::InputMilestone
                         | ViewType::InputTask
+                        | ViewType::InputTemplateField
+                        | ViewType::InputPlanningSessionDates
                 ) {
                     self.handle_input_char(' ');
                 }
@@ -1742,53 +1816,69 @@ impl App {
             eprintln!("Failed to create planning session file: {e}");
         }
 
-        self.current_view = ViewType::WeeklyPlanning;
+        // Return to TreeView (navigator) after finalizing
+        self.current_view = ViewType::TreeView;
         self.mode = Mode::Normal;
     }
 
     fn finalize_planning_session_from_picker(&mut self) {
         use crate::model::Element;
         use crate::storage::md::parse_element;
-        
-        let selected_paths: Vec<String> = self.hierarchical_picker.selected_tasks.iter().cloned().collect();
-        let mut selected_uuids = Vec::new();
-        let mut selected_tasks_with_metadata = Vec::new();
 
-        for path_str in selected_paths {
+        let existing_uuids: std::collections::HashSet<String> =
+            self.planning_session_tasks.iter().map(|t| t.uuid.clone()).collect();
+
+        for path_str in self.hierarchical_picker.selected_tasks.iter() {
             let path = std::path::PathBuf::from(&path_str);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(parsed) = parse_element(&content) {
-                    if let Some(Element::Task(t)) = parsed {
-                        let uuid = t.uuid.clone();
-                        selected_uuids.push(uuid.clone());
-                        
-                        // Extract metadata from task file
-                        selected_tasks_with_metadata.push(SelectedTask {
-                            uuid,
-                            path: path.clone(),
-                            program: self.hierarchical_picker.selected_program.clone().unwrap_or_default(),
-                            project: self.hierarchical_picker.selected_project.clone().unwrap_or_default(),
-                            milestone: self.hierarchical_picker.selected_milestone.clone().unwrap_or_default(),
-                            task_name: t.title.clone(),
-                            status: t.status.clone(),
-                            assigned_to: t.assigned_to.clone(),
-                            start_date: t.start_date.clone(),
-                            due_date: t.due_date.clone(),
-                            priority: t.priority.clone(),
-                        });
-                    }
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && let Ok(parsed) = parse_element(&content)
+                && let Some(Element::Task(t)) = parsed
+            {
+                let uuid = t.uuid.clone();
+                if existing_uuids.contains(&uuid) {
+                    continue; // Already in session, skip
                 }
+
+                self.planning_session_tasks.push(SelectedTask {
+                    uuid: uuid.clone(),
+                    path: path.clone(),
+                    program: self
+                        .hierarchical_picker
+                        .selected_program
+                        .clone()
+                        .unwrap_or_default(),
+                    project: self
+                        .hierarchical_picker
+                        .selected_project
+                        .clone()
+                        .unwrap_or_default(),
+                    milestone: self
+                        .hierarchical_picker
+                        .selected_milestone
+                        .clone()
+                        .unwrap_or_default(),
+                    task_name: t.title.clone(),
+                    status: t.status.clone(),
+                    assigned_to: t.assigned_to.clone(),
+                    start_date: t.start_date.clone(),
+                    due_date: t.due_date.clone(),
+                    priority: t.priority.clone(),
+                });
+
+                self.planning_wizard_selected_tasks.push(uuid);
             }
         }
 
-        self.planning_wizard_selected_tasks = selected_uuids;
-        self.planning_session_tasks = selected_tasks_with_metadata;
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
-        
-        // Transition to review mode instead of immediately finalizing
-        self.review_selection_index = 0;
-        self.mode = Mode::ReviewSession;
-        self.current_view = ViewType::WeeklyPlanning;
+
+        // Save the session with selected tasks
+        self.save_current_planning_session();
+
+        // Transition to preview page
+        self.planning_wizard_focus = 0;
+        self.planning_preview_focus = 0;
+        self.mode = Mode::PlanningPreview;
+        self.current_view = ViewType::PlanningPreview;
     }
 
     fn close_planning_session(&mut self) {

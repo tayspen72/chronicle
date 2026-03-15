@@ -44,6 +44,7 @@ pub struct HierarchicalPickerState {
     pub selected_milestone: Option<String>,
     pub selected_tasks: HashSet<String>,
     pub filter_text: String,
+    pub filter_focused: bool,
     pub items: Vec<PickerItem>,
     pub cursor_index: usize,
     pub is_wizard_mode: bool,
@@ -58,6 +59,7 @@ impl Default for HierarchicalPickerState {
             selected_milestone: None,
             selected_tasks: HashSet::new(),
             filter_text: String::new(),
+            filter_focused: false,
             items: Vec::new(),
             cursor_index: 0,
             is_wizard_mode: false,
@@ -78,6 +80,7 @@ impl HierarchicalPickerState {
             selected_milestone: None,
             selected_tasks: HashSet::new(),
             filter_text: String::new(),
+            filter_focused: false,
             items: Vec::new(),
             cursor_index: 0,
             is_wizard_mode: true,
@@ -177,10 +180,10 @@ impl HierarchicalPickerState {
         }
 
         // Navigate to child level for non-task selections
-        if !matches!(self.level, PickerLevel::Tasks) {
-            if let Some(child_level) = self.level.child() {
-                self.level = child_level;
-            }
+        if !matches!(self.level, PickerLevel::Tasks)
+            && let Some(child_level) = self.level.child()
+        {
+            self.level = child_level;
         }
 
         self.cursor_index = 0;

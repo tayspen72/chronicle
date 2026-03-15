@@ -1398,13 +1398,29 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
     let header = Paragraph::new(vec![title_line, breadcrumb_line]);
     f.render_widget(header, chunks[0]);
 
+    let filter_style = if picker.filter_focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
     let filter_prompt = Line::from(vec![
-        Span::styled("Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Filter: ", filter_style),
         Span::styled(
             picker.filter_text.as_str(),
             Style::default().fg(Color::White),
         ),
-        Span::styled("_", Style::default().fg(Color::LightBlue)),
+        if picker.filter_focused {
+            Span::styled(
+                "▏",
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )
+        } else {
+            Span::styled("_", Style::default().fg(Color::DarkGray))
+        },
     ]);
     let filter_para = Paragraph::new(filter_prompt)
         .block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::BOTTOM));
@@ -1457,14 +1473,16 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
     f.render_widget(list, chunks[2]);
 
     let hint_text = match picker.level {
-        PickerLevel::Programs => "↑/↓: Navigate | Enter: Select | Esc: Cancel",
-        PickerLevel::Projects => "↑/↓: Navigate | Enter: Select | Esc: Back",
-        PickerLevel::Milestones => "↑/↓: Navigate | Enter: Select | Esc: Back",
-        PickerLevel::Tasks => "↑/↓: Navigate | Space: Toggle | Enter: Done | Esc: Back",
+        PickerLevel::Programs => "↑/↓: Navigate | Enter: Select | ←/→: Back/Forward | Esc: Cancel",
+        PickerLevel::Projects => "↑/↓: Navigate | Enter: Select | ←/→: Back/Forward | Esc: Back",
+        PickerLevel::Milestones => "↑/↓: Navigate | Enter: Select | ←/→: Back/Forward | Esc: Back",
+        PickerLevel::Tasks => "↑/↓: Navigate | a: Add | Space: Filter | Enter: Select | Esc: Back",
     };
     let selected_count = picker.selected_count();
-    let count_text = if selected_count > 0 {
-        format!("{} | Selected: {} tasks", hint_text, selected_count)
+    let count_text = if selected_count > 0 && picker.is_wizard_mode {
+        format!("{} | f: Finish | Selected: {}", hint_text, selected_count)
+    } else if selected_count > 0 {
+        format!("{} | Selected: {}", hint_text, selected_count)
     } else {
         hint_text.to_string()
     };
@@ -1473,6 +1491,104 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
         Style::default().fg(Color::DarkGray),
     )));
     f.render_widget(buttons, chunks[3]);
+}
+
+pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = Line::from(vec![Span::styled(
+        "Preview Plan",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let date_range = if let (Some(start), Some(end)) = (
+        &app.planning_session_start_date,
+        &app.planning_session_due_date,
+    ) {
+        format!("{} → {}", start, end)
+    } else {
+        "No dates set".to_string()
+    };
+    let subtitle = Line::from(Span::styled(
+        date_range,
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![title, subtitle]);
+    f.render_widget(header, chunks[0]);
+
+    let tasks = &app.planning_session_tasks;
+    let task_count = tasks.len();
+    let task_lines: Vec<Line> = if task_count == 0 {
+        vec![Line::from(Span::styled(
+            "No tasks selected",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        let mut sorted_tasks: Vec<_> = tasks.iter().collect();
+        sorted_tasks.sort_by(|a, b| {
+            a.program
+                .cmp(&b.program)
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.milestone.cmp(&b.milestone))
+                .then_with(|| a.status.cmp(&b.status))
+                .then_with(|| a.task_name.cmp(&b.task_name))
+        });
+        sorted_tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                Line::from(vec![Span::styled(
+                    format!(
+                        "{}. {} ({}) - {}/{}/{}",
+                        i + 1,
+                        t.task_name,
+                        t.status,
+                        t.program,
+                        t.project,
+                        t.milestone
+                    ),
+                    Style::default().fg(Color::White),
+                )])
+            })
+            .collect()
+    };
+    let tasks_para = Paragraph::new(task_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(format!("Tasks ({})", task_count)),
+    );
+    f.render_widget(tasks_para, chunks[1]);
+
+    let buttons = ["ADD MORE", "CONFIRM", "CANCEL"];
+    let mut spans = Vec::new();
+    for (i, label) in buttons.iter().enumerate() {
+        let style = if i == app.planning_preview_focus {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        spans.push(Span::styled(format!(" {} ", label), style));
+        if i < buttons.len() - 1 {
+            spans.push(Span::raw("  "));
+        }
+    }
+    let buttons_para = Paragraph::new(Line::from(spans));
+    f.render_widget(buttons_para, chunks[2]);
 }
 
 #[cfg(test)]
