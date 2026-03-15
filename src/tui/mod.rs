@@ -55,6 +55,8 @@ pub enum Mode {
     HierarchicalSelection,
     /// User is previewing tasks before confirming plan
     PlanningPreview,
+    /// User is editing task details before adding to plan
+    TaskDetailWizard,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +116,7 @@ pub enum ViewType {
     PlanningTaskPicker,
     HierarchicalTaskPicker,
     PlanningPreview,
+    TaskDetailWizard,
 }
 
 pub struct App {
@@ -162,6 +165,9 @@ pub struct App {
     pub planning_wizard_tasks: Vec<TaskMetadata>,
     // Hierarchical task picker state
     pub hierarchical_picker: HierarchicalPickerState,
+    // Task detail wizard state
+    pub task_wizard_task: Option<SelectedTask>,
+    pub task_wizard_field_index: usize,
 }
 
 impl App {
@@ -215,6 +221,8 @@ impl App {
             planning_wizard_date_error: None,
             planning_wizard_tasks: Vec::new(),
             hierarchical_picker: HierarchicalPickerState::new(),
+            task_wizard_task: None,
+            task_wizard_field_index: 0,
         };
 
         app.load_tree_view_data();
@@ -333,13 +341,11 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    let is_wizard = self.hierarchical_picker.is_wizard_mode;
                     let at_tasks_level = self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks;
-                    let has_selections = !self.hierarchical_picker.selected_tasks.is_empty();
 
-                    // In wizard mode at Tasks level with selections, finalize the session
-                    if is_wizard && at_tasks_level && has_selections {
-                        self.finalize_planning_session_from_picker();
+                    if at_tasks_level {
+                        // Open task detail wizard for the selected task
+                        self.open_task_detail_wizard();
                     } else if let Some((new_level, _name)) = self.hierarchical_picker.select_current() {
                         self.load_hierarchical_picker_level(new_level);
                     }
@@ -494,6 +500,42 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.cancel_planning_wizard();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle TaskDetailWizard mode specially
+        if self.mode == Mode::TaskDetailWizard {
+            let field_count = 6; // status, assigned_to, start_date, due_date, priority (task name is display only)
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.task_wizard_field_index > 0 {
+                        self.task_wizard_field_index -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.task_wizard_field_index < field_count + 1 {
+                        // +1 for buttons row
+                        self.task_wizard_field_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let btn_offset = field_count;
+                    if self.task_wizard_field_index < field_count {
+                        // Edit field - cycle status/priority or enter text
+                        self.edit_task_wizard_field();
+                    } else if self.task_wizard_field_index == btn_offset {
+                        // ADD TO PLAN button
+                        self.confirm_task_detail_wizard();
+                    } else {
+                        // CANCEL button
+                        self.cancel_task_detail_wizard();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.cancel_task_detail_wizard();
                 }
                 _ => {}
             }
@@ -2748,6 +2790,111 @@ impl App {
         if !self.planning_wizard_selected_tasks.is_empty() {
             self.finalize_planning_session();
         }
+    }
+
+    fn open_task_detail_wizard(&mut self) {
+        use crate::model::Element;
+        use crate::storage::md::parse_element;
+
+        let filtered_items = self.hierarchical_picker.filtered_items();
+        let Some(item) = filtered_items.get(self.hierarchical_picker.cursor_index).cloned()
+        else {
+            return;
+        };
+
+        // Load task from file
+        let task = if let Ok(content) = std::fs::read_to_string(&item.path)
+            && let Ok(parsed) = parse_element(&content)
+            && let Some(Element::Task(t)) = parsed
+        {
+            SelectedTask {
+                uuid: t.uuid.clone(),
+                path: item.path.clone(),
+                program: self.hierarchical_picker.selected_program.clone().unwrap_or_default(),
+                project: self.hierarchical_picker.selected_project.clone().unwrap_or_default(),
+                milestone: self.hierarchical_picker.selected_milestone.clone().unwrap_or_default(),
+                task_name: t.title.clone(),
+                status: t.status.clone(),
+                assigned_to: t.assigned_to.clone(),
+                start_date: t
+                    .start_date
+                    .clone()
+                    .or_else(|| self.planning_session_start_date.clone()),
+                due_date: t
+                    .due_date
+                    .clone()
+                    .or_else(|| self.planning_session_due_date.clone()),
+                priority: t.priority.clone(),
+            }
+        } else {
+            return;
+        };
+
+        self.task_wizard_task = Some(task);
+        self.task_wizard_field_index = 0;
+        self.mode = Mode::TaskDetailWizard;
+        self.current_view = ViewType::TaskDetailWizard;
+    }
+
+    fn edit_task_wizard_field(&mut self) {
+        let Some(ref mut task) = self.task_wizard_task else {
+            return;
+        };
+
+        match self.task_wizard_field_index {
+            0 => {
+                // Cycle status through workflow values
+                let workflow = &self.config.workflow;
+                let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
+                let next_idx = (current_idx + 1) % workflow.len();
+                task.status = workflow[next_idx].clone();
+            }
+            1 => {
+                // Input mode for assigned_to
+                // TODO: implement text input
+            }
+            2 => {
+                // Input mode for start_date
+                // TODO: implement text input
+            }
+            3 => {
+                // Input mode for due_date
+                // TODO: implement text input
+            }
+            4 => {
+                // Cycle priority
+                let priorities = ["low", "medium", "high"];
+                let current = task.priority.clone().unwrap_or_default();
+                let current_idx = priorities.iter().position(|&p| p == current.as_str()).unwrap_or(0);
+                let next_idx = (current_idx + 1) % priorities.len();
+                task.priority = Some(priorities[next_idx].to_string());
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_task_detail_wizard(&mut self) {
+        let Some(task) = self.task_wizard_task.take() else {
+            return;
+        };
+
+        // Add task to session
+        self.planning_session_tasks.push(task);
+
+        // Reset wizard state
+        self.task_wizard_task = None;
+        self.task_wizard_field_index = 0;
+
+        // Return to picker
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn cancel_task_detail_wizard(&mut self) {
+        self.task_wizard_task = None;
+        self.task_wizard_field_index = 0;
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
     }
 
     fn cancel_planning_wizard(&mut self) {

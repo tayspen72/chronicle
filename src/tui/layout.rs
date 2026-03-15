@@ -193,6 +193,9 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::PlanningPreview => {
             views::render_planning_preview(f, app, area);
         }
+        ViewType::TaskDetailWizard => {
+            views::render_task_detail_wizard(f, app, area);
+        }
     }
 }
 
@@ -283,6 +286,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
         Mode::HierarchicalSelection => ("BROWSE", Color::LightCyan),
         Mode::PlanningPreview => ("PREVIEW", Color::LightBlue),
+        Mode::TaskDetailWizard => ("EDIT TASK", Color::LightYellow),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections

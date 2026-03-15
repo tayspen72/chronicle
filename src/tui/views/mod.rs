@@ -1591,6 +1591,102 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     f.render_widget(buttons_para, chunks[2]);
 }
 
+pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    let Some(ref task) = app.task_wizard_task else {
+        let error = Paragraph::new("No task selected").style(Style::default().fg(Color::Red));
+        f.render_widget(error, area);
+        return;
+    };
+
+    let fields: Vec<(&str, String)> = vec![
+        ("Task", task.task_name.clone()),
+        ("Status", task.status.clone()),
+        ("Assigned to", task.assigned_to.clone().unwrap_or_default()),
+        ("Start date", task.start_date.clone().unwrap_or_default()),
+        ("Due date", task.due_date.clone().unwrap_or_default()),
+        ("Priority", task.priority.clone().unwrap_or_default()),
+    ];
+
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = Line::from(vec![Span::styled(
+        "Edit Task Details",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )]);
+    let hint = Line::from(Span::styled(
+        "↑/↓: Navigate | Enter: Edit | Esc: Cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![title, hint]);
+    f.render_widget(header, chunks[0]);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let is_focused = i == app.task_wizard_field_index;
+        let style = if is_focused {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let line = if value.is_empty() {
+            Line::from(vec![
+                Span::styled(format!("  {}: ", label), style),
+                Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(format!("  {}: ", label), style),
+                Span::styled(value.clone(), style),
+            ])
+        };
+        lines.push(line);
+    }
+
+    let fields_para =
+        Paragraph::new(lines).block(Block::default().borders(Borders::NONE).title(Span::styled(
+            task.task_name.as_str(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    f.render_widget(fields_para, chunks[1]);
+
+    let buttons = ["ADD TO PLAN", "CANCEL"];
+    let mut spans: Vec<Span> = Vec::new();
+    let confirm_offset = fields.len();
+    for (i, label) in buttons.iter().enumerate() {
+        let btn_idx = confirm_offset + i;
+        let style = if btn_idx == app.task_wizard_field_index + 1 - confirm_offset + confirm_offset
+        {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        spans.push(Span::styled(format!(" {} ", label), style));
+        if i < buttons.len() - 1 {
+            spans.push(Span::raw("  "));
+        }
+    }
+    let buttons_para = Paragraph::new(Line::from(spans));
+    f.render_widget(buttons_para, chunks[2]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
