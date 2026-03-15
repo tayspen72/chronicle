@@ -1668,9 +1668,8 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
     let mut spans: Vec<Span> = Vec::new();
     let confirm_offset = fields.len();
     for (i, label) in buttons.iter().enumerate() {
-        let btn_idx = confirm_offset + i;
-        let style = if btn_idx == app.task_wizard_field_index + 1 - confirm_offset + confirm_offset
-        {
+        let is_focused = app.task_wizard_field_index == confirm_offset + i;
+        let style = if is_focused {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightBlue)

@@ -508,7 +508,7 @@ impl App {
 
         // Handle TaskDetailWizard mode specially
         if self.mode == Mode::TaskDetailWizard {
-            let field_count = 6; // status, assigned_to, start_date, due_date, priority (task name is display only)
+            const TASK_WIZARD_FIELD_COUNT: usize = 6; // status, assigned_to, start_date, due_date, priority (task name is display only)
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.task_wizard_field_index > 0 {
@@ -516,17 +516,16 @@ impl App {
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if self.task_wizard_field_index < field_count + 1 {
+                    if self.task_wizard_field_index < TASK_WIZARD_FIELD_COUNT + 1 {
                         // +1 for buttons row
                         self.task_wizard_field_index += 1;
                     }
                 }
                 KeyCode::Enter => {
-                    let btn_offset = field_count;
-                    if self.task_wizard_field_index < field_count {
+                    if self.task_wizard_field_index < TASK_WIZARD_FIELD_COUNT {
                         // Edit field - cycle status/priority or enter text
                         self.edit_task_wizard_field();
-                    } else if self.task_wizard_field_index == btn_offset {
+                    } else if self.task_wizard_field_index == TASK_WIZARD_FIELD_COUNT {
                         // ADD TO PLAN button
                         self.confirm_task_detail_wizard();
                     } else {
@@ -2849,18 +2848,6 @@ impl App {
                 let next_idx = (current_idx + 1) % workflow.len();
                 task.status = workflow[next_idx].clone();
             }
-            1 => {
-                // Input mode for assigned_to
-                // TODO: implement text input
-            }
-            2 => {
-                // Input mode for start_date
-                // TODO: implement text input
-            }
-            3 => {
-                // Input mode for due_date
-                // TODO: implement text input
-            }
             4 => {
                 // Cycle priority
                 let priorities = ["low", "medium", "high"];
@@ -2869,6 +2856,7 @@ impl App {
                 let next_idx = (current_idx + 1) % priorities.len();
                 task.priority = Some(priorities[next_idx].to_string());
             }
+            // Fields 1-3 (assigned_to, start_date, due_date) require text input - not yet implemented
             _ => {}
         }
     }
@@ -2880,9 +2868,6 @@ impl App {
 
         // Add task to session
         self.planning_session_tasks.push(task);
-
-        // Reset wizard state
-        self.task_wizard_task = None;
         self.task_wizard_field_index = 0;
 
         // Return to picker
