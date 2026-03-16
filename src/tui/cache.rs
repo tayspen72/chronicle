@@ -26,6 +26,7 @@ impl From<TaskMetadata> for SelectedTask {
             start_date: None,
             due_date: None,
             priority: None,
+            description: None,
         }
     }
 }

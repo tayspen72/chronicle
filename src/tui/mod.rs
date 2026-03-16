@@ -3,6 +3,7 @@ pub mod command;
 pub mod hierarchical_picker;
 pub mod layout;
 pub mod navigation;
+pub mod planning_wizard;
 pub mod tree;
 pub mod views;
 
@@ -59,6 +60,37 @@ pub enum Mode {
     TaskDetailWizard,
     /// User is inputting text for a task detail field
     InputTaskDetailField,
+}
+
+/// Field indices for the task detail wizard
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskWizardField {
+    TaskName = 0,
+    Status = 1,
+    AssignedTo = 2,
+    StartDate = 3,
+    DueDate = 4,
+    Priority = 5,
+    Description = 6,
+    AddToPlanButton = 7,
+    CancelButton = 8,
+}
+
+impl TaskWizardField {
+    pub fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(TaskWizardField::TaskName),
+            1 => Some(TaskWizardField::Status),
+            2 => Some(TaskWizardField::AssignedTo),
+            3 => Some(TaskWizardField::StartDate),
+            4 => Some(TaskWizardField::DueDate),
+            5 => Some(TaskWizardField::Priority),
+            6 => Some(TaskWizardField::Description),
+            7 => Some(TaskWizardField::AddToPlanButton),
+            8 => Some(TaskWizardField::CancelButton),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,22 +188,17 @@ pub struct App {
     pub planning_session_due_date: Option<String>,
     pub rolled_over_tasks: Vec<String>,
     pub review_selection_index: usize,
+    /// Focus state for review session input (100=assigned_to, 101=start_date, 102=due_date)
+    pub review_input_focus: Option<usize>,
     pub planning_preview_focus: usize,
-    // Planning wizard state (Step 1: dates, Step 2: task selection)
-    pub planning_wizard_start_date: String,
-    pub planning_wizard_duration: String,
-    pub planning_wizard_end_date: String,
-    pub planning_wizard_focus: usize,
-    pub planning_wizard_task_filter: String,
-    pub planning_wizard_selected_tasks: Vec<String>,
-    pub planning_wizard_task_index: usize,
-    pub planning_wizard_date_error: Option<String>,
-    pub planning_wizard_tasks: Vec<TaskMetadata>,
     // Hierarchical task picker state
     pub hierarchical_picker: HierarchicalPickerState,
-    // Task detail wizard state
-    pub task_wizard_task: Option<SelectedTask>,
-    pub task_wizard_field_index: usize,
+    // NEW: Extracted planning wizard state (replaces fields above)
+    pub planning_wizard: Option<planning_wizard::PlanningWizardState>,
+    // NEW: Task wizard state
+    pub task_wizard: Option<planning_wizard::TaskWizardState>,
+    // NEW: Planning preview confirmed flag
+    pub planning_preview_confirmed: bool,
 }
 
 impl App {
@@ -215,19 +242,12 @@ impl App {
             planning_session_due_date: None,
             rolled_over_tasks: Vec::new(),
             review_selection_index: 0,
+            review_input_focus: None,
             planning_preview_focus: 0,
-            planning_wizard_start_date: String::new(),
-            planning_wizard_duration: "weekly".to_string(),
-            planning_wizard_end_date: String::new(),
-            planning_wizard_focus: 0,
-            planning_wizard_task_filter: String::new(),
-            planning_wizard_selected_tasks: Vec::new(),
-            planning_wizard_task_index: 0,
-            planning_wizard_date_error: None,
-            planning_wizard_tasks: Vec::new(),
             hierarchical_picker: HierarchicalPickerState::new(),
-            task_wizard_task: None,
-            task_wizard_field_index: 0,
+            planning_wizard: None,
+            task_wizard: None,
+            planning_preview_confirmed: false,
         };
 
         app.load_tree_view_data();
@@ -436,7 +456,6 @@ impl App {
                         .get(self.review_selection_index)
                         .and_then(|t| t.assigned_to.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = Self::FOCUS_ASSIGNED_TO;
                 }
                 KeyCode::Char('b') => {
                     // Set start date - use input mode
@@ -446,7 +465,6 @@ impl App {
                         .get(self.review_selection_index)
                         .and_then(|t| t.start_date.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = Self::FOCUS_START_DATE;
                 }
                 KeyCode::Char('e') => {
                     // Set due date - use input mode
@@ -456,7 +474,6 @@ impl App {
                         .get(self.review_selection_index)
                         .and_then(|t| t.due_date.clone())
                         .unwrap_or_default();
-                    self.planning_wizard_focus = Self::FOCUS_DUE_DATE;
                 }
                 KeyCode::Enter => {
                     // Confirm and finalize session
@@ -518,30 +535,31 @@ impl App {
         // Handle TaskDetailWizard mode specially
         if self.mode == Mode::TaskDetailWizard {
             const TASK_WIZARD_FIELD_COUNT: usize = 6; // task name, status, assigned_to, start_date, due_date, priority
-            match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if self.task_wizard_field_index > 0 {
-                        self.task_wizard_field_index -= 1;
+            if let Some(ref mut wizard) = self.task_wizard {
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if wizard.field_index > 0 {
+                            wizard.field_index -= 1;
+                        }
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.task_wizard_field_index < TASK_WIZARD_FIELD_COUNT + 1 {
-                        // +1 for buttons row
-                        self.task_wizard_field_index += 1;
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if wizard.field_index < TASK_WIZARD_FIELD_COUNT + 1 {
+                            // +1 for buttons row
+                            wizard.field_index += 1;
+                        }
                     }
-                }
-                KeyCode::Enter => {
-                    if self.task_wizard_field_index < TASK_WIZARD_FIELD_COUNT {
-                        // On a field - cycle to next field (like template wizard)
-                        self.cycle_task_wizard_field_or_next();
-                    } else if self.task_wizard_field_index == TASK_WIZARD_FIELD_COUNT {
-                        // ADD TO PLAN button
-                        self.confirm_task_detail_wizard();
-                    } else {
-                        // CANCEL button
-                        self.cancel_task_detail_wizard();
+                    KeyCode::Enter => {
+                        if wizard.field_index < TASK_WIZARD_FIELD_COUNT {
+                            // On a field - cycle to next field (like template wizard)
+                            self.cycle_task_wizard_field_or_next();
+                        } else if wizard.field_index == TASK_WIZARD_FIELD_COUNT {
+                            // ADD TO PLAN button
+                            self.confirm_task_detail_wizard();
+                        } else {
+                            // CANCEL button
+                            self.cancel_task_detail_wizard();
+                        }
                     }
-                }
                 KeyCode::Esc => {
                     self.cancel_task_detail_wizard();
                 }
@@ -554,6 +572,7 @@ impl App {
                     self.handle_task_wizard_backspace();
                 }
                 _ => {}
+            }
             }
             return;
         }
@@ -590,8 +609,8 @@ impl App {
                     self.cancel_task_detail_wizard();
                 } else if self.mode == Mode::Input
                     && matches!(
-                        self.planning_wizard_focus,
-                        Self::FOCUS_ASSIGNED_TO | Self::FOCUS_START_DATE | Self::FOCUS_DUE_DATE
+                        self.review_input_focus,
+                        Some(Self::FOCUS_ASSIGNED_TO) | Some(Self::FOCUS_START_DATE) | Some(Self::FOCUS_DUE_DATE)
                     )
                 {
                     // Cancel task metadata input and return to ReviewSession
@@ -613,7 +632,7 @@ impl App {
             }
             KeyCode::Right => {
                 if self.current_view == ViewType::InputPlanningSessionDates
-                    && self.planning_wizard_focus == 1
+                    && self.planning_wizard.as_ref().map(|w| w.focus.index()) == Some(1)
                 {
                     self.cycle_duration_right();
                 } else {
@@ -622,7 +641,7 @@ impl App {
             }
             KeyCode::Left => {
                 if self.current_view == ViewType::InputPlanningSessionDates
-                    && self.planning_wizard_focus == 1
+                    && self.planning_wizard.as_ref().map(|w| w.focus.index()) == Some(1)
                 {
                     self.cycle_duration_left();
                 } else {
@@ -1343,29 +1362,31 @@ impl App {
     fn handle_enter(&mut self) {
         // Handle input mode for review session task metadata
         if self.mode == Mode::Input {
-            match self.planning_wizard_focus {
-                Self::FOCUS_ASSIGNED_TO => {
-                    // assigned_to
-                    let name = self.input_buffer.clone();
-                    self.set_task_assigned_to(name);
-                    self.input_buffer.clear();
-                    self.mode = Mode::ReviewSession;
+            if let Some(focus) = self.review_input_focus {
+                match focus {
+                    Self::FOCUS_ASSIGNED_TO => {
+                        // assigned_to
+                        let name = self.input_buffer.clone();
+                        self.set_task_assigned_to(name);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    Self::FOCUS_START_DATE => {
+                        // start_date
+                        let date = self.input_buffer.clone();
+                        self.set_task_start_date(date);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    Self::FOCUS_DUE_DATE => {
+                        // due_date
+                        let date = self.input_buffer.clone();
+                        self.set_task_due_date(date);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    _ => {}
                 }
-                Self::FOCUS_START_DATE => {
-                    // start_date
-                    let date = self.input_buffer.clone();
-                    self.set_task_start_date(date);
-                    self.input_buffer.clear();
-                    self.mode = Mode::ReviewSession;
-                }
-                Self::FOCUS_DUE_DATE => {
-                    // due_date
-                    let date = self.input_buffer.clone();
-                    self.set_task_due_date(date);
-                    self.input_buffer.clear();
-                    self.mode = Mode::ReviewSession;
-                }
-                _ => {}
             }
             return;
         }
@@ -1430,14 +1451,19 @@ impl App {
             }
             ViewType::InputPlanningSessionDates => {
                 // Use input_buffer for date fields (0=start_date, 2=end_date)
-                if self.planning_wizard_focus == 0 || self.planning_wizard_focus == 2 {
-                    self.planning_wizard_date_error = None;
-                    self.input_buffer.push(c);
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    let focus_idx = wizard.focus.index();
+                    if focus_idx == 0 || focus_idx == 2 {
+                        wizard.date_error = None;
+                        self.input_buffer.push(c);
+                    }
                 }
             }
             ViewType::PlanningTaskPicker => {
-                self.planning_wizard_task_filter.push(c);
-                self.planning_wizard_task_index = 0;
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.task_filter.push(c);
+                    wizard.task_index = 0;
+                }
             }
             _ => {}
         }
@@ -1468,13 +1494,18 @@ impl App {
             }
             ViewType::InputPlanningSessionDates => {
                 // Use input_buffer for date fields (0=start_date, 2=end_date)
-                if self.planning_wizard_focus == 0 || self.planning_wizard_focus == 2 {
-                    self.planning_wizard_date_error = None;
-                    self.input_buffer.pop();
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    let focus_idx = wizard.focus.index();
+                    if focus_idx == 0 || focus_idx == 2 {
+                        wizard.date_error = None;
+                        self.input_buffer.pop();
+                    }
                 }
             }
             ViewType::PlanningTaskPicker => {
-                self.planning_wizard_task_filter.pop();
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.task_filter.pop();
+                }
             }
             _ => {}
         }
@@ -1748,15 +1779,13 @@ impl App {
 
     fn open_planning_wizard(&mut self) {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        self.planning_wizard_start_date = today.clone();
-        self.planning_wizard_duration = self.config.planning_duration.clone();
-        self.planning_wizard_end_date = String::new();
-        self.planning_wizard_focus = 0;
-        self.planning_wizard_task_filter = String::new();
-        self.planning_wizard_selected_tasks = Vec::new();
-        self.planning_wizard_task_index = 0;
-        self.planning_wizard_date_error = None;
-        self.planning_wizard_tasks = self.load_all_tasks();
+        
+        // Initialize new state struct
+        let mut wizard_state = planning_wizard::PlanningWizardState::new(&self.config.planning_duration);
+        wizard_state.tasks = self.load_all_tasks();
+        wizard_state.input_buffer = today.clone();
+        self.planning_wizard = Some(wizard_state);
+        
         // Initialize input_buffer with the start date so user can edit it
         self.input_buffer = today;
         self.current_view = ViewType::InputPlanningSessionDates;
@@ -1811,12 +1840,16 @@ impl App {
     }
 
     pub fn get_filtered_tasks(&self) -> Vec<&TaskMetadata> {
-        let filter_lower = self.planning_wizard_task_filter.to_lowercase();
+        let Some(ref wizard) = self.planning_wizard else {
+            return Vec::new();
+        };
+        
+        let filter_lower = wizard.task_filter.to_lowercase();
 
         let mut tasks: Vec<_> = if filter_lower.is_empty() {
-            self.planning_wizard_tasks.iter().collect()
+            wizard.tasks.iter().collect()
         } else {
-            self.planning_wizard_tasks
+            wizard.tasks
                 .iter()
                 .filter(|t| {
                     t.task_name.to_lowercase().contains(&filter_lower)
@@ -1839,27 +1872,31 @@ impl App {
     }
 
     fn finalize_planning_wizard_dates(&mut self) {
-        let start_date =
-            match chrono::NaiveDate::parse_from_str(&self.planning_wizard_start_date, "%Y-%m-%d") {
-                Ok(d) => d,
-                Err(_) => {
-                    self.planning_wizard_date_error =
-                        Some("Invalid date format. Use YYYY-MM-DD".to_string());
-                    return;
-                }
-            };
+        // Use wizard state for dates
+        let Some(ref mut wizard) = self.planning_wizard else {
+            return;
+        };
 
-        let due_date = if !self.planning_wizard_end_date.is_empty() {
-            match chrono::NaiveDate::parse_from_str(&self.planning_wizard_end_date, "%Y-%m-%d") {
+        // Validate start date using wizard state
+        let start_date = match chrono::NaiveDate::parse_from_str(&wizard.start_date, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(_) => {
+                wizard.date_error = Some("Invalid date format. Use YYYY-MM-DD".to_string());
+                return;
+            }
+        };
+
+        // Calculate due date from wizard state
+        let due_date = if !wizard.end_date.is_empty() {
+            match chrono::NaiveDate::parse_from_str(&wizard.end_date, "%Y-%m-%d") {
                 Ok(d) => d.format("%Y-%m-%d").to_string(),
                 Err(_) => {
-                    self.planning_wizard_date_error =
-                        Some("Invalid end date format. Use YYYY-MM-DD".to_string());
+                    wizard.date_error = Some("Invalid end date format. Use YYYY-MM-DD".to_string());
                     return;
                 }
             }
         } else {
-            let days = match self.planning_wizard_duration.as_str() {
+            let days = match wizard.duration.as_str() {
                 "biweekly" => 14,
                 "6weekly" => 42,
                 _ => 7,
@@ -1870,7 +1907,10 @@ impl App {
                 .unwrap_or_else(|| start_date.format("%Y-%m-%d").to_string())
         };
 
-        self.planning_wizard_date_error = None;
+        // Clear any errors
+        wizard.date_error = None;
+
+        // Set session dates
         self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
         self.planning_session_due_date = Some(due_date);
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
@@ -1888,7 +1928,13 @@ impl App {
         if self.planning_session_tasks.is_empty() {
             self.rolled_over_tasks.clear();
             let all_tasks = self.load_all_tasks();
-            for task_uuid in self.planning_wizard_selected_tasks.drain(..) {
+            // Get selected tasks from wizard state
+            let selected_uuids: Vec<String> = self.planning_wizard
+                .as_ref()
+                .map(|w| w.selected_tasks.clone())
+                .unwrap_or_default();
+            
+            for task_uuid in selected_uuids {
                 if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
                     self.planning_session_tasks.push(SelectedTask {
                         uuid: meta.uuid.clone(),
@@ -1902,12 +1948,15 @@ impl App {
                         start_date: None,
                         due_date: None,
                         priority: None,
+                        description: None,
                     });
                 }
             }
         } else {
             // Tasks already loaded with metadata from picker - just clear wizard state
-            self.planning_wizard_selected_tasks.clear();
+            if let Some(ref mut wizard) = self.planning_wizard {
+                wizard.selected_tasks.clear();
+            }
             self.rolled_over_tasks.clear();
         }
 
@@ -1921,7 +1970,7 @@ impl App {
             &chrono::Local::now().format("%Y-%m-%d").to_string(),
             self.planning_session_start_date.as_ref().unwrap(),
             self.planning_session_due_date.as_ref().unwrap(),
-            &self.planning_wizard_duration,
+            self.planning_wizard.as_ref().map(|w| w.duration.as_str()).unwrap_or("weekly"),
         ) {
             eprintln!("Failed to create planning session file: {e}");
         }
@@ -1976,9 +2025,13 @@ impl App {
                     start_date: t.start_date.clone(),
                     due_date: t.due_date.clone(),
                     priority: t.priority.clone(),
+                    description: None,
                 });
 
-                self.planning_wizard_selected_tasks.push(uuid);
+                // Also add to wizard's selected tasks
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.selected_tasks.push(uuid);
+                }
             }
         }
 
@@ -1988,9 +2041,7 @@ impl App {
         self.save_current_planning_session();
 
         // Clear wizard state and return to normal mode (skip review page)
-        self.planning_wizard_focus = 0;
-        self.planning_wizard_start_date.clear();
-        self.planning_wizard_end_date.clear();
+        self.planning_wizard = None;
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
         self.mode = Mode::Normal;
         self.current_view = ViewType::TreeView;
@@ -2144,6 +2195,7 @@ impl App {
             start_date: task.start_date.clone(),
             due_date: task.due_date.clone(),
             priority: task.priority.clone(),
+            description: Some(task.description.clone()),
         })
     }
 
@@ -2801,178 +2853,167 @@ impl App {
     }
 
     fn navigate_planning_dates_up(&mut self) {
-        // Save current input_buffer value to the appropriate field before moving
-        self.save_planning_date_input_buffer();
-        if self.planning_wizard_focus > 0 {
-            self.planning_wizard_focus -= 1;
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            // Save current input_buffer value to the appropriate field before moving
+            wizard.sync_input_to_field();
+            // Navigate using the wizard's focus enum
+            wizard.focus = wizard.focus.prev();
+            // Load the newly focused field's value into input_buffer
+            wizard.sync_field_to_input();
+            self.input_buffer = wizard.input_buffer.clone();
         }
-        // Load the newly focused field's value into input_buffer
-        self.load_planning_date_input_buffer();
     }
 
     fn navigate_planning_dates_down(&mut self) {
-        // Save current input_buffer value to the appropriate field before moving
-        self.save_planning_date_input_buffer();
-        if self.planning_wizard_focus < 4 {
-            self.planning_wizard_focus += 1;
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            // Save current input_buffer value to the appropriate field before moving
+            wizard.sync_input_to_field();
+            // Navigate using the wizard's focus enum
+            wizard.focus = wizard.focus.next();
+            // Load the newly focused field's value into input_buffer
+            wizard.sync_field_to_input();
+            self.input_buffer = wizard.input_buffer.clone();
         }
-        // Load the newly focused field's value into input_buffer
-        self.load_planning_date_input_buffer();
     }
 
     fn save_planning_date_input_buffer(&mut self) {
-        // Save input_buffer to the field we're leaving
-        match self.planning_wizard_focus {
-            0 => self.planning_wizard_start_date = self.input_buffer.clone(),
-            2 => self.planning_wizard_end_date = self.input_buffer.clone(),
-            _ => {}
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.input_buffer = self.input_buffer.clone();
+            wizard.sync_input_to_field();
         }
     }
 
     fn load_planning_date_input_buffer(&mut self) {
-        // Load the newly focused field's value into input_buffer
-        // For date fields, if empty, initialize with the suggested date so user can edit it
-        match self.planning_wizard_focus {
-            0 => {
-                // Start date: use stored value or default to today
-                self.input_buffer = if self.planning_wizard_start_date.is_empty() {
-                    chrono::Local::now().format("%Y-%m-%d").to_string()
-                } else {
-                    self.planning_wizard_start_date.clone()
-                };
-            }
-            2 => {
-                // End date: use stored value, or calculate from start date + duration
-                self.input_buffer = if self.planning_wizard_end_date.is_empty() {
-                    self.calculate_suggested_end_date()
-                } else {
-                    self.planning_wizard_end_date.clone()
-                };
-            }
-            _ => self.input_buffer.clear(),
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.sync_field_to_input();
+            self.input_buffer = wizard.input_buffer.clone();
         }
     }
 
     fn calculate_suggested_end_date(&self) -> String {
-        let days = match self.planning_wizard_duration.as_str() {
-            "biweekly" => 14,
-            "6weekly" => 42,
-            _ => 7,
-        };
-
-        let start_date_str = if self.planning_wizard_start_date.is_empty() {
-            chrono::Local::now().format("%Y-%m-%d").to_string()
+        // Use wizard state
+        if let Some(ref wizard) = self.planning_wizard {
+            wizard.calculate_suggested_end_date()
         } else {
-            self.planning_wizard_start_date.clone()
-        };
+            // Fallback calculation
+            let days = 7;
+            let start_date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-        chrono::NaiveDate::parse_from_str(&start_date_str, "%Y-%m-%d")
-            .ok()
-            .and_then(|d| d.checked_add_days(chrono::Days::new(days)))
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| start_date_str)
+            chrono::NaiveDate::parse_from_str(&start_date_str, "%Y-%m-%d")
+                .ok()
+                .and_then(|d| d.checked_add_days(chrono::Days::new(days)))
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| start_date_str)
+        }
     }
 
     fn cycle_duration_left(&mut self) {
-        self.planning_wizard_duration = match self.planning_wizard_duration.as_str() {
-            "weekly" => "6weekly".to_string(),
-            "biweekly" => "weekly".to_string(),
-            "6weekly" => "biweekly".to_string(),
-            _ => "weekly".to_string(),
-        };
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.cycle_duration(-1);
+        }
     }
 
     fn cycle_duration_right(&mut self) {
-        self.planning_wizard_duration = match self.planning_wizard_duration.as_str() {
-            "weekly" => "biweekly".to_string(),
-            "biweekly" => "6weekly".to_string(),
-            "6weekly" => "weekly".to_string(),
-            _ => "weekly".to_string(),
-        };
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.cycle_duration(1);
+        }
     }
 
     fn navigate_planning_tasks_up(&mut self) {
+        let task_index = self.planning_wizard.as_ref().map(|w| w.task_index).unwrap_or(0);
         let filtered = self.get_filtered_tasks();
-        if !filtered.is_empty() && self.planning_wizard_task_index > 0 {
-            self.planning_wizard_task_index -= 1;
+        if !filtered.is_empty() && task_index > 0 {
+            if let Some(ref mut wizard) = self.planning_wizard {
+                wizard.task_index -= 1;
+            }
         }
     }
 
     fn navigate_planning_tasks_down(&mut self) {
+        let task_index = self.planning_wizard.as_ref().map(|w| w.task_index).unwrap_or(0);
         let filtered = self.get_filtered_tasks();
         let max_idx = filtered.len().saturating_sub(1);
-        if self.planning_wizard_task_index < max_idx {
-            self.planning_wizard_task_index += 1;
+        if task_index < max_idx {
+            if let Some(ref mut wizard) = self.planning_wizard {
+                wizard.task_index += 1;
+            }
         }
     }
 
     fn toggle_planning_task_selection(&mut self) {
+        let task_index = self.planning_wizard.as_ref().map(|w| w.task_index).unwrap_or(0);
         let filtered_tasks = self.get_filtered_tasks();
-        if let Some(task) = filtered_tasks.get(self.planning_wizard_task_index) {
-            let uuid = task.uuid.clone();
-            if let Some(pos) = self
-                .planning_wizard_selected_tasks
-                .iter()
-                .position(|u| *u == uuid)
-            {
-                self.planning_wizard_selected_tasks.remove(pos);
+        let Some(task) = filtered_tasks.get(task_index) else {
+            return;
+        };
+        let uuid = task.uuid.clone();
+        if let Some(ref mut wizard) = self.planning_wizard {
+            if let Some(pos) = wizard.selected_tasks.iter().position(|u| *u == uuid) {
+                wizard.selected_tasks.remove(pos);
             } else {
-                self.planning_wizard_selected_tasks.push(uuid);
+                wizard.selected_tasks.push(uuid);
             }
         }
     }
 
     fn confirm_planning_dates(&mut self) {
-        match self.planning_wizard_focus {
-            0..=2 => {
-                self.navigate_planning_dates_down();
-            }
-            3 => {
-                if chrono::NaiveDate::parse_from_str(&self.planning_wizard_start_date, "%Y-%m-%d")
-                    .is_err()
-                {
-                    self.planning_wizard_date_error =
-                        Some("Invalid start date format. Use YYYY-MM-DD".to_string());
-                    return;
+        if let Some(ref mut wizard) = self.planning_wizard {
+            let focus_idx = wizard.focus.index();
+            match focus_idx {
+                0..=2 => {
+                    self.navigate_planning_dates_down();
                 }
-                if !self.planning_wizard_end_date.is_empty() {
-                    if chrono::NaiveDate::parse_from_str(&self.planning_wizard_end_date, "%Y-%m-%d")
+                3 => {
+                    // Confirm button - validate dates
+                    if chrono::NaiveDate::parse_from_str(&wizard.start_date, "%Y-%m-%d")
                         .is_err()
                     {
-                        self.planning_wizard_date_error =
-                            Some("Invalid end date format. Use YYYY-MM-DD".to_string());
+                        wizard.date_error = Some("Invalid start date format. Use YYYY-MM-DD".to_string());
                         return;
                     }
-                    let start = chrono::NaiveDate::parse_from_str(
-                        &self.planning_wizard_start_date,
-                        "%Y-%m-%d",
-                    )
-                    .ok();
-                    let end = chrono::NaiveDate::parse_from_str(
-                        &self.planning_wizard_end_date,
-                        "%Y-%m-%d",
-                    )
-                    .ok();
-                    if let (Some(s), Some(e)) = (start, end)
-                        && e < s
-                    {
-                        self.planning_wizard_date_error =
-                            Some("End date must be on or after start date".to_string());
-                        return;
+                    if !wizard.end_date.is_empty() {
+                        if chrono::NaiveDate::parse_from_str(&wizard.end_date, "%Y-%m-%d")
+                            .is_err()
+                        {
+                            wizard.date_error = Some("Invalid end date format. Use YYYY-MM-DD".to_string());
+                            return;
+                        }
+                        let start = chrono::NaiveDate::parse_from_str(
+                            &wizard.start_date,
+                            "%Y-%m-%d",
+                        )
+                        .ok();
+                        let end = chrono::NaiveDate::parse_from_str(
+                            &wizard.end_date,
+                            "%Y-%m-%d",
+                        )
+                        .ok();
+                        if let (Some(s), Some(e)) = (start, end)
+                            && e < s
+                        {
+                            wizard.date_error = Some("End date must be on or after start date".to_string());
+                            return;
+                        }
                     }
+                    wizard.date_error = None;
+                    self.finalize_planning_wizard_dates();
                 }
-                self.planning_wizard_date_error = None;
-                self.finalize_planning_wizard_dates();
+                4 => {
+                    self.cancel_planning_wizard();
+                }
+                _ => {}
             }
-            4 => {
-                self.cancel_planning_wizard();
-            }
-            _ => {}
         }
     }
 
     fn confirm_planning_tasks(&mut self) {
-        if !self.planning_wizard_selected_tasks.is_empty() {
+        if self.planning_wizard.as_ref().map(|w| !w.selected_tasks.is_empty()).unwrap_or(false) {
             self.finalize_planning_session();
         }
     }
@@ -3038,6 +3079,7 @@ impl App {
                 start_date: t.start_date.clone(),
                 due_date: t.due_date.clone(),
                 priority: t.priority.clone(),
+                description: Some(t.description.clone()),
             },
             _ => {
                 tracing::debug!(path = ?item.path, "open_task_detail_wizard: parsed element is not a Task");
@@ -3045,120 +3087,118 @@ impl App {
             }
         };
 
-        self.task_wizard_task = Some(task);
-        self.task_wizard_field_index = 0;
+        self.task_wizard = Some(planning_wizard::TaskWizardState::with_task(task));
         self.mode = Mode::TaskDetailWizard;
         self.current_view = ViewType::TaskDetailWizard;
     }
 
     fn cycle_task_wizard_field_or_next(&mut self) {
-        let Some(ref task) = self.task_wizard_task else {
-            return;
-        };
-
-        match self.task_wizard_field_index {
-            0 => {
-                // Task name is not editable - move to next field
-                self.task_wizard_field_index += 1;
-            }
-            1 => {
-                // Cycle status through workflow values
-                let workflow = &self.config.workflow;
-                let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
-                let next_idx = (current_idx + 1) % workflow.len();
-                if let Some(ref mut task) = self.task_wizard_task {
-                    task.status = workflow[next_idx].clone();
+        if let Some(ref mut wizard) = self.task_wizard {
+            if let Some(ref task) = wizard.task {
+                match wizard.field_index {
+                    0 => {
+                        // Task name is not editable - move to next field
+                        wizard.field_index += 1;
+                    }
+                    1 => {
+                        // Cycle status through workflow values
+                        let workflow = &self.config.workflow;
+                        let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
+                        let next_idx = (current_idx + 1) % workflow.len();
+                        if let Some(ref mut t) = wizard.task {
+                            t.status = workflow[next_idx].clone();
+                        }
+                    }
+                    2..=4 => {
+                        // Text fields - move to next field
+                        wizard.field_index += 1;
+                    }
+                    5 => {
+                        // Cycle priority
+                        let priorities = ["low", "medium", "high"];
+                        let current = task.priority.clone().unwrap_or_default();
+                        let current_idx = priorities
+                            .iter()
+                            .position(|&p| p == current.as_str())
+                            .unwrap_or(0);
+                        let next_idx = (current_idx + 1) % priorities.len();
+                        if let Some(ref mut t) = wizard.task {
+                            t.priority = Some(priorities[next_idx].to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
-            2..=4 => {
-                // Text fields - move to next field
-                self.task_wizard_field_index += 1;
-            }
-            5 => {
-                // Cycle priority
-                let priorities = ["low", "medium", "high"];
-                let current = task.priority.clone().unwrap_or_default();
-                let current_idx = priorities
-                    .iter()
-                    .position(|&p| p == current.as_str())
-                    .unwrap_or(0);
-                let next_idx = (current_idx + 1) % priorities.len();
-                if let Some(ref mut task) = self.task_wizard_task {
-                    task.priority = Some(priorities[next_idx].to_string());
-                }
-            }
-            _ => {}
         }
     }
 
     fn handle_task_wizard_char(&mut self, c: char) {
-        let Some(ref mut task) = self.task_wizard_task else {
-            return;
-        };
-
-        match self.task_wizard_field_index {
-            2 => {
-                // Assigned to
-                let mut value = task.assigned_to.clone().unwrap_or_default();
-                value.push(c);
-                task.assigned_to = Some(value);
-            }
-            3 => {
-                // Start date
-                let mut value = task.start_date.clone().unwrap_or_default();
-                value.push(c);
-                task.start_date = Some(value);
-            }
-            4 => {
-                // Due date
-                let mut value = task.due_date.clone().unwrap_or_default();
-                value.push(c);
-                task.due_date = Some(value);
-            }
-            _ => {
-                // Other fields don't accept text input (task name, status, priority cycle instead)
+        if let Some(ref mut wizard) = self.task_wizard {
+            if let Some(ref mut task) = wizard.task {
+                match wizard.field_index {
+                    2 => {
+                        // Assigned to
+                        let mut value = task.assigned_to.clone().unwrap_or_default();
+                        value.push(c);
+                        task.assigned_to = Some(value);
+                    }
+                    3 => {
+                        // Start date
+                        let mut value = task.start_date.clone().unwrap_or_default();
+                        value.push(c);
+                        task.start_date = Some(value);
+                    }
+                    4 => {
+                        // Due date
+                        let mut value = task.due_date.clone().unwrap_or_default();
+                        value.push(c);
+                        task.due_date = Some(value);
+                    }
+                    _ => {
+                        // Other fields don't accept text input (task name, status, priority cycle instead)
+                    }
+                }
             }
         }
     }
 
     fn handle_task_wizard_backspace(&mut self) {
-        let Some(ref mut task) = self.task_wizard_task else {
-            return;
-        };
-
-        match self.task_wizard_field_index {
-            2 => {
-                // Assigned to
-                let mut value = task.assigned_to.clone().unwrap_or_default();
-                value.pop();
-                task.assigned_to = if value.is_empty() { None } else { Some(value) };
-            }
-            3 => {
-                // Start date
-                let mut value = task.start_date.clone().unwrap_or_default();
-                value.pop();
-                task.start_date = if value.is_empty() { None } else { Some(value) };
-            }
-            4 => {
-                // Due date
-                let mut value = task.due_date.clone().unwrap_or_default();
-                value.pop();
-                task.due_date = if value.is_empty() { None } else { Some(value) };
-            }
-            _ => {
-                // Other fields don't accept text input
+        if let Some(ref mut wizard) = self.task_wizard {
+            if let Some(ref mut task) = wizard.task {
+                match wizard.field_index {
+                    2 => {
+                        // Assigned to
+                        let mut value = task.assigned_to.clone().unwrap_or_default();
+                        value.pop();
+                        task.assigned_to = if value.is_empty() { None } else { Some(value) };
+                    }
+                    3 => {
+                        // Start date
+                        let mut value = task.start_date.clone().unwrap_or_default();
+                        value.pop();
+                        task.start_date = if value.is_empty() { None } else { Some(value) };
+                    }
+                    4 => {
+                        // Due date
+                        let mut value = task.due_date.clone().unwrap_or_default();
+                        value.pop();
+                        task.due_date = if value.is_empty() { None } else { Some(value) };
+                    }
+                    _ => {
+                        // Other fields don't accept text input
+                    }
+                }
             }
         }
     }
 
     fn confirm_task_detail_wizard(&mut self) {
-        let Some(task) = self.task_wizard_task.take() else {
-            return;
-        };
-
-        // Add task to session
-        self.planning_session_tasks.push(task);
-        self.task_wizard_field_index = 0;
+        if let Some(wizard) = self.task_wizard.take() {
+            // Add task to session
+            if let Some(task) = wizard.task {
+                self.planning_session_tasks.push(task);
+            }
+        }
 
         // Return to picker
         self.mode = Mode::HierarchicalSelection;
@@ -3166,21 +3206,22 @@ impl App {
     }
 
     fn cancel_task_detail_wizard(&mut self) {
-        self.task_wizard_task = None;
-        self.task_wizard_field_index = 0;
+        self.task_wizard = None;
         self.mode = Mode::HierarchicalSelection;
         self.current_view = ViewType::HierarchicalTaskPicker;
     }
 
     fn confirm_task_detail_field_input(&mut self) {
-        let field_index = self.task_wizard_field_index;
-        if let Some(ref mut task) = self.task_wizard_task {
-            let value = self.input_buffer.clone();
-            match field_index {
-                2 => task.assigned_to = if value.is_empty() { None } else { Some(value) },
-                3 => task.start_date = if value.is_empty() { None } else { Some(value) },
-                4 => task.due_date = if value.is_empty() { None } else { Some(value) },
-                _ => {}
+        if let Some(ref mut wizard) = self.task_wizard {
+            let field_index = wizard.field_index;
+            if let Some(ref mut task) = wizard.task {
+                let value = self.input_buffer.clone();
+                match field_index {
+                    2 => task.assigned_to = if value.is_empty() { None } else { Some(value) },
+                    3 => task.start_date = if value.is_empty() { None } else { Some(value) },
+                    4 => task.due_date = if value.is_empty() { None } else { Some(value) },
+                    _ => {}
+                }
             }
         }
         self.input_buffer.clear();
@@ -3189,15 +3230,8 @@ impl App {
     }
 
     fn cancel_planning_wizard(&mut self) {
-        self.planning_wizard_start_date = String::new();
-        self.planning_wizard_duration = "weekly".to_string();
-        self.planning_wizard_end_date = String::new();
-        self.planning_wizard_focus = 0;
-        self.planning_wizard_task_filter = String::new();
-        self.planning_wizard_selected_tasks = Vec::new();
-        self.planning_wizard_task_index = 0;
-        self.planning_wizard_date_error = None;
-        self.planning_wizard_tasks = Vec::new();
+        // Clear wizard state
+        self.planning_wizard = None;
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
         self.current_view = ViewType::TreeView;
         self.mode = Mode::Normal;

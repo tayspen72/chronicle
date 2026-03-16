@@ -168,6 +168,7 @@ pub struct SelectedTask {
     pub start_date: Option<String>,
     pub due_date: Option<String>,
     pub priority: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Element kind enum for type identification.
