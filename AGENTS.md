@@ -1,167 +1,186 @@
-# Chronicle Development Guide
+# AGENTS.md
 
-This file provides guidance for agentic coding agents working in the chronicle codebase.
+This file is loaded automatically by all agents. Keep it short and accurate.
+Update it whenever an agent makes a mistake — commit the change so the whole team benefits.
 
-## Project Overview
+---
 
-- **Type**: Rust TUI Application (Markdown-native planner and journal)
-- **Storage**: Markdown files with YAML frontmatter + folder hierarchy
-- **Config**: `~/.config/chronicle/config.toml`
-- **Edition**: Rust 2021
+## Project
 
-## Build Commands
+- **Domain**: CLI tool / TUI application (Markdown-native planner and journal)
+- **Languages**: Rust (2024 edition)
+- **Build system**: Cargo
+- **Test framework**: Built-in Rust testing (cargo test with tempfile for fixtures)
 
-```bash
-# Build the project
-cargo build
+---
 
-# Run (starts TUI)
-cargo run
+## Commands
 
-# Check for compilation errors
-cargo check
+Every agent must know these before touching anything.
 
-# Run all tests
-cargo test
-
-# Run a single test by exact name
-cargo test test_name
-
-# Run tests matching a pattern
-cargo test part_of_name
-
-# Run documentation tests
-cargo test --doc
-
-# Lint and format check
-cargo clippy
-cargo fmt --check
-
-# Generate documentation
-cargo doc --open
-
-# Release build (optimized)
-cargo build --release
-
-# Install locally
-cargo install --path .
+```
+build:     cargo build --release
+typecheck: cargo check
+test:      cargo test
+lint:      cargo clippy
+format:    cargo fmt
 ```
 
-## Golden Rules
+To run a **single test**:
+```
+cargo test <test_name>
+```
 
-1. **DESIGN.md is the source of truth.** If code contradicts the design, the code is wrong.
-2. **No agent edits files outside their designated scope.**
-3. **Branch before significant work.** The architect creates a branch before every sprint.
-4. **No destructive git commands.** `git reset`, `git rebase`, `git clean`, `git restore` are banned.
-5. **No remote git operations.** `git push`, `git pull`, `git fetch` are off limits.
-6. **Tests are mandatory.** New functionality without tests is not done.
-7. **`cargo clippy` clean is non-negotiable.** Treat warnings as errors.
+Run them in that order. Never suppress a warning to make a step pass.
 
-## Architecture
+---
 
-| Module | Purpose |
-|--------|---------|
-| `src/main.rs` | Binary entry point |
-| `src/lib.rs` | Crate root, re-exports Error/Result |
-| `src/error.rs` | Layered error types (thiserror) |
-| `src/config.rs` | Config loading/saving |
-| `src/model/mod.rs` | Domain types (Program, Project, Milestone, Task, Element) |
-| `src/storage/mod.rs` | File I/O, workspace discovery |
-| `src/storage/md.rs` | Markdown parsing/serialization |
-| `src/commands/mod.rs` | CLI commands (init, new_task, jot, extract) |
-| `src/tui/mod.rs` | Main TUI app, event loop |
-| `src/tui/navigation.rs` | Tree navigation state |
-| `src/tui/views/` | View rendering components |
-| `src/tui/command.rs` | Command palette |
-| `src/tui/layout.rs` | Layout management |
+## Layout
+
+```
+/src        — production code
+  /commands — CLI commands (init, new_task, jot, extract, task_template)
+  /model    — domain models (Program, Project, Milestone, Task)
+  /storage  — file I/O and persistence
+  /tui      — terminal UI components
+/tests      — integration tests (if any)
+/docs       — documentation
+/templates  — markdown templates for elements
+```
+
+---
 
 ## Code Style
 
 ### Imports
-- Group: std → external → crate-internal
-- Use absolute paths: `use crate::config::Config;`
-- Order alphabetically within groups
+- Use absolute imports within the crate (`crate::module::Item`)
+- Group std, external crates, and crate imports with blank lines between
+- Order: std → external → crate
 
-### Types and Naming
-- Structs/Enums: `PascalCase` (e.g., `Task`, `ElementKind`)
-- Fields/Variables: `snake_case`
-- Boolean methods: `is_complete()`, `exists()`
-- Error types: suffix with `Error` (e.g., `ConfigError`)
+### Formatting
+- Run `cargo fmt` before committing
+- Use 4 spaces for indentation
+- Keep lines under 100 characters when practical
+- Use blank lines between function definitions
 
-### Serde Patterns
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: Uuid,
-    #[serde(rename = "creation_date")]
-    pub creation_date: DateTime<Utc>,
-}
+### Types and Derives
+- Most structs use: `#[derive(Debug, Clone, Serialize, Deserialize, Default)]`
+- Error types use: `#[derive(Error, Debug)]` with `thiserror`
+- Add `#[must_use]` to functions that return important values
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Element {
-    Program(Program),
-    Project(Project),
-    Milestone(Milestone),
-    Task(Task),
-}
-```
+### Naming Conventions
+- **Types**: PascalCase (`struct App`, `enum Mode`)
+- **Functions/variables**: snake_case (`let config = ...`, `fn load_config()`)
+- **Constants**: SCREAMING_SNAKE_CASE
+- **Modules**: snake_case (`mod storage`, `mod tui`)
+- **Files**: snake_case (`error.rs`, `mod.rs`)
 
 ### Error Handling
-- **Library code**: Use `thiserror` with layered errors
-- **Binary code**: Use `anyhow` at entry point only
-- **Never** use `unwrap()` in library code (except tests)
+- Library code uses `crate::Result<T>` (wrapped with `thiserror`)
+- Binary entry point uses `anyhow::Result`
+- Convert errors at boundaries with `.map_err(|e| anyhow::anyhow!("{e}"))?`
+- Use descriptive error messages: `#[error("Configuration error: {0}")]`
 
-```rust
-// error.rs - layered approach
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Config error: {0}")]
-    Config(#[from] ConfigError),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-pub type Result<T> = std::result::Result<T, Error>;
-
-// main.rs - binary entry point
-use anyhow::Result;
-fn main() -> Result<()> { ... }
-```
+### Documentation
+- Module-level: `//! Description` at top of file
+- Public APIs: `/// Description` above items
+- Keep docs concise; focus on "what" and "why", not "how"
 
 ### Testing
-- Unit tests in `#[cfg(test)]` blocks within source files
-- Use `tempfile::TempDir` for filesystem tests
-- Run specific tests: `cargo test test_name`
+- Use `tempfile` crate for tests needing temp directories
+- Integration tests go in `/tests` or can be in-module with `#[cfg(test)]`
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
+---
 
-    #[test]
-    fn test_task_creation() {
-        let task = Task::new("Test task");
-        assert_eq!(task.title, "Test task");
-    }
-}
+## Conventions
+
+- **Serialization**: Use `serde` with YAML for configs, TOML for user settings
+- **Logging**: Use `tracing` with `tracing-subscriber` and `tracing-appender`
+- **TUI**: Uses `ratatui` + `crossterm` for terminal UI
+- **Date handling**: Use `chrono` with `DateTime<Utc>` for storage, `Local` for display
+- **IDs**: Use `uuid` v4 for unique identifiers
+
+---
+
+## Off-limits
+
+Do not touch these without an explicit instruction in the current session:
+
+- Release build optimizations in Cargo.toml (`lto = true`, `opt-level = "z"`)
+- Session files (`session-*.md`)
+
+---
+
+## Git workflow
+
+The main agent handles all git operations. Branch names are auto-generated from the task/goal description.
+
+### Branch Naming
+
+```
+<type>/<slug>
 ```
 
-## Data Hierarchy
+| Type | When |
+|------|------|
+| `feature/` | New functionality |
+| `fix/` | Bug fixes |
+| `refactor/` | Code restructuring without behavior change |
+| `docs/` | Documentation only |
 
-```
-~/chronicle/workspace/
-├── programs/{program}/{project}/{milestone}/{task}.md
-├── planning/{current,history}/
-├── journal/YYYY/MM/DD.md
-├── .archive/
-└── templates/{task,program,project,milestone}.md
-```
+Examples:
+- "implement planning wizard" → `feature/planning-wizard`
+- "fix navigation scope bug" → `fix/navigation-scope`
 
-## Lint Configuration
+### Workflow Steps
 
-The crate uses `#![deny(warnings)]` and `#![deny(clippy::all)]`. Run `cargo fmt` and `cargo clippy` before commits.
+1. **Start**: Create branch from `develop` with generated name
+2. **Work**: Implement changes (may call subagents)
+3. **Simplify**: Run `@code-simplifier`
+4. **Commit**: Commit with auto-generated conventional commit message
+5. **Verify**: Run `@verify-app`
+6. **Merge**: Merge branch to `develop`
 
-## Editor
+### Rules
 
-Default editor is `hx` (helix), configurable via config file.
+- **Never merge to master** — only `develop`. User handles develop → master merges manually.
+- **Stop on merge conflicts** — ask user to resolve manually.
+- **Conventional commits** — format: `<type>(<scope>): <description>`
+
+---
+
+## Agent workflow
+
+These five subagents are available. Use them in this order:
+
+| When | Call |
+|---|---|
+| Before implementing anything touching 3+ files | `@code-architect` |
+| After implementation is complete | `@code-simplifier` |
+| Before opening any PR | `@verify-app` |
+| Before any deployment or release build | `@build-validator` |
+| Something is broken and you don't know why | `@oncall-guide` |
+
+`@code-architect` is read-only — it produces a written plan, it does not write code.
+`@verify-app` and `@build-validator` run commands only — they do not edit files.
+`@code-simplifier` edits existing files only — it does not create new ones.
+`@oncall-guide` will ask before making any changes to production code.
+
+---
+
+## PR checklist
+
+Before any PR is opened:
+1. `@verify-app` reports all green
+2. Commit message follows conventional commits
+3. No build artifacts, `.env` files, or lockfile changes unless intentional
+4. Docs updated if behavior changed
+
+---
+
+## Learned rules
+
+_Append a rule here whenever an agent makes a mistake. One line, specific, actionable._
+
+<!-- example: Never use enums — prefer string literal unions -->
+<!-- example: Always run `cargo check` before `cargo test` — type errors mask test failures -->

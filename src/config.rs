@@ -44,7 +44,7 @@ fn default_navigator_width() -> u16 {
 }
 
 fn default_planning_duration() -> String {
-    "biweekly".into()
+    "weekly".into()
 }
 
 fn default_left() -> char {
@@ -132,7 +132,7 @@ impl Default for Config {
             owner: default_owner(),
             workflow: default_workflow(),
             navigator_width: 60,
-            planning_duration: "biweekly".to_string(),
+            planning_duration: "weekly".to_string(),
             navigation_keys: NavigationKeys::default(),
             diagnostics: DiagnosticsConfig::default(),
         }
@@ -140,6 +140,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Validates that planning_duration is one of the allowed values
+    pub fn validate_planning_duration(&self) -> crate::Result<()> {
+        let valid_durations = ["weekly", "biweekly", "6weekly"];
+        if !valid_durations.contains(&self.planning_duration.as_str()) {
+            return Err(crate::Error::Config(ConfigError::InvalidPlanningDuration(
+                self.planning_duration.clone(),
+                valid_durations.join(", "),
+            )));
+        }
+        Ok(())
+    }
+
     pub fn config_dir() -> Option<PathBuf> {
         directories::UserDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
@@ -161,6 +173,9 @@ impl Config {
             if config.editor.is_empty() {
                 config.editor = "hx".to_string();
             }
+
+            // Validate planning duration
+            config.validate_planning_duration()?;
 
             Ok(config)
         } else {
@@ -231,7 +246,7 @@ impl Config {
             owner,
             workflow: default_workflow(),
             navigator_width: 60,
-            planning_duration: "biweekly".to_string(),
+            planning_duration: "weekly".to_string(),
             navigation_keys: NavigationKeys::default(),
             diagnostics: DiagnosticsConfig::default(),
         })
@@ -249,7 +264,7 @@ workspace = "/home/user/chronicle"
 editor = "helix"
 owner = "Test User"
 navigator_width = 60
-planning_duration = "biweekly"
+planning_duration = "weekly"
 
 workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
 
@@ -265,7 +280,7 @@ down = "j"
         assert_eq!(config.editor, "helix");
         assert_eq!(config.owner, "Test User");
         assert_eq!(config.navigator_width, 60);
-        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(config.planning_duration, "weekly");
         assert_eq!(
             config.workflow,
             vec![
@@ -298,7 +313,7 @@ editor = "vim"
         // Check defaults are applied
         assert_eq!(config.owner, "");
         assert_eq!(config.navigator_width, 60);
-        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(config.planning_duration, "weekly");
         assert_eq!(
             config.workflow,
             vec![
@@ -327,7 +342,7 @@ editor = "vim"
         assert_eq!(config.editor, "hx");
         assert_eq!(config.owner, "");
         assert_eq!(config.navigator_width, 60);
-        assert_eq!(config.planning_duration, "biweekly");
+        assert_eq!(config.planning_duration, "weekly");
         assert_eq!(
             config.workflow,
             vec![

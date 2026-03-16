@@ -62,68 +62,95 @@ fn calculate_sidebar_width(app: &App) -> u16 {
     max_len = max_len.max("Navigator".len());
 
     for item in &app.sidebar_items {
-        let len = item.name.len() + (item.indent * 4);
+        // Account for: indent spaces (4 per level) + tree prefix (4 chars for "├── "/"└── ") + name
+        // Tree prefix only applies to non-header, indented items
+        let tree_prefix_len = if item.is_header || item.indent == 0 {
+            0
+        } else {
+            4 // "├── " or "└── "
+        };
+        let len = item.name.len() + (item.indent * 4) + tree_prefix_len;
         max_len = max_len.max(len);
     }
 
-    (max_len + 4).clamp(15, 60) as u16
+    // +6 for borders (2) and internal padding (4)
+    (max_len + 6).clamp(15, 60) as u16
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let idx = app.selected_entry_index;
+    let in_selection_mode = app.mode == Mode::TaskSelection;
 
-    let items: Vec<ListItem> = app
-        .sidebar_items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let is_selected = i == idx;
-            let indent_str = "    ".repeat(item.indent);
+    let items: Vec<ListItem> =
+        app.sidebar_items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let is_selected = i == idx;
+                let indent_str = "    ".repeat(item.indent);
 
-            let prefix = if item.is_header || item.indent == 0 {
-                item.name.clone()
-            } else {
-                let is_last = app
-                    .sidebar_items
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|p| p.indent == item.indent)
-                    .next()
-                    .is_none();
-                if is_last {
-                    format!("└── {}", item.name)
+                // Determine checkbox prefix for TaskSelection mode
+                let checkbox_prefix = (in_selection_mode && !item.is_header && item.indent >= 3)
+                    .then(|| {
+                        let is_selected = item.path.as_ref().is_some_and(|p| {
+                            app.planning_session_tasks.iter().any(|t| t.path == *p)
+                        });
+                        if is_selected { "[x] " } else { "[ ] " }
+                    });
+
+                let prefix = if item.is_header || item.indent == 0 {
+                    item.name.clone()
                 } else {
-                    format!("├── {}", item.name)
-                }
-            };
+                    let is_last = app
+                        .sidebar_items
+                        .iter()
+                        .skip(i + 1)
+                        .take_while(|p| p.indent == item.indent)
+                        .next()
+                        .is_none();
+                    if is_last {
+                        format!("└── {}", item.name)
+                    } else {
+                        format!("├── {}", item.name)
+                    }
+                };
 
-            let full_label = format!("{}{}", indent_str, prefix);
+                let full_label = if let Some(cb) = checkbox_prefix {
+                    format!(
+                        "{}{}{}",
+                        indent_str,
+                        cb,
+                        prefix.trim_start_matches("└── ").trim_start_matches("├── ")
+                    )
+                } else {
+                    format!("{}{}", indent_str, prefix)
+                };
 
-            let style = if item.is_header {
-                Style::default().fg(Color::DarkGray)
-            } else if item.is_create_action {
-                // Style create action items with dimmed cyan to indicate it's an action
-                if is_selected {
+                let style = if item.is_header {
+                    Style::default().fg(Color::DarkGray)
+                } else if item.is_create_action {
+                    // Style create action items with dimmed cyan to indicate it's an action
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                    } else {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                    }
+                } else if is_selected {
                     Style::default()
                         .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                        .bg(Color::LightBlue)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                }
-            } else if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(full_label).style(style)
-        })
-        .collect();
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(full_label).style(style)
+            })
+            .collect();
 
     let list = List::new(items)
         .block(
@@ -157,6 +184,21 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 views::render_input(f, app, area, "Enter value:");
             }
+        }
+        ViewType::InputPlanningSessionDates => {
+            views::render_planning_dates_wizard(f, app, area);
+        }
+        ViewType::PlanningTaskPicker => {
+            views::render_planning_task_picker(f, app, area);
+        }
+        ViewType::HierarchicalTaskPicker => {
+            views::render_hierarchical_task_picker(f, app, area);
+        }
+        ViewType::PlanningPreview => {
+            views::render_planning_preview(f, app, area);
+        }
+        ViewType::TaskDetailWizard | ViewType::InputTaskDetailField => {
+            views::render_task_detail_wizard(f, app, area);
         }
     }
 }
@@ -244,6 +286,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Normal => ("NORMAL", Color::Green),
         Mode::CommandPalette => ("COMMAND", Color::Yellow),
         Mode::Input => ("INPUT", Color::Cyan),
+        Mode::TaskSelection => ("SELECT", Color::Magenta),
+        Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
+        Mode::HierarchicalSelection => ("ADD TASKS", Color::LightCyan),
+        Mode::PlanningPreview => ("PREVIEW", Color::LightBlue),
+        Mode::TaskDetailWizard => ("EDIT TASK", Color::LightYellow),
+        Mode::InputTaskDetailField => ("INPUT", Color::Cyan),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections

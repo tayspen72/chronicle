@@ -35,6 +35,8 @@ pub enum ConfigError {
     NotFound(PathBuf),
     #[error("Invalid configuration: {0}")]
     Invalid(String),
+    #[error("Invalid planning duration: {0}. Expected one of: {1}")]
+    InvalidPlanningDuration(String, String),
 }
 
 /// Storage-related errors.

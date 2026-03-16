@@ -24,6 +24,9 @@ pub enum CommandAction {
     NewMilestone,
     NewTask,
     Refresh,
+    StartPlanningSession,
+    ClosePlanningSession,
+    ReviewSession,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -153,7 +156,7 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             action: None,
         },
         CommandMatch {
-            label: "Weekly Planning".to_string(),
+            label: "Current Plan".to_string(),
             view: ViewType::WeeklyPlanning,
             exit: false,
             action: None,
@@ -199,6 +202,24 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::Refresh),
+        },
+        CommandMatch {
+            label: "Start Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::StartPlanningSession),
+        },
+        CommandMatch {
+            label: "Close Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::ClosePlanningSession),
+        },
+        CommandMatch {
+            label: "Review Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::ReviewSession),
         },
         CommandMatch {
             label: "Exit".to_string(),
@@ -283,7 +304,7 @@ pub fn filter_commands(
                     "Programs"
                     | "Journal"
                     | "Backlog"
-                    | "Weekly Planning"
+                    | "Current Plan"
                     | "Open Today's Journal"
                     | "Journal History"
                     | "Exit" => true,
