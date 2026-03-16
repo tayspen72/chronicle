@@ -3,11 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::{App, Mode};
 use ratatui::{
+    Frame,
     layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
-    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -1197,24 +1197,39 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
 
     // Duration field
     if focus == 1 {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Duration: ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                duration,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-        ]));
+        // Show all options with current selection in bold
+        const DURATIONS: &[&str] = &["weekly", "biweekly", "6weekly"];
+
+        let mut option_spans = Vec::new();
+        for (i, opt) in DURATIONS.iter().enumerate() {
+            if i > 0 {
+                option_spans.push(Span::styled("  ", Style::default().fg(Color::DarkGray)));
+            }
+            if *opt == duration {
+                // Current selection - bold
+                option_spans.push(Span::styled(
+                    *opt,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::LightBlue)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ));
+            } else {
+                // Other options - grey
+                option_spans.push(Span::styled(*opt, Style::default().fg(Color::DarkGray)));
+            }
+        }
+
+        lines.push(Line::from(vec![Span::styled(
+            "  Duration: ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )]));
+        lines.push(Line::from(option_spans));
         lines.push(Line::from(Span::styled(
-            "    ←/→: Cycle | weekly, biweekly, 6weekly",
+            "    ←/→: Cycle options",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -1470,11 +1485,7 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
             let check_prefix = if is_task_level {
                 let path_str = item.path.to_string_lossy().to_string();
                 let is_selected = picker.selected_tasks.contains(&path_str);
-                if is_selected {
-                    "[x] "
-                } else {
-                    "[ ] "
-                }
+                if is_selected { "[x] " } else { "[ ] " }
             } else {
                 ""
             };
@@ -1720,12 +1731,13 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
 
             if value.is_empty() && !display_value.ends_with('_') {
                 lines.push(Line::from(vec![Span::styled(
-                    "    (empty)",
+                    "    empty",
                     Style::default().fg(Color::DarkGray),
                 )]));
             } else {
-                // Wrap description text - split into chunks of ~50 chars
-                let wrapped_text = if display_value.len() > 50 {
+                // Wrap description text based on available width
+                let wrap_width = (area.width.saturating_sub(8)) as usize;
+                let wrapped_text = if display_value.len() > wrap_width && wrap_width > 10 {
                     let mut wrapped = String::new();
                     for (idx, c) in display_value.chars().enumerate() {
                         if idx > 0 && idx % 50 == 0 {
@@ -1749,7 +1761,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
             let line = if value.is_empty() && !display_value.ends_with('_') {
                 Line::from(vec![
                     Span::styled(format!("  {}: ", label), style),
-                    Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    Span::styled("empty", Style::default().fg(Color::DarkGray)),
                 ])
             } else {
                 Line::from(vec![

@@ -37,6 +37,7 @@ use chrono::Local;
 use command::{CommandAction, CommandMatch, get_command_list};
 use hierarchical_picker::HierarchicalPickerState;
 use navigation::{SidebarItem, SidebarSection};
+use planning_wizard::PlanningDateFocus;
 use tree::TreeModel;
 
 /// Application interaction mode
@@ -570,9 +571,13 @@ impl App {
                         state.focus = WizardFocus::CancelButton;
                         self.input_buffer.clear();
                     }
-                } else if self.current_view == ViewType::InputPlanningSessionDates
-                    || self.current_view == ViewType::PlanningTaskPicker
-                {
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    // ESC jumps to CancelButton instead of canceling
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        wizard.focus = PlanningDateFocus::CancelButton;
+                    }
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    // ESC cancels the planning wizard
                     self.cancel_planning_wizard();
                 } else if self.current_view == ViewType::TaskDetailWizard {
                     // Cancel task detail wizard and return to picker
@@ -603,19 +608,47 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if self.current_view == ViewType::InputPlanningSessionDates
-                    && self.planning_wizard.as_ref().map(|w| w.focus.index()) == Some(1)
-                {
-                    self.cycle_duration_right();
+                if self.current_view == ViewType::InputPlanningSessionDates {
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        let focus_idx = wizard.focus.index();
+                        if focus_idx == 1 {
+                            // Duration field - cycle options
+                            self.cycle_duration_right();
+                        } else if focus_idx == 3 {
+                            // ConfirmButton - cycle to CancelButton
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        } else if focus_idx == 4 {
+                            // CancelButton - cycle back to StartDate
+                            wizard.focus = PlanningDateFocus::StartDate;
+                        } else {
+                            self.navigate_right();
+                        }
+                    } else {
+                        self.navigate_right();
+                    }
                 } else {
                     self.navigate_right();
                 }
             }
             KeyCode::Left => {
-                if self.current_view == ViewType::InputPlanningSessionDates
-                    && self.planning_wizard.as_ref().map(|w| w.focus.index()) == Some(1)
-                {
-                    self.cycle_duration_left();
+                if self.current_view == ViewType::InputPlanningSessionDates {
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        let focus_idx = wizard.focus.index();
+                        if focus_idx == 1 {
+                            // Duration field - cycle options
+                            self.cycle_duration_left();
+                        } else if focus_idx == 4 {
+                            // CancelButton - cycle to ConfirmButton
+                            wizard.focus = PlanningDateFocus::ConfirmButton;
+                        } else if focus_idx == 3 {
+                            // ConfirmButton - cycle back to CancelButton
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        } else {
+                            self.navigate_left();
+                        }
+                    } else {
+                        self.navigate_left();
+                    }
                 } else {
                     self.navigate_left();
                 }
@@ -1428,6 +1461,7 @@ impl App {
                     if focus_idx == 0 || focus_idx == 2 {
                         wizard.date_error = None;
                         self.input_buffer.push(c);
+                        wizard.input_buffer.push(c); // Sync to wizard's field immediately
                     }
                 }
             }
@@ -3103,6 +3137,8 @@ impl App {
         if let Some(ref mut wizard) = self.task_wizard {
             if let Some(task) = task_wizard::confirm_task_detail_wizard(wizard) {
                 self.planning_session_tasks.push(task);
+                // Save after adding task
+                self.save_current_planning_session();
             }
         }
 
