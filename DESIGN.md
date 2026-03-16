@@ -1,6 +1,87 @@
-# Chronicle
+# Chronicle Design Document
 
-## Overview
+## Latest Architectural Review (2026-03-15)
+
+### Overall Architecture
+
+The project follows a reasonable modular structure:
+- **main.rs**: Binary entry point
+- **lib.rs**: Library root with module exports
+- **config/**: User configuration management
+- **model/**: Domain models (Program, Project, Milestone, Task, etc.)
+- **storage/**: File I/O, markdown parsing, template resolution
+- **tui/**: Terminal UI application (the dominant component)
+- **commands/**: CLI commands (appears to be legacy/disconnected)
+- **diagnostics/**: Logging/tracing setup
+
+### Patterns Used
+- **Trait-based storage**: `JournalStorage` and `WorkspaceStorage` traits for testability
+- **Template method**: `resolve_template()` for Markdown generation
+- **State machine**: `Mode` enum for interaction states
+
+---
+
+## Issues Found
+
+### Critical Bugs
+
+1. **Navigation Bug** (`tui/mod.rs:819-842`)
+   ```rust
+   // BUG: This should go to project level but jumps to program level
+   ```
+   The `navigate_left()` function collapses to parent level unconditionally instead of one level at a time.
+
+2. **Empty Workspace Handling**
+   First-run prompts use blocking I/O which could cause issues in TUI context.
+
+3. **Concurrent File Access**
+   No file locking for planning sessions - potential race conditions.
+
+### Technical Debt
+
+1. **App Struct is a God Object**
+   - Manages UI rendering, input handling, navigation, planning state, wizard state
+   - ~4200 lines in single file
+   - Hard to test, difficult to understand
+
+2. **Duplicate Error Types**
+   - `PlanningError` in `storage/planning.rs` not integrated into main `Error` hierarchy
+   - Mix of `eprintln!()`, `tracing::error!()`, and proper `Result` returns
+
+3. **Dead Code**
+   - `command.rs` and `navigation.rs` have extracted types not fully wired up
+   - CLI commands in `commands/` directory not integrated with TUI
+
+4. **Overloaded `input_buffer`**
+   - Used for many different input types without clear ownership
+
+### Testing Coverage
+
+**Present:**
+- Config module: 7 tests
+- Storage: 20+ tests
+- TUI submodules: planning_wizard, task_wizard, navigation, command, hierarchical_picker, tree
+
+**Missing:**
+- Main App logic (`handle_key`)
+- Layout/rendering (`layout.rs`)
+- Navigation integration flows
+- Error recovery paths
+- End-to-end integration tests
+
+### Recommendations
+
+| Priority | Issue | Files to Modify |
+|----------|-------|----------------|
+| 1 | Refactor App struct | tui/mod.rs (split into modules) |
+| 2 | Wire up existing abstractions | command.rs, navigation.rs |
+| 3 | Fix navigation bug | tui/mod.rs:819-842 |
+| 4 | Error handling consistency | storage/planning.rs, error.rs |
+| 5 | Add integration tests | Various |
+
+---
+
+## Original Documentation
 
 Chronicle is a Markdown-native planner and journal with a terminal UI (TUI). It uses a hierarchical folder structure (`programs/ → projects/ → milestones/ → tasks/`) plus `journal/` and `planning/` for daily notes and planning cycles.
 
