@@ -3,11 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::{App, Mode};
 use ratatui::{
+    Frame,
     layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
-    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -1470,11 +1470,7 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
             let check_prefix = if is_task_level {
                 let path_str = item.path.to_string_lossy().to_string();
                 let is_selected = picker.selected_tasks.contains(&path_str);
-                if is_selected {
-                    "[x] "
-                } else {
-                    "[ ] "
-                }
+                if is_selected { "[x] " } else { "[ ] " }
             } else {
                 ""
             };

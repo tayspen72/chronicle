@@ -4,9 +4,13 @@
 //! scattered across the App struct. Following the pattern established by
 //! HierarchicalPickerState.
 
-use crate::model::SelectedTask;
 use crate::tui::cache::TaskMetadata;
-use crate::tui::TaskWizardField;
+
+// Re-export TaskWizardState from task_wizard module for backwards compatibility
+pub use crate::tui::task_wizard::TaskWizardState;
+
+// Re-export TaskWizardField for use in this module
+pub use crate::tui::task_wizard::TaskWizardField;
 
 /// State for the planning wizard (date selection + task picker).
 ///
@@ -243,78 +247,6 @@ impl PlanningWizardState {
                 self.end_date.clone()
             };
         }
-    }
-}
-
-/// State for the task detail wizard.
-///
-/// This replaces 2 fields that were previously on App:
-/// - task_wizard_task
-/// - task_wizard_field_index
-/// (Replaced by task_wizard: Option<TaskWizardState>)
-#[derive(Debug, Clone, Default)]
-pub struct TaskWizardState {
-    /// The task being edited
-    pub task: Option<SelectedTask>,
-    /// Index of currently focused field
-    pub field_index: usize,
-    /// Input buffer for text fields
-    pub input_buffer: String,
-}
-
-impl TaskWizardState {
-    /// Create new empty task wizard state.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create state with an existing task.
-    pub fn with_task(task: SelectedTask) -> Self {
-        Self {
-            task: Some(task),
-            field_index: 0,
-            input_buffer: String::new(),
-        }
-    }
-
-    /// Reset to empty state.
-    pub fn reset(&mut self) {
-        self.task = None;
-        self.field_index = 0;
-        self.input_buffer.clear();
-    }
-
-    /// Get current field as TaskWizardField enum.
-    pub fn current_field(&self) -> Option<TaskWizardField> {
-        TaskWizardField::from_index(self.field_index)
-    }
-
-    /// Check if wizard is active (has a task).
-    pub fn is_active(&self) -> bool {
-        self.task.is_some()
-    }
-
-    /// Navigate to next field.
-    pub fn next_field(&mut self) {
-        const TOTAL_FIELDS: usize = 9; // 7 fields + 2 buttons
-        self.field_index = (self.field_index + 1) % TOTAL_FIELDS;
-    }
-
-    /// Navigate to previous field.
-    pub fn prev_field(&mut self) {
-        const TOTAL_FIELDS: usize = 9;
-        self.field_index = (self.field_index + TOTAL_FIELDS - 1) % TOTAL_FIELDS;
-    }
-
-    /// Check if current field is editable text field.
-    pub fn current_field_is_editable(&self) -> bool {
-        matches!(
-            self.current_field(),
-            Some(TaskWizardField::AssignedTo)
-                | Some(TaskWizardField::StartDate)
-                | Some(TaskWizardField::DueDate)
-                | Some(TaskWizardField::Description)
-        )
     }
 }
 
