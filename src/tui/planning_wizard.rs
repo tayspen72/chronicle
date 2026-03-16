@@ -6,12 +6,6 @@
 
 use crate::tui::cache::TaskMetadata;
 
-// Re-export TaskWizardState from task_wizard module for backwards compatibility
-pub use crate::tui::task_wizard::TaskWizardState;
-
-// Re-export TaskWizardField for use in this module
-pub use crate::tui::task_wizard::TaskWizardField;
-
 /// State for the planning wizard (date selection + task picker).
 ///
 /// This replaces 10+ fields that were previously on App:
@@ -165,19 +159,19 @@ impl PlanningWizardState {
 
     /// Validate dates and return error message if invalid.
     pub fn validate_dates(&self) -> Option<String> {
-        if chrono::NaiveDate::parse_from_str(&self.start_date, "%Y-%m-%d").is_err() {
+        let start = chrono::NaiveDate::parse_from_str(&self.start_date, "%Y-%m-%d");
+        if start.is_err() {
             return Some("Invalid start date format. Use YYYY-MM-DD".to_string());
         }
 
         if !self.end_date.is_empty() {
-            if chrono::NaiveDate::parse_from_str(&self.end_date, "%Y-%m-%d").is_err() {
+            let end = chrono::NaiveDate::parse_from_str(&self.end_date, "%Y-%m-%d");
+            if end.is_err() {
                 return Some("Invalid end date format. Use YYYY-MM-DD".to_string());
             }
 
-            let start = chrono::NaiveDate::parse_from_str(&self.start_date, "%Y-%m-%d").ok();
-            let end = chrono::NaiveDate::parse_from_str(&self.end_date, "%Y-%m-%d").ok();
-
-            if let (Some(s), Some(e)) = (start, end) {
+            // Compare dates using already-parsed values
+            if let (Ok(s), Ok(e)) = (start, end) {
                 if e < s {
                     return Some("End date must be on or after start date".to_string());
                 }
@@ -368,35 +362,5 @@ mod tests {
             PlanningDateFocus::CancelButton.prev(),
             PlanningDateFocus::ConfirmButton
         );
-    }
-
-    #[test]
-    fn test_task_wizard_state_navigation() {
-        let mut state = TaskWizardState::new();
-        assert_eq!(state.field_index, 0);
-
-        state.next_field();
-        assert_eq!(state.field_index, 1);
-
-        state.prev_field();
-        assert_eq!(state.field_index, 0);
-    }
-
-    #[test]
-    fn test_task_wizard_state_wraps() {
-        let mut state = TaskWizardState::new();
-        // Navigate to last field (index 8)
-        for _ in 0..8 {
-            state.next_field();
-        }
-        assert_eq!(state.field_index, 8);
-
-        // Should wrap to 0
-        state.next_field();
-        assert_eq!(state.field_index, 0);
-
-        // Should wrap back to 8
-        state.prev_field();
-        assert_eq!(state.field_index, 8);
     }
 }

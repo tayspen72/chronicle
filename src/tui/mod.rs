@@ -48,7 +48,7 @@ pub enum Mode {
     CommandPalette,
     /// User is inputting data (e.g., creating element)
     #[allow(dead_code)]
-    Input, // TODO: Will be used for input mode in future sprint
+    Input,
     /// User is selecting tasks for a planning session
     TaskSelection,
     /// User is reviewing tasks in a planning session
@@ -107,7 +107,7 @@ pub enum ViewType {
     Journal,
     JournalArchiveList,
     #[allow(dead_code)]
-    JournalToday, // TODO: Reserved for future inline journal editing
+    JournalToday,
     Backlog,
     WeeklyPlanning,
     ViewingContent,
@@ -163,12 +163,12 @@ pub struct App {
     pub planning_preview_focus: usize,
     // Hierarchical task picker state
     pub hierarchical_picker: HierarchicalPickerState,
-    // NEW: Extracted planning wizard state (replaces fields above)
+    // Extracted planning wizard state (replaces fields above)
     pub planning_wizard: Option<planning_wizard::PlanningWizardState>,
-    // NEW: Task wizard state
+    // Task wizard state
     pub task_wizard: Option<task_wizard::TaskWizardState>,
-    // NEW: Planning preview confirmed flag
-    pub planning_preview_confirmed: bool,
+    // Planning preview confirmed flag
+    pub show_confirmation_message: bool,
 }
 
 impl App {
@@ -217,7 +217,7 @@ impl App {
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
             task_wizard: None,
-            planning_preview_confirmed: false,
+            show_confirmation_message: false,
         };
 
         app.load_tree_view_data();

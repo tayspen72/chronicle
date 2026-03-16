@@ -96,16 +96,17 @@ impl TaskWizardState {
         self.task.is_some()
     }
 
+    /// Total number of fields including buttons (7 fields + 2 buttons).
+    const TOTAL_FIELDS: usize = 9;
+
     /// Navigate to next field.
     pub fn next_field(&mut self) {
-        const TOTAL_FIELDS: usize = 9; // 7 fields + 2 buttons
-        self.field_index = (self.field_index + 1) % TOTAL_FIELDS;
+        self.field_index = (self.field_index + 1) % Self::TOTAL_FIELDS;
     }
 
     /// Navigate to previous field.
     pub fn prev_field(&mut self) {
-        const TOTAL_FIELDS: usize = 9;
-        self.field_index = (self.field_index + TOTAL_FIELDS - 1) % TOTAL_FIELDS;
+        self.field_index = (self.field_index + Self::TOTAL_FIELDS - 1) % Self::TOTAL_FIELDS;
     }
 
     /// Check if current field is editable text field.
