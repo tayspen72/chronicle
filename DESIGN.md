@@ -92,6 +92,22 @@ The project follows a reasonable modular structure:
 | 8 | Error handling consistency | storage/planning.rs, error.rs | Pending |
 | 9 | Add integration tests | Various | Pending |
 
+### Known Bugs (TODO)
+
+1. **Planning Session Date Fields Not Editable**
+   - In the new planning session creator (start/end dates), the date fields should be editable but are not
+   - Location: Planning wizard / task detail wizard
+
+2. **Task Selection Navigation UX**
+   - When selecting a task to add to plan, pressing Enter should move navigation down to the next row
+   - Currently toggles editable/non-editable on fields, cycles through a list incorrectly
+   - Expected: Fields editable, Enter jumps to next field, on final field jumps to "ADD TO PLAN", Escape jumps to "CANCEL"
+
+3. **Add to Plan Not Working**
+   - After selecting "ADD TO PLAN" on a task, the checkbox is not set
+   - Task does not actually appear in the plan
+   - Location: Task picker / planning wizard
+
 ---
 
 ## Original Documentation
