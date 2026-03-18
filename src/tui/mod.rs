@@ -36,7 +36,7 @@ use cache::TaskMetadata;
 use chrono::Local;
 use command::{CommandAction, CommandMatch, get_command_list};
 use hierarchical_picker::HierarchicalPickerState;
-use navigation::{SidebarItem, SidebarSection};
+use navigation::{NavigationState, SidebarItem, SidebarSection};
 use planning_wizard::PlanningDateFocus;
 use tree::TreeModel;
 
@@ -128,6 +128,7 @@ pub enum ViewType {
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
+    pub navigation_state: NavigationState,
     pub tree_model: TreeModel,
     pub mode: Mode,
     pub command_input: String,
@@ -183,6 +184,7 @@ impl App {
         let mut app = App {
             config,
             current_view: ViewType::TreeView,
+            navigation_state: NavigationState::new(),
             tree_model: TreeModel::default(),
             mode: Mode::Normal,
             command_input: String::new(),
