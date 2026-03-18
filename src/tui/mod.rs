@@ -38,7 +38,6 @@ use command::{CommandAction, CommandMatch, get_command_list};
 use hierarchical_picker::HierarchicalPickerState;
 use navigation::{NavigationState, SidebarItem, SidebarSection};
 use planning_wizard::PlanningDateFocus;
-use tree::TreeModel;
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,19 +128,13 @@ pub struct App {
     pub config: Config,
     pub current_view: ViewType,
     pub navigation_state: NavigationState,
-    pub tree_model: TreeModel,
     pub mode: Mode,
     pub command_input: String,
     pub command_matches: Vec<CommandMatch>,
     pub should_exit: bool,
     pub journal_entries: Vec<JournalEntry>,
-    pub selected_entry_index: usize,
     pub command_selection_index: usize,
     pub needs_terminal_reinit: bool,
-    pub current_program: Option<String>,
-    pub current_project: Option<String>,
-    pub current_milestone: Option<String>,
-    pub current_task: Option<String>,
     pub programs: Vec<DirectoryEntry>,
     pub projects: Vec<DirectoryEntry>,
     pub milestones: Vec<DirectoryEntry>,
@@ -150,7 +143,6 @@ pub struct App {
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
-    pub sidebar_items: Vec<SidebarItem>,
     pub template_field_state: Option<TemplateFieldState>,
     // Planning session state
     pub planning_session_active: bool,
@@ -185,19 +177,13 @@ impl App {
             config,
             current_view: ViewType::TreeView,
             navigation_state: NavigationState::new(),
-            tree_model: TreeModel::default(),
             mode: Mode::Normal,
             command_input: String::new(),
             command_matches,
             should_exit: false,
             journal_entries: Vec::new(),
-            selected_entry_index: 0,
             command_selection_index: 0,
             needs_terminal_reinit: false,
-            current_program: None,
-            current_project: None,
-            current_milestone: None,
-            current_task: None,
             programs: Vec::new(),
             projects: Vec::new(),
             milestones: Vec::new(),
@@ -206,7 +192,6 @@ impl App {
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
-            sidebar_items: Vec::new(),
             template_field_state: None,
             planning_session_active: false,
             planning_session_uuid: None,
@@ -602,7 +587,7 @@ impl App {
                     // can sometimes incorrectly trigger ESC first (the escape sequence parsing
                     // issue causes the ESC byte of the escape sequence to be interpreted as a
                     // separate keypress). By doing nothing, we prevent double-navigation.
-                    if self.tree_model.selected_path().is_empty() {
+                    if self.navigation_state.tree_model.selected_path().is_empty() {
                         self.current_view = ViewType::Journal;
                     }
                 } else {
@@ -810,8 +795,8 @@ impl App {
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
             tracing::debug!(
-                selected_index = self.selected_entry_index,
-                path = ?self.tree_model.selected_path(),
+                selected_index = self.navigation_state.selected_entry_index,
+                path = ?self.navigation_state.tree_model.selected_path(),
                 "navigate right"
             );
             self.open_tree_item_with_leaf_open(false);
@@ -823,7 +808,11 @@ impl App {
             return;
         }
 
-        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else {
+        let Some(item) = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        else {
             return;
         };
         let Some(selected_path) = item.tree_path.clone() else {
@@ -854,8 +843,8 @@ impl App {
                 self.current_content_text = None;
             }
             ViewType::TreeView => {
-                if !self.tree_model.selected_path().is_empty() {
-                    let mut parent = self.tree_model.selected_path_vec();
+                if !self.navigation_state.tree_model.selected_path().is_empty() {
+                    let mut parent = self.navigation_state.tree_model.selected_path_vec();
                     parent.pop();
                     self.set_selected_tree_path(parent);
                     self.load_tree_view_data();
@@ -874,33 +863,28 @@ impl App {
     }
 
     fn navigate_up(&mut self) {
-        self.selected_entry_index =
-            navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
+        self.navigation_state.navigate_up();
         self.sync_scope_from_sidebar_selection();
     }
 
     fn navigate_down(&mut self) {
-        self.selected_entry_index =
-            navigation::navigate_down(&self.sidebar_items, self.selected_entry_index);
+        self.navigation_state.navigate_down();
         self.sync_scope_from_sidebar_selection();
     }
 
     fn sync_scope_from_sidebar_selection(&mut self) {
-        let idx = self.selected_entry_index;
-        if idx >= self.sidebar_items.len() {
+        let idx = self.navigation_state.selected_entry_index;
+        if idx >= self.navigation_state.sidebar_items.len() {
             return;
         }
-        let Some(path) = self.sidebar_items[idx].tree_path.clone() else {
+        let Some(path) = self.navigation_state.sidebar_items[idx].tree_path.clone() else {
             return;
         };
-        if path != self.tree_model.selected_path() {
+        if path != self.navigation_state.tree_model.selected_path() {
             self.set_selected_tree_path(path.clone());
         }
         // Also update current_* fields so wizard scope is accurate
-        self.current_program = path.first().cloned();
-        self.current_project = path.get(1).cloned();
-        self.current_milestone = path.get(2).cloned();
-        self.current_task = path.get(3).cloned();
+        self.navigation_state.set_scope_from_path(&path);
     }
 
     fn open_tree_item(&mut self) {
@@ -908,13 +892,13 @@ impl App {
     }
 
     fn open_tree_item_with_leaf_open(&mut self, open_leaf_content: bool) {
-        let idx = self.selected_entry_index;
+        let idx = self.navigation_state.selected_entry_index;
 
-        if idx >= self.sidebar_items.len() {
+        if idx >= self.navigation_state.sidebar_items.len() {
             return;
         }
 
-        let item = &self.sidebar_items[idx];
+        let item = &self.navigation_state.sidebar_items[idx];
 
         if item.is_header || item.name.is_empty() {
             return;
@@ -985,13 +969,13 @@ impl App {
                 indent = item.indent,
                 selected_index = idx,
                 node_path = ?node_path,
-                current_path = ?self.tree_model.selected_path(),
+                current_path = ?self.navigation_state.tree_model.selected_path(),
                 has_children,
                 "open tree item"
             );
-            if has_children || self.tree_model.selected_path() != node_path {
+            if has_children || self.navigation_state.tree_model.selected_path() != node_path {
                 if has_children {
-                    self.tree_model.expand_path(&node_path);
+                    self.navigation_state.tree_model.expand_path(&node_path);
                     self.set_selected_tree_path(node_path.clone());
                     self.load_tree_view_data();
                     self.select_first_child_for_path(&node_path);
@@ -1016,10 +1000,7 @@ impl App {
 
     fn load_tree_view_data(&mut self) {
         self.programs = self.load_tree_level(&[]);
-        self.current_program = self.tree_model.selected_path().first().cloned();
-        self.current_project = self.tree_model.selected_path().get(1).cloned();
-        self.current_milestone = self.tree_model.selected_path().get(2).cloned();
-        self.current_task = self.tree_model.selected_path().get(3).cloned();
+        self.navigation_state.update_scope_from_tree();
 
         self.projects = self.load_tree_level_for_selected_depth(1);
         self.milestones = self.load_tree_level_for_selected_depth(2);
@@ -1027,7 +1008,7 @@ impl App {
         self.subtasks = self.load_tree_level_for_selected_depth(4);
 
         tracing::debug!(
-            path = ?self.tree_model.selected_path(),
+            path = ?self.navigation_state.tree_model.selected_path(),
             programs = self.programs.len(),
             projects = self.projects.len(),
             milestones = self.milestones.len(),
@@ -1040,7 +1021,7 @@ impl App {
     }
 
     fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {
-        let mut node_path = self.tree_model.selected_path_vec();
+        let mut node_path = self.navigation_state.tree_model.selected_path_vec();
         let truncate_to = item.indent.min(node_path.len());
         node_path.truncate(truncate_to);
         node_path.push(item.name.clone());
@@ -1048,19 +1029,21 @@ impl App {
     }
 
     fn set_selected_tree_path(&mut self, path: Vec<String>) {
-        self.tree_model.set_selected_path(path.clone());
-        self.tree_model.expand_ancestors(&path);
+        self.navigation_state
+            .tree_model
+            .set_selected_path(path.clone());
+        self.navigation_state.tree_model.expand_ancestors(&path);
     }
 
     fn collapse_path(&mut self, path: &[String]) {
-        self.tree_model.collapse_path(path);
+        self.navigation_state.tree_model.collapse_path(path);
     }
 
     fn load_tree_level_for_selected_depth(&self, depth: usize) -> Vec<DirectoryEntry> {
-        if self.tree_model.selected_depth() < depth {
+        if self.navigation_state.tree_model.selected_depth() < depth {
             return Vec::new();
         }
-        self.load_tree_level(&self.tree_model.selected_path()[..depth])
+        self.load_tree_level(&self.navigation_state.tree_model.selected_path()[..depth])
     }
 
     fn load_tree_level(&self, path: &[String]) -> Vec<DirectoryEntry> {
@@ -1238,27 +1221,29 @@ impl App {
     }
 
     fn first_selectable_sidebar_index(&self) -> usize {
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .iter()
             .position(|item| !item.is_header && !item.name.is_empty())
             .unwrap_or(0)
     }
 
     fn sync_selection_with_tree_path(&mut self) {
-        let mut candidate = self.tree_model.selected_path_vec();
+        let mut candidate = self.navigation_state.tree_model.selected_path_vec();
         while !candidate.is_empty() {
             if let Some(idx) = self
+                .navigation_state
                 .sidebar_items
                 .iter()
                 .position(|item| item.tree_path.as_ref() == Some(&candidate))
             {
-                self.selected_entry_index = idx;
-                if candidate != self.tree_model.selected_path() {
+                self.navigation_state.selected_entry_index = idx;
+                if candidate != self.navigation_state.tree_model.selected_path() {
                     self.set_selected_tree_path(candidate.clone());
                 }
                 tracing::debug!(
                     selected_index = idx,
-                    selected_name = ?self.tree_model.selected_path().last(),
+                    selected_name = ?self.navigation_state.tree_model.selected_path().last(),
                     "selection synced to tree path"
                 );
                 return;
@@ -1266,25 +1251,28 @@ impl App {
             candidate.pop();
         }
         tracing::warn!(
-            path = ?self.tree_model.selected_path(),
+            path = ?self.navigation_state.tree_model.selected_path(),
             "selection sync fallback to first selectable item"
         );
-        self.selected_entry_index = self.first_selectable_sidebar_index();
-        if !self.tree_model.selected_path().is_empty() {
+        self.navigation_state.selected_entry_index = self.first_selectable_sidebar_index();
+        if !self.navigation_state.tree_model.selected_path().is_empty() {
             if let Some(path) = self
+                .navigation_state
                 .sidebar_items
-                .get(self.selected_entry_index)
+                .get(self.navigation_state.selected_entry_index)
                 .and_then(|item| item.tree_path.clone())
             {
                 self.set_selected_tree_path(path);
             } else {
-                self.tree_model.set_selected_path(Vec::new());
+                self.navigation_state
+                    .tree_model
+                    .set_selected_path(Vec::new());
             }
         }
     }
 
     fn select_first_child_for_path(&mut self, parent_path: &[String]) {
-        if let Some(idx) = self.sidebar_items.iter().position(|item| {
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
             if item.is_header || item.name.is_empty() {
                 return false;
             }
@@ -1293,8 +1281,8 @@ impl App {
             };
             path.len() == parent_path.len() + 1 && path.starts_with(parent_path)
         }) {
-            self.selected_entry_index = idx;
-            if let Some(path) = self.sidebar_items[idx].tree_path.clone() {
+            self.navigation_state.selected_entry_index = idx;
+            if let Some(path) = self.navigation_state.sidebar_items[idx].tree_path.clone() {
                 self.set_selected_tree_path(path);
                 self.load_tree_view_data();
             }
@@ -1302,12 +1290,13 @@ impl App {
     }
 
     fn build_sidebar_items(&mut self) {
-        self.sidebar_items.clear();
-        self.sidebar_items
+        self.navigation_state.sidebar_items.clear();
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
 
         if self.programs.is_empty() {
-            self.sidebar_items.push(
+            self.navigation_state.sidebar_items.push(
                 SidebarItem::new("+ Create Program...", SidebarSection::Programs)
                     .indent(1)
                     .create_action(),
@@ -1316,24 +1305,31 @@ impl App {
             self.push_tree_level_items(&[], 0);
         }
 
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("", SidebarSection::Planning));
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
-        self.sidebar_items.push(
+        self.navigation_state.sidebar_items.push(
             SidebarItem::new("Current Plan", SidebarSection::Planning)
                 .planning_item("WeeklyPlanning"),
         );
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
 
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("", SidebarSection::Journal));
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("History", SidebarSection::Journal).journal_item("History"));
     }
 
@@ -1347,7 +1343,7 @@ impl App {
             let mut node_path = parent_path.to_vec();
             node_path.push(entry.name.clone());
             let has_children = !self.load_tree_level(&node_path).is_empty();
-            self.sidebar_items.push(SidebarItem {
+            self.navigation_state.sidebar_items.push(SidebarItem {
                 name: entry.name.clone(),
                 section: SidebarSection::Programs,
                 is_header: false,
@@ -1360,7 +1356,7 @@ impl App {
                 is_create_action: false,
             });
 
-            if self.tree_model.is_expanded(&node_path) {
+            if self.navigation_state.tree_model.is_expanded(&node_path) {
                 self.push_tree_level_items(&node_path, depth + 1);
             }
         }
@@ -1653,7 +1649,7 @@ impl App {
         match workspace.list_journal_entries() {
             Ok(entries) => {
                 self.journal_entries = entries;
-                self.selected_entry_index = 0;
+                self.navigation_state.selected_entry_index = 0;
                 self.current_view = ViewType::JournalArchiveList;
             }
             Err(e) => {
@@ -1670,7 +1666,7 @@ impl App {
     }
 
     fn open_selected_archive_entry(&mut self) {
-        self.open_archive_entry(self.selected_entry_index);
+        self.open_archive_entry(self.navigation_state.selected_entry_index);
     }
 
     fn launch_editor(&mut self, path: &std::path::Path) {
@@ -1710,7 +1706,7 @@ impl App {
     }
 
     fn show_projects_list(&mut self) {
-        if !self.tree_model.selected_path().is_empty() {
+        if !self.navigation_state.tree_model.selected_path().is_empty() {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1721,7 +1717,7 @@ impl App {
     }
 
     fn show_milestones_list(&mut self) {
-        if self.tree_model.selected_depth() >= 2 {
+        if self.navigation_state.tree_model.selected_depth() >= 2 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1732,7 +1728,7 @@ impl App {
     }
 
     fn show_tasks_list(&mut self) {
-        if self.tree_model.selected_depth() >= 3 {
+        if self.navigation_state.tree_model.selected_depth() >= 3 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -2149,7 +2145,11 @@ impl App {
             return;
         }
 
-        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else {
+        let Some(item) = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        else {
             return;
         };
         if item.is_header || item.indent < 3 {
@@ -2478,11 +2478,15 @@ impl App {
     }
 
     fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
-        if self.tree_model.selected_depth() >= target_depth {
+        if self.navigation_state.tree_model.selected_depth() >= target_depth {
             return;
         }
 
-        let mut selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+        let mut selected_path = match self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        {
             Some(item) if !item.is_header && !item.name.is_empty() => {
                 self.path_for_sidebar_item(item)
             }
@@ -2490,9 +2494,13 @@ impl App {
         };
 
         if selected_path.len() < target_depth {
-            let parent = self.tree_model.selected_path_vec();
+            let parent = self.navigation_state.tree_model.selected_path_vec();
             self.select_first_child_for_path(&parent);
-            selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+            selected_path = match self
+                .navigation_state
+                .sidebar_items
+                .get(self.navigation_state.selected_entry_index)
+            {
                 Some(item) if !item.is_header && !item.name.is_empty() => item
                     .tree_path
                     .clone()
@@ -2598,17 +2606,21 @@ impl App {
         // Build scope string showing where the new element will be created
         let scope_value = match template_name {
             "program" => "Programs (root level)".to_string(),
-            "project" => self.current_program.clone().unwrap_or_default(),
+            "project" => self
+                .navigation_state
+                .current_program
+                .clone()
+                .unwrap_or_default(),
             "milestone" | "task" => {
                 let mut parts = Vec::new();
-                if let Some(ref p) = self.current_program {
+                if let Some(ref p) = self.navigation_state.current_program {
                     parts.push(p.clone());
                 }
-                if let Some(ref p) = self.current_project {
+                if let Some(ref p) = self.navigation_state.current_project {
                     parts.push(p.clone());
                 }
                 if template_name == "task"
-                    && let Some(ref p) = self.current_milestone
+                    && let Some(ref p) = self.navigation_state.current_milestone
                 {
                     parts.push(p.clone());
                 }
@@ -2692,7 +2704,7 @@ impl App {
                     .join(format!("{}.md", program_name))
             }),
             "project" => name.and_then(|project_name| {
-                self.current_program.as_ref().map(|prog| {
+                self.navigation_state.current_program.as_ref().map(|prog| {
                     self.config
                         .workspace
                         .programs_dir()
@@ -2703,9 +2715,10 @@ impl App {
                 })
             }),
             "milestone" => self
+                .navigation_state
                 .current_program
                 .as_ref()
-                .zip(self.current_project.as_ref())
+                .zip(self.navigation_state.current_project.as_ref())
                 .and_then(|(prog, proj)| {
                     name.map(|milestone_name| {
                         self.config
@@ -2720,10 +2733,11 @@ impl App {
                     })
                 }),
             "task" => self
+                .navigation_state
                 .current_program
                 .as_ref()
-                .zip(self.current_project.as_ref())
-                .zip(self.current_milestone.as_ref())
+                .zip(self.navigation_state.current_project.as_ref())
+                .zip(self.navigation_state.current_milestone.as_ref())
                 .and_then(|((prog, proj), milestone)| {
                     name.map(|task_name| {
                         self.config
@@ -2811,14 +2825,19 @@ impl App {
                     if let Some(ref element_name) = new_element_name {
                         // Find the newly created element in sidebar_items
                         if let Some(pos) = self
+                            .navigation_state
                             .sidebar_items
                             .iter()
                             .position(|item| !item.is_header && item.name == *element_name)
                         {
-                            self.selected_entry_index = pos;
+                            self.navigation_state.selected_entry_index = pos;
                             // Also update tree_model.selected_path to sync the breadcrumb
-                            if let Some(ref tree_path) = self.sidebar_items[pos].tree_path {
-                                self.tree_model.set_selected_path(tree_path.clone());
+                            if let Some(ref tree_path) =
+                                self.navigation_state.sidebar_items[pos].tree_path
+                            {
+                                self.navigation_state
+                                    .tree_model
+                                    .set_selected_path(tree_path.clone());
                             }
                         }
                     }
@@ -2854,9 +2873,9 @@ impl App {
     fn filter_commands(&mut self) {
         self.command_matches = command::filter_commands(
             &self.command_input,
-            self.current_program.as_deref(),
-            self.current_project.as_deref(),
-            self.current_milestone.as_deref(),
+            self.navigation_state.current_program.as_deref(),
+            self.navigation_state.current_project.as_deref(),
+            self.navigation_state.current_milestone.as_deref(),
             !self.programs.is_empty(),
         );
         self.command_selection_index = 0;
@@ -3244,7 +3263,7 @@ mod tests {
 
         // Verify sidebar has items (Planning and Journal sections should exist)
         assert!(
-            !app.sidebar_items.is_empty(),
+            !app.navigation_state.sidebar_items.is_empty(),
             "Sidebar should have items even with empty programs"
         );
 
@@ -3372,23 +3391,23 @@ Test description
         // Verify we're at root level with programs loaded
         assert!(!app.programs.is_empty(), "Programs should be loaded");
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             0,
             "Should be at root level"
         );
 
         // Navigate into the program (select index 1 because index 0 is "Programs" header)
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Verify we're now inside the program
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             1,
             "Should be inside program"
         );
         assert!(
-            app.current_program.is_some(),
+            app.navigation_state.current_program.is_some(),
             "Current program should be set"
         );
 
@@ -3421,12 +3440,12 @@ Test description
         // NEW BEHAVIOR: Stay at parent level (don't auto-navigate into new element)
         // The user can manually navigate into it with arrow key
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             1,
             "Should stay at parent level (program) after creation"
         );
         assert!(
-            app.current_project.is_none(),
+            app.navigation_state.current_project.is_none(),
             "Should NOT auto-navigate into project - current_project should be None"
         );
 
@@ -3436,12 +3455,13 @@ Test description
         // The key test: verify that sidebar_items reflects the current state
         // After creating a project, we should still be in the program, showing projects
         assert!(
-            !app.sidebar_items.is_empty(),
+            !app.navigation_state.sidebar_items.is_empty(),
             "Sidebar should have items after creation"
         );
 
         // Selected nodes keep children collapsed, so project children are not shown here.
         let has_new_project = app
+            .navigation_state
             .sidebar_items
             .iter()
             .any(|item| !item.is_header && item.name == "NewProject");
@@ -3541,7 +3561,7 @@ Test description
         let mut app = App::new(config);
 
         // Navigate into the program
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Start the new project wizard
@@ -3621,9 +3641,9 @@ Test description
         let mut app = App::new(config);
 
         // Navigate into program, then project
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Start the new milestone wizard
@@ -3723,14 +3743,15 @@ Test description
         // Navigate into program, then project.
         // Right-navigation auto-selects first child, so after entering project
         // selection is already on the milestone.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "NewProject" && i.indent == 1)
             .expect("NewProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         // Start the new task wizard
@@ -3815,7 +3836,7 @@ Test description
         assert!(!app.programs.is_empty(), "Programs should be loaded");
 
         // Record the initial selection position (before creating new element)
-        let _initial_selected_index = app.selected_entry_index;
+        let _initial_selected_index = app.navigation_state.selected_entry_index;
 
         // Start the new program wizard
         app.start_new_program();
@@ -3838,6 +3859,7 @@ Test description
         // Now verify selection is on the newly created element, NOT reset to first item
         // The new element should be in the sidebar
         let new_element_in_sidebar = app
+            .navigation_state
             .sidebar_items
             .iter()
             .any(|item| item.name == "NewProgram");
@@ -3848,11 +3870,12 @@ Test description
         );
 
         // The key assertion: selected_entry_index should point to the new element
-        let selected_item = &app.sidebar_items[app.selected_entry_index];
+        let selected_item =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert_eq!(
             selected_item.name, "NewProgram",
             "Selected item should be the newly created program, but got '{}' (index {})",
-            selected_item.name, app.selected_entry_index
+            selected_item.name, app.navigation_state.selected_entry_index
         );
 
         // Also verify we didn't just reset to initial position (index 1)
@@ -3989,21 +4012,22 @@ title: TestMilestone
         let mut app = App::new(config);
 
         // Navigate into Program (select index 1 because index 0 is "Programs" header)
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Navigate into Project
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject")
             .expect("TestProject should be in sidebar");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         // Single right from project now expands and moves selection into milestone.
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             3,
             "Should be inside milestone after second navigation"
         );
@@ -4014,7 +4038,7 @@ title: TestMilestone
         // BUG: This should go to project level (path = ["TestProgram", "TestProject"])
         // but it jumps to program level (path = ["TestProgram"])
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             2,
             "Should go back to project level (depth 2), not program level (depth 1)"
         );
@@ -4072,19 +4096,20 @@ title: TestMilestone
 
         // Navigate into Program.
         // Right now expands and moves selection to the first project in one step.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
-        assert_eq!(app.tree_model.selected_depth(), 2);
+        assert_eq!(app.navigation_state.tree_model.selected_depth(), 2);
 
         // Navigate into Project
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject")
             .expect("TestProject should be in sidebar");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
-        assert_eq!(app.tree_model.selected_depth(), 3);
+        assert_eq!(app.navigation_state.tree_model.selected_depth(), 3);
 
         // Now navigate LEFT - this should collapse back to project level
         app.navigate_left();
@@ -4092,13 +4117,17 @@ title: TestMilestone
         // After collapsing, we should be at project level (depth 2)
         // path should be ["TestProgram", "TestProject"], not ["TestProgram"]
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.tree_model.selected_depth(),
             2,
             "After collapsing milestone, should be at project level (depth 2), not program level (depth 1)"
         );
 
         // The sidebar should keep milestones collapsed while project is selected.
-        let has_milestones = app.sidebar_items.iter().any(|i| i.name == "TestMilestone");
+        let has_milestones = app
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .any(|i| i.name == "TestMilestone");
         assert!(
             !has_milestones,
             "Sidebar should keep selected project's children collapsed"
@@ -4106,10 +4135,11 @@ title: TestMilestone
 
         // Selection should remain valid and on the project node after collapsing back.
         assert!(
-            app.selected_entry_index < app.sidebar_items.len(),
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len(),
             "Selected index should remain in bounds"
         );
-        let selected = &app.sidebar_items[app.selected_entry_index];
+        let selected =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert!(!selected.is_header, "Selection should not land on a header");
         assert_eq!(selected.name, "TestProject");
         assert_eq!(selected.indent, 1);
@@ -4155,15 +4185,16 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "AlphaProject".to_string()]
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|item| item.name == "M1" && item.indent == 2),
             "Milestones should not auto-expand when entering program level"
@@ -4202,18 +4233,19 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item_with_leaf_open(false);
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject" && i.indent == 1)
             .expect("TestProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item_with_leaf_open(false);
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec![
                 "TestProgram".to_string(),
                 "TestProject".to_string(),
@@ -4224,11 +4256,12 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "TestProject".to_string()]
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|item| item.name == "M1" && item.indent == 2),
             "Milestones should be collapsed when project is selected after left navigation"
@@ -4289,37 +4322,45 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item_with_leaf_open(false);
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject" && i.indent == 1)
             .expect("TestProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item_with_leaf_open(false);
         let milestone_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "M1" && i.indent == 2)
             .expect("M1 should be selectable");
-        app.selected_entry_index = milestone_idx;
+        app.navigation_state.selected_entry_index = milestone_idx;
         app.open_tree_item_with_leaf_open(false);
         let task_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "LeafTask" && i.indent == 3)
             .expect("LeafTask should be selectable after entering milestone");
-        app.selected_entry_index = task_idx;
+        app.navigation_state.selected_entry_index = task_idx;
         app.open_tree_item_with_leaf_open(false);
 
-        let selected_before = app.tree_model.selected_path().to_vec();
+        let selected_before = app.navigation_state.tree_model.selected_path().to_vec();
         app.navigate_right();
         app.navigate_right();
 
         assert_eq!(app.current_view, ViewType::TreeView);
-        assert_eq!(app.tree_model.selected_path().to_vec(), selected_before);
-        assert!(app.selected_entry_index < app.sidebar_items.len());
+        assert_eq!(
+            app.navigation_state.tree_model.selected_path().to_vec(),
+            selected_before
+        );
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
     }
 
     #[test]
@@ -4367,11 +4408,12 @@ title: TestMilestone
         std::fs::write(&today_path, "---\ntitle: today\n---\n").expect("Failed to create file");
 
         let today_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|item| item.is_journal_item.as_deref() == Some("Today"))
             .expect("Today entry should exist");
-        app.selected_entry_index = today_idx;
+        app.navigation_state.selected_entry_index = today_idx;
         app.open_tree_item();
 
         assert_eq!(app.current_view, ViewType::TreeView);
@@ -4414,16 +4456,17 @@ title: TestMilestone
         let mut app = App::new(config);
 
         // Enter the top program.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Move selection in project list and enter BetaProject.
         if let Some(beta_idx) = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "BetaProject" && i.indent == 1)
         {
-            app.selected_entry_index = beta_idx;
+            app.navigation_state.selected_entry_index = beta_idx;
         } else {
             panic!("BetaProject should be selectable");
         }
@@ -4431,7 +4474,7 @@ title: TestMilestone
 
         // Single right from project expands and moves to milestone.
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject", "M1"]
         );
 
@@ -4439,11 +4482,14 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject"]
         );
-        assert!(app.selected_entry_index < app.sidebar_items.len());
-        let selected = &app.sidebar_items[app.selected_entry_index];
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
+        let selected =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert_eq!(selected.name, "BetaProject");
         assert_eq!(selected.indent, 1);
         assert!(!selected.is_header);
@@ -4474,16 +4520,21 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram", "DirectTask"]
         );
 
         app.navigate_left();
-        assert_eq!(app.tree_model.selected_path().to_vec(), vec!["TestProgram"]);
-        assert!(app.selected_entry_index < app.sidebar_items.len());
+        assert_eq!(
+            app.navigation_state.tree_model.selected_path().to_vec(),
+            vec!["TestProgram"]
+        );
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
     }
 
     #[test]
@@ -4527,22 +4578,24 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         let common_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "Common" && i.indent == 1)
             .expect("Common should be selectable under program");
-        app.selected_entry_index = common_idx;
+        app.navigation_state.selected_entry_index = common_idx;
         app.open_tree_item();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.tree_model.selected_path().to_vec(),
             vec!["TestProgram", "Common", "M1"]
         );
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "M1" && i.indent == 2),
             "Expandable duplicate variant should be used, exposing milestones"
@@ -4584,38 +4637,43 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "project 1" && i.indent == 1),
             "project 1 should exist as a project under program"
         );
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "project 2" && i.indent == 1),
             "project 2 should exist as a project under program"
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "milestone 1" && i.indent == 1),
             "milestone 1 must not leak into program level"
         );
 
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "project 1" && i.indent == 1)
             .expect("project 1 should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "milestone 1" && i.indent == 2),
             "milestone 1 should appear only under project 1"

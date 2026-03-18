@@ -11,12 +11,12 @@ use ratatui::{
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let idx = app.selected_entry_index;
+    let idx = app.navigation_state.selected_entry_index;
     let mut content_to_show = "No item selected".to_string();
     let mut title = "Empty".to_string();
 
-    if idx < app.sidebar_items.len() {
-        let item = &app.sidebar_items[idx];
+    if idx < app.navigation_state.sidebar_items.len() {
+        let item = &app.navigation_state.sidebar_items[idx];
 
         if !item.is_header && !item.name.is_empty() {
             if let Some(journal_action) = &item.is_journal_item {
@@ -158,7 +158,7 @@ pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let style = if idx == app.selected_entry_index {
+            let style = if idx == app.navigation_state.selected_entry_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -910,7 +910,7 @@ pub fn render_programs_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let style = if idx == app.selected_entry_index {
+            let style = if idx == app.navigation_state.selected_entry_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -936,7 +936,7 @@ pub fn render_programs_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
 
 #[allow(dead_code)]
 pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let title = if let Some(ref program) = app.current_program {
+    let title = if let Some(ref program) = app.navigation_state.current_program {
         format!("Projects - {}", program)
     } else {
         "Projects".to_string()
@@ -964,7 +964,7 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let style = if idx == app.selected_entry_index {
+            let style = if idx == app.navigation_state.selected_entry_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -990,8 +990,10 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
 
 #[allow(dead_code)]
 pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let title = if let (Some(program), Some(project)) = (&app.current_program, &app.current_project)
-    {
+    let title = if let (Some(program), Some(project)) = (
+        &app.navigation_state.current_program,
+        &app.navigation_state.current_project,
+    ) {
         format!("Milestones - {}/{}", program, project)
     } else {
         "Milestones".to_string()
@@ -1019,7 +1021,7 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let style = if idx == app.selected_entry_index {
+            let style = if idx == app.navigation_state.selected_entry_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -1046,9 +1048,9 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
 #[allow(dead_code)]
 pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = if let (Some(program), Some(project), Some(milestone)) = (
-        &app.current_program,
-        &app.current_project,
-        &app.current_milestone,
+        &app.navigation_state.current_program,
+        &app.navigation_state.current_project,
+        &app.navigation_state.current_milestone,
     ) {
         format!("Tasks - {}/{}/{}", program, project, milestone)
     } else {
@@ -1074,7 +1076,7 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let style = if idx == app.selected_entry_index {
+            let style = if idx == app.navigation_state.selected_entry_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)

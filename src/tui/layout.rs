@@ -61,7 +61,7 @@ fn calculate_sidebar_width(app: &App) -> u16 {
 
     max_len = max_len.max("Navigator".len());
 
-    for item in &app.sidebar_items {
+    for item in &app.navigation_state.sidebar_items {
         // Account for: indent spaces (4 per level) + tree prefix (4 chars for "├── "/"└── ") + name
         // Tree prefix only applies to non-header, indented items
         let tree_prefix_len = if item.is_header || item.indent == 0 {
@@ -78,11 +78,12 @@ fn calculate_sidebar_width(app: &App) -> u16 {
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let idx = app.selected_entry_index;
+    let idx = app.navigation_state.selected_entry_index;
     let in_selection_mode = app.mode == Mode::TaskSelection;
 
     let items: Vec<ListItem> =
-        app.sidebar_items
+        app.navigation_state
+            .sidebar_items
             .iter()
             .enumerate()
             .map(|(i, item)| {
@@ -102,6 +103,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     item.name.clone()
                 } else {
                     let is_last = app
+                        .navigation_state
                         .sidebar_items
                         .iter()
                         .skip(i + 1)
@@ -262,16 +264,16 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     // Build breadcrumb from current selection
     let mut breadcrumb_parts = Vec::new();
 
-    if let Some(program) = &app.current_program {
+    if let Some(program) = &app.navigation_state.current_program {
         breadcrumb_parts.push(program.clone());
     }
-    if let Some(project) = &app.current_project {
+    if let Some(project) = &app.navigation_state.current_project {
         breadcrumb_parts.push(project.clone());
     }
-    if let Some(milestone) = &app.current_milestone {
+    if let Some(milestone) = &app.navigation_state.current_milestone {
         breadcrumb_parts.push(milestone.clone());
     }
-    if let Some(task) = &app.current_task {
+    if let Some(task) = &app.navigation_state.current_task {
         breadcrumb_parts.push(task.clone());
     }
 

@@ -33,6 +33,34 @@ impl NavigationState {
     pub fn selected_depth(&self) -> usize {
         self.tree_model.selected_depth()
     }
+
+    /// Updates current_* scope fields from a path vector.
+    pub fn set_scope_from_path(&mut self, path: &[String]) {
+        self.current_program = path.first().cloned();
+        self.current_project = path.get(1).cloned();
+        self.current_milestone = path.get(2).cloned();
+        self.current_task = path.get(3).cloned();
+    }
+
+    /// Updates current_* scope fields from the tree model's selected path.
+    pub fn update_scope_from_tree(&mut self) {
+        let path = self.tree_model.selected_path().to_vec();
+        self.set_scope_from_path(&path);
+    }
+
+    /// Navigate up in sidebar and return the new index.
+    pub fn navigate_up(&mut self) -> usize {
+        let new_index = navigate_up(&self.sidebar_items, self.selected_entry_index);
+        self.selected_entry_index = new_index;
+        new_index
+    }
+
+    /// Navigate down in sidebar and return the new index.
+    pub fn navigate_down(&mut self) -> usize {
+        let new_index = navigate_down(&self.sidebar_items, self.selected_entry_index);
+        self.selected_entry_index = new_index;
+        new_index
+    }
 }
 
 /// Section of the sidebar.
