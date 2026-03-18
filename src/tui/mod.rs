@@ -4,9 +4,11 @@ pub mod hierarchical_picker;
 pub mod layout;
 pub mod navigation;
 pub mod planning_wizard;
+pub mod review;
 pub mod task_wizard;
 pub mod tree;
 pub mod views;
+pub mod wizard;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -38,6 +40,8 @@ use command::{CommandAction, CommandMatch, get_command_list};
 use hierarchical_picker::HierarchicalPickerState;
 use navigation::{NavigationState, SidebarItem, SidebarSection};
 use planning_wizard::PlanningDateFocus;
+use review::ReviewState;
+use wizard::{FieldInfo, TemplateFieldState, WizardFocus, WizardState};
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,44 +65,6 @@ pub enum Mode {
     TaskDetailWizard,
     /// User is inputting text for a task detail field
     InputTaskDetailField,
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldInfo {
-    pub label: String,
-    pub placeholder: String,
-    pub value: String,
-    pub is_focused: bool,
-    /// true for user input fields, false for prepopulated keyword fields
-    pub is_editable: bool,
-    /// Position in template (0-based) to preserve order
-    pub display_order: usize,
-}
-
-/// Focus state for the template field wizard
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WizardFocus {
-    /// Focused on a field at the given index
-    Field(usize),
-    /// Focused on the CONFIRM button
-    ConfirmButton,
-    /// Focused on the CANCEL button
-    CancelButton,
-}
-
-impl Default for WizardFocus {
-    fn default() -> Self {
-        WizardFocus::Field(0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TemplateFieldState {
-    pub template_name: String,
-    pub fields: Vec<FieldInfo>,
-    pub focus: WizardFocus,
-    pub values: std::collections::HashMap<String, String>,
-    pub strip_labels: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,7 +109,7 @@ pub struct App {
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
-    pub template_field_state: Option<TemplateFieldState>,
+    pub wizard_state: WizardState,
     // Planning session state
     pub planning_session_active: bool,
     pub planning_session_uuid: Option<String>,
@@ -151,10 +117,7 @@ pub struct App {
     pub planning_session_start_date: Option<String>,
     pub planning_session_due_date: Option<String>,
     pub rolled_over_tasks: Vec<String>,
-    pub review_selection_index: usize,
-    /// Focus state for review session input (100=assigned_to, 101=start_date, 102=due_date)
-    pub review_input_focus: Option<usize>,
-    pub planning_preview_focus: usize,
+    pub review_state: ReviewState,
     // Hierarchical task picker state
     pub hierarchical_picker: HierarchicalPickerState,
     // Extracted planning wizard state (replaces fields above)
@@ -192,16 +155,14 @@ impl App {
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
-            template_field_state: None,
+            wizard_state: WizardState::new(),
             planning_session_active: false,
             planning_session_uuid: None,
             planning_session_tasks: Vec::new(),
             planning_session_start_date: None,
             planning_session_due_date: None,
             rolled_over_tasks: Vec::new(),
-            review_selection_index: 0,
-            review_input_focus: None,
-            planning_preview_focus: 0,
+            review_state: ReviewState::new(),
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
             task_wizard: None,
@@ -411,7 +372,7 @@ impl App {
                     self.mode = Mode::Input;
                     self.input_buffer = self
                         .planning_session_tasks
-                        .get(self.review_selection_index)
+                        .get(self.review_state.selection_index)
                         .and_then(|t| t.assigned_to.clone())
                         .unwrap_or_default();
                 }
@@ -420,7 +381,7 @@ impl App {
                     self.mode = Mode::Input;
                     self.input_buffer = self
                         .planning_session_tasks
-                        .get(self.review_selection_index)
+                        .get(self.review_state.selection_index)
                         .and_then(|t| t.start_date.clone())
                         .unwrap_or_default();
                 }
@@ -429,7 +390,7 @@ impl App {
                     self.mode = Mode::Input;
                     self.input_buffer = self
                         .planning_session_tasks
-                        .get(self.review_selection_index)
+                        .get(self.review_state.selection_index)
                         .and_then(|t| t.due_date.clone())
                         .unwrap_or_default();
                 }
@@ -456,17 +417,17 @@ impl App {
         if self.mode == Mode::PlanningPreview {
             match code {
                 KeyCode::Left | KeyCode::Char('h') => {
-                    if self.planning_preview_focus > 0 {
-                        self.planning_preview_focus -= 1;
+                    if self.review_state.preview_focus > 0 {
+                        self.review_state.preview_focus -= 1;
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    if self.planning_preview_focus < 2 {
-                        self.planning_preview_focus += 1;
+                    if self.review_state.preview_focus < 2 {
+                        self.review_state.preview_focus += 1;
                     }
                 }
                 KeyCode::Enter => {
-                    match self.planning_preview_focus {
+                    match self.review_state.preview_focus {
                         0 => self.add_more_tasks_to_session(),
                         1 => {
                             // Activate session and start review
@@ -548,7 +509,7 @@ impl App {
                     self.command_selection_index = 0;
                 } else if self.current_view == ViewType::InputTemplateField {
                     // Escape jumps to CANCEL button
-                    if let Some(ref mut state) = self.template_field_state {
+                    if let Some(ref mut state) = self.wizard_state.template {
                         // Save current field value first
                         if let WizardFocus::Field(idx) = state.focus
                             && let Some(field) = state.fields.get_mut(idx)
@@ -571,7 +532,7 @@ impl App {
                     self.cancel_task_detail_wizard();
                 } else if self.mode == Mode::Input
                     && matches!(
-                        self.review_input_focus,
+                        self.review_state.input_focus,
                         Some(Self::FOCUS_ASSIGNED_TO)
                             | Some(Self::FOCUS_START_DATE)
                             | Some(Self::FOCUS_DUE_DATE)
@@ -699,7 +660,7 @@ impl App {
     }
 
     fn navigate_template_field_up(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             // Save current value if on a field
             if let WizardFocus::Field(idx) = state.focus
                 && let Some(field) = state.fields.get_mut(idx)
@@ -745,7 +706,7 @@ impl App {
     }
 
     fn navigate_template_field_down(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             // Save current value if on a field
             if let WizardFocus::Field(idx) = state.focus
                 && let Some(field) = state.fields.get_mut(idx)
@@ -1365,7 +1326,7 @@ impl App {
     fn handle_enter(&mut self) {
         // Handle input mode for review session task metadata
         if self.mode == Mode::Input {
-            if let Some(focus) = self.review_input_focus {
+            if let Some(focus) = self.review_state.input_focus {
                 match focus {
                     Self::FOCUS_ASSIGNED_TO => {
                         // assigned_to
@@ -1439,7 +1400,7 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state
+                if let Some(ref mut state) = self.wizard_state.template
                     && let WizardFocus::Field(idx) = state.focus
                     && let Some(field) = state.fields.get_mut(idx)
                     && field.is_editable
@@ -1483,7 +1444,7 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state
+                if let Some(ref mut state) = self.wizard_state.template
                     && let WizardFocus::Field(idx) = state.focus
                     && let Some(field) = state.fields.get_mut(idx)
                     && field.is_editable
@@ -2286,7 +2247,7 @@ impl App {
         if !self.planning_session_active || self.planning_session_tasks.is_empty() {
             return;
         }
-        self.review_selection_index = 0;
+        self.review_state.reset();
         self.rolled_over_tasks.clear();
         self.mode = Mode::ReviewSession;
     }
@@ -2296,15 +2257,18 @@ impl App {
             return;
         }
         let new_idx = if direction < 0 {
-            self.review_selection_index.saturating_sub(1)
+            self.review_state.selection_index.saturating_sub(1)
         } else {
-            (self.review_selection_index + 1).min(self.planning_session_tasks.len() - 1)
+            (self.review_state.selection_index + 1).min(self.planning_session_tasks.len() - 1)
         };
-        self.review_selection_index = new_idx;
+        self.review_state.selection_index = new_idx;
     }
 
     fn cycle_task_status(&mut self) {
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+        let Some(task) = self
+            .planning_session_tasks
+            .get(self.review_state.selection_index)
+        else {
             return;
         };
         let workflow = &self.config.workflow;
@@ -2320,7 +2284,7 @@ impl App {
     fn set_task_start_date(&mut self, date: String) {
         let Some(task) = self
             .planning_session_tasks
-            .get_mut(self.review_selection_index)
+            .get_mut(self.review_state.selection_index)
         else {
             return;
         };
@@ -2336,7 +2300,7 @@ impl App {
     fn set_task_due_date(&mut self, date: String) {
         let Some(task) = self
             .planning_session_tasks
-            .get_mut(self.review_selection_index)
+            .get_mut(self.review_state.selection_index)
         else {
             return;
         };
@@ -2352,7 +2316,7 @@ impl App {
     fn set_task_assigned_to(&mut self, name: String) {
         let Some(task) = self
             .planning_session_tasks
-            .get_mut(self.review_selection_index)
+            .get_mut(self.review_state.selection_index)
         else {
             return;
         };
@@ -2372,7 +2336,7 @@ impl App {
     fn update_review_task_status(&mut self, new_status: &str) {
         let Some(task) = self
             .planning_session_tasks
-            .get_mut(self.review_selection_index)
+            .get_mut(self.review_state.selection_index)
         else {
             return;
         };
@@ -2395,7 +2359,10 @@ impl App {
     }
 
     fn toggle_rollover(&mut self) {
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+        let Some(task) = self
+            .planning_session_tasks
+            .get(self.review_state.selection_index)
+        else {
             return;
         };
         let uuid = &task.uuid;
@@ -2411,7 +2378,10 @@ impl App {
         if self.planning_session_tasks.is_empty() {
             return;
         }
-        let Some(task) = self.planning_session_tasks.get(self.review_selection_index) else {
+        let Some(task) = self
+            .planning_session_tasks
+            .get(self.review_state.selection_index)
+        else {
             return;
         };
 
@@ -2422,13 +2392,13 @@ impl App {
 
         // Remove from planning session tasks
         self.planning_session_tasks
-            .remove(self.review_selection_index);
+            .remove(self.review_state.selection_index);
 
         // Adjust selection index
-        if self.review_selection_index >= self.planning_session_tasks.len()
-            && self.review_selection_index > 0
+        if self.review_state.selection_index >= self.planning_session_tasks.len()
+            && self.review_state.selection_index > 0
         {
-            self.review_selection_index -= 1;
+            self.review_state.selection_index -= 1;
         }
 
         // Save session file
@@ -2668,7 +2638,7 @@ impl App {
             .map(WizardFocus::Field)
             .unwrap_or(WizardFocus::ConfirmButton);
 
-        self.template_field_state = Some(TemplateFieldState {
+        self.wizard_state.template = Some(TemplateFieldState {
             template_name: template_name.to_string(),
             fields,
             focus: initial_focus,
@@ -2678,7 +2648,8 @@ impl App {
 
         if let WizardFocus::Field(idx) = initial_focus {
             if let Some(field) = self
-                .template_field_state
+                .wizard_state
+                .template
                 .as_ref()
                 .and_then(|s| s.fields.get(idx))
             {
@@ -2759,11 +2730,11 @@ impl App {
     }
 
     fn confirm_template_field(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             match state.focus {
                 WizardFocus::CancelButton => {
                     // Cancel - return to tree view without creating
-                    self.template_field_state = None;
+                    self.wizard_state.template = None;
                     self.current_view = ViewType::TreeView;
                 }
                 WizardFocus::ConfirmButton => {
@@ -2815,7 +2786,7 @@ impl App {
                     let new_element_name = name.clone();
 
                     // Clear template state before calling load_tree_view_data
-                    self.template_field_state = None;
+                    self.wizard_state.template = None;
 
                     // Refresh the tree view to show the newly created element at current level
                     self.load_tree_view_data();
@@ -2911,39 +2882,6 @@ impl App {
         }
     }
 
-    fn save_planning_date_input_buffer(&mut self) {
-        // Use wizard state
-        if let Some(ref mut wizard) = self.planning_wizard {
-            wizard.input_buffer = self.input_buffer.clone();
-            wizard.sync_input_to_field();
-        }
-    }
-
-    fn load_planning_date_input_buffer(&mut self) {
-        // Use wizard state
-        if let Some(ref mut wizard) = self.planning_wizard {
-            wizard.sync_field_to_input();
-            self.input_buffer = wizard.input_buffer.clone();
-        }
-    }
-
-    fn calculate_suggested_end_date(&self) -> String {
-        // Use wizard state
-        if let Some(ref wizard) = self.planning_wizard {
-            wizard.calculate_suggested_end_date()
-        } else {
-            // Fallback calculation
-            let days = 7;
-            let start_date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-            chrono::NaiveDate::parse_from_str(&start_date_str, "%Y-%m-%d")
-                .ok()
-                .and_then(|d| d.checked_add_days(chrono::Days::new(days)))
-                .map(|d| d.format("%Y-%m-%d").to_string())
-                .unwrap_or_else(|| start_date_str)
-        }
-    }
-
     fn cycle_duration_left(&mut self) {
         // Use wizard state
         if let Some(ref mut wizard) = self.planning_wizard {
@@ -2965,10 +2903,11 @@ impl App {
             .map(|w| w.task_index)
             .unwrap_or(0);
         let filtered = self.get_filtered_tasks();
-        if !filtered.is_empty() && task_index > 0 {
-            if let Some(ref mut wizard) = self.planning_wizard {
-                wizard.task_index -= 1;
-            }
+        if !filtered.is_empty()
+            && task_index > 0
+            && let Some(ref mut wizard) = self.planning_wizard
+        {
+            wizard.task_index -= 1;
         }
     }
 
@@ -2980,10 +2919,10 @@ impl App {
             .unwrap_or(0);
         let filtered = self.get_filtered_tasks();
         let max_idx = filtered.len().saturating_sub(1);
-        if task_index < max_idx {
-            if let Some(ref mut wizard) = self.planning_wizard {
-                wizard.task_index += 1;
-            }
+        if task_index < max_idx
+            && let Some(ref mut wizard) = self.planning_wizard
+        {
+            wizard.task_index += 1;
         }
     }
 
@@ -3155,12 +3094,12 @@ impl App {
     }
 
     fn confirm_task_detail_wizard(&mut self) {
-        if let Some(ref mut wizard) = self.task_wizard {
-            if let Some(task) = task_wizard::confirm_task_detail_wizard(wizard) {
-                self.planning_session_tasks.push(task);
-                // Save after adding task
-                self.save_current_planning_session();
-            }
+        if let Some(ref mut wizard) = self.task_wizard
+            && let Some(task) = task_wizard::confirm_task_detail_wizard(wizard)
+        {
+            self.planning_session_tasks.push(task);
+            // Save after adding task
+            self.save_current_planning_session();
         }
 
         // Return to picker
@@ -3325,7 +3264,7 @@ mod tests {
             },
         ];
 
-        app.template_field_state = Some(TemplateFieldState {
+        app.wizard_state.template = Some(TemplateFieldState {
             template_name: "test".to_string(),
             fields,
             focus: WizardFocus::Field(0),
@@ -3344,14 +3283,14 @@ mod tests {
 
         // Verify both input_buffer and field.value are updated
         assert_eq!(app.input_buffer, "Hello");
-        if let Some(state) = &app.template_field_state {
+        if let Some(state) = &app.wizard_state.template {
             assert_eq!(state.fields[0].value, "Hello");
         }
 
         // Test backspace
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.input_buffer, "Hell");
-        if let Some(state) = &app.template_field_state {
+        if let Some(state) = &app.wizard_state.template {
             assert_eq!(state.fields[0].value, "Hell");
         }
     }
@@ -3417,10 +3356,10 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Fill in the project name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             // Find first editable field and set its value
             for field in &mut state.fields {
                 if field.is_editable {
@@ -3490,10 +3429,10 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Fill in the program name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             // Find first editable field and set its value
             for field in &mut state.fields {
                 if field.is_editable {
@@ -3568,7 +3507,7 @@ Test description
         app.start_new_project();
 
         // Fill in the project name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewProject".to_string();
@@ -3650,7 +3589,7 @@ Test description
         app.start_new_milestone();
 
         // Fill in the milestone name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewMilestone".to_string();
@@ -3758,7 +3697,7 @@ Test description
         app.start_new_task();
 
         // Fill in the task name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewTask".to_string();
@@ -3842,7 +3781,7 @@ Test description
         app.start_new_program();
 
         // Fill in the program name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable && field.placeholder == "NAME" {
                     field.value = "NewProgram".to_string();
@@ -3904,11 +3843,12 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Check that DESCRIPTION is in the wizard fields
         let has_description_field = app
-            .template_field_state
+            .wizard_state
+            .template
             .as_ref()
             .map(|state| state.fields.iter().any(|f| f.placeholder == "DESCRIPTION"))
             .unwrap_or(false);
@@ -3919,7 +3859,7 @@ Test description
         );
 
         // Fill in the program name and description
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.placeholder == "NAME" {
                     field.value = "TestProgram".to_string();
@@ -4417,7 +4357,7 @@ title: TestMilestone
         app.open_tree_item();
 
         assert_eq!(app.current_view, ViewType::TreeView);
-        assert!(app.template_field_state.is_none());
+        assert!(app.wizard_state.template.is_none());
     }
 
     #[test]

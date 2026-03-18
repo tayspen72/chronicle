@@ -180,7 +180,7 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::InputMilestone => views::render_input(f, app, area, "Enter milestone name:"),
         ViewType::InputTask => views::render_input(f, app, area, "Enter task name:"),
         ViewType::InputTemplateField => {
-            if let Some(ref state) = app.template_field_state {
+            if let Some(ref state) = app.wizard_state.template {
                 let prompt = format!("Fill in fields for: {}", state.template_name);
                 views::render_template_fields(f, app, area, &prompt);
             } else {

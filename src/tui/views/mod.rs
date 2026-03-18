@@ -217,7 +217,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
 
     // Collect tasks and build rows
     let is_review = app.mode == Mode::ReviewSession;
-    let selected_idx = app.review_selection_index;
+    let selected_idx = app.review_state.selection_index;
     let rolled_over = &app.rolled_over_tasks;
     let (rows, completed_count, total_count) =
         build_planning_rows(workflow_columns, is_review, selected_idx, rolled_over, app);
@@ -675,7 +675,7 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     use crate::tui::WizardFocus;
     use ratatui::layout::{Constraint, Layout};
 
-    let state = match app.template_field_state.as_ref() {
+    let state = match app.wizard_state.template.as_ref() {
         Some(s) => s,
         None => {
             render_input(f, app, area, prompt);
@@ -1622,7 +1622,7 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     let buttons = ["ADD MORE", "CONFIRM", "CANCEL"];
     let mut spans = Vec::new();
     for (i, label) in buttons.iter().enumerate() {
-        let style = if i == app.planning_preview_focus {
+        let style = if i == app.review_state.preview_focus {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightBlue)
