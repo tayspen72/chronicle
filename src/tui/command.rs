@@ -40,7 +40,6 @@ pub struct CommandMatch {
 
 /// State for the command palette.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct CommandPalette {
     pub input: String,
     pub matches: Vec<CommandMatch>,
@@ -49,7 +48,6 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     /// Creates a new command palette with all commands loaded.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             input: String::new(),
@@ -113,6 +111,24 @@ impl CommandPalette {
         self.input.clear();
         self.selection_index = 0;
         self.matches = get_command_list();
+    }
+
+    /// Filters commands based on input and current context.
+    pub fn filter_with_context(
+        &mut self,
+        current_program: Option<&str>,
+        current_project: Option<&str>,
+        current_milestone: Option<&str>,
+        has_programs: bool,
+    ) {
+        self.matches = filter_commands(
+            &self.input,
+            current_program,
+            current_project,
+            current_milestone,
+            has_programs,
+        );
+        self.selection_index = 0;
     }
 }
 

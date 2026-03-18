@@ -7,6 +7,33 @@
 //! TODO: Wire up these types to replace inline navigation handling in App.
 
 use crate::storage::DirectoryEntry;
+use crate::tui::tree::TreeModel;
+
+/// State for navigation (tree selection, sidebar, current scope).
+#[derive(Debug, Clone, Default)]
+pub struct NavigationState {
+    pub tree_model: TreeModel,
+    pub selected_entry_index: usize,
+    pub sidebar_items: Vec<SidebarItem>,
+    pub current_program: Option<String>,
+    pub current_project: Option<String>,
+    pub current_milestone: Option<String>,
+    pub current_task: Option<String>,
+}
+
+impl NavigationState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn selected_path(&self) -> &[String] {
+        self.tree_model.selected_path()
+    }
+
+    pub fn selected_depth(&self) -> usize {
+        self.tree_model.selected_depth()
+    }
+}
 
 /// Section of the sidebar.
 #[derive(Debug, Clone, PartialEq)]

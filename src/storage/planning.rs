@@ -1,21 +1,15 @@
+use crate::error::{PlanningError, Result};
 use crate::model::{PlanningSession, SessionStatus};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tracing::debug;
 
-pub type Result<T> = std::result::Result<T, PlanningError>;
+static PLANNING_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
-#[derive(Debug, thiserror::Error)]
-pub enum PlanningError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("YAML parse error: {0}")]
-    YamlParse(#[from] serde_yaml::Error),
-    #[error("Session not found: {0}")]
-    NotFound(String),
-    #[error("Invalid session file: {0}")]
-    InvalidFile(String),
+fn get_planning_lock() -> &'static std::sync::Mutex<()> {
+    PLANNING_LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 /// Generates a unique session UUID.
@@ -61,11 +55,29 @@ pub fn create_planning_session(
     end_date: &str,
     duration: &str,
 ) -> Result<PathBuf> {
+    let _lock = get_planning_lock()
+        .lock()
+        .map_err(|_| PlanningError::Locked)?;
+
     let dir = current_session_dir(workspace);
     fs::create_dir_all(&dir)?;
 
     let filename = format!("{}-planning.md", start_date);
     let target_path = dir.join(&filename);
+
+    if target_path.exists() {
+        return Err(
+            PlanningError::InvalidFile(format!("Session already exists: {}", filename)).into(),
+        );
+    }
+
+    let lock_path = dir.join(".lock");
+    let _lock_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)
+        .map_err(PlanningError::Io)?;
 
     let mut values = HashMap::new();
     values.insert("UUID".to_string(), uuid.to_string());
@@ -86,6 +98,8 @@ pub fn create_planning_session(
 }
 
 /// Saves a planning session to disk (overwrites existing).
+/// Note: For atomic operations, use create_planning_session or archive_planning_session
+/// which handle locking internally.
 pub fn save_planning_session(workspace: &Path, session: &PlanningSession) -> Result<PathBuf> {
     let dir = current_session_dir(workspace);
     fs::create_dir_all(&dir)?;
@@ -144,6 +158,10 @@ fn extract_frontmatter(content: &str) -> Result<String> {
 
 /// Archives a planning session by moving it to the history directory.
 pub fn archive_planning_session(workspace: &Path, start_date: &str) -> Result<PathBuf> {
+    let _lock = get_planning_lock()
+        .lock()
+        .map_err(|_| PlanningError::Locked)?;
+
     let current_dir = current_session_dir(workspace);
     let history_dir = history_session_dir(workspace);
     fs::create_dir_all(&history_dir)?;
@@ -153,7 +171,7 @@ pub fn archive_planning_session(workspace: &Path, start_date: &str) -> Result<Pa
     let history_path = history_dir.join(&filename);
 
     if !current_path.exists() {
-        return Err(PlanningError::NotFound(filename));
+        return Err(PlanningError::NotFound(filename).into());
     }
 
     // Update status to Archived before moving

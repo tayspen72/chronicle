@@ -171,10 +171,10 @@ impl PlanningWizardState {
             }
 
             // Compare dates using already-parsed values
-            if let (Ok(s), Ok(e)) = (start, end) {
-                if e < s {
-                    return Some("End date must be on or after start date".to_string());
-                }
+            if let (Ok(s), Ok(e)) = (start, end)
+                && e < s
+            {
+                return Some("End date must be on or after start date".to_string());
             }
         }
 

@@ -9,12 +9,13 @@ use std::path::{Component, Path, PathBuf};
 use crate::error::{Result, StorageError};
 use chrono::Local;
 
+#[derive(Clone, Debug)]
 pub struct JournalEntry {
     pub filename: String,
     pub path: PathBuf,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
