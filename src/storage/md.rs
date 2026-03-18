@@ -295,7 +295,7 @@ pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()
 }
 
 /// Update multiple fields in a task file's YAML frontmatter.
-/// Fields are: assigned_to, start_date, due_date, priority
+/// Fields are: status, assigned_to, start_date, due_date, priority
 pub fn update_task_fields(
     path: &std::path::Path,
     updates: std::collections::HashMap<&str, Option<String>>,
@@ -311,6 +311,9 @@ pub fn update_task_fields(
         return Err(Error::Model(ModelError::Parse("Not a task file".into())));
     };
 
+    if let Some(status) = updates.get("status") {
+        task.status = status.clone().unwrap_or_default();
+    }
     if let Some(assigned_to) = updates.get("assigned_to") {
         task.assigned_to = assigned_to.clone();
     }

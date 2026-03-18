@@ -415,14 +415,15 @@ impl App {
                     match self.review_state.preview_focus {
                         0 => self.add_more_tasks_to_session(),
                         1 => {
-                            // Activate session and start review
+                            // Save the planning session and return to Normal mode
                             self.planning_session.active = true;
                             if self.planning_session.uuid.is_none() {
                                 self.planning_session.uuid =
                                     Some(crate::storage::planning::generate_session_uuid());
                             }
                             self.save_current_planning_session();
-                            self.start_review_session();
+                            self.show_confirmation_message = true;
+                            self.return_from_view();
                         }
                         2 => self.cancel_planning_wizard(),
                         _ => {}
@@ -465,7 +466,10 @@ impl App {
                         }
                     }
                     KeyCode::Esc => {
-                        self.cancel_task_detail_wizard();
+                        // Escape jumps to CANCEL button
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            wizard.field_index = 8; // CancelButton index
+                        }
                     }
                     KeyCode::Char(c) => {
                         // Inline editing - type directly into the focused field
@@ -1993,14 +1997,16 @@ impl App {
 
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
 
-        // Save the session with selected tasks
-        self.save_current_planning_session();
+        // Generate UUID for the session if not already set (needed for preview)
+        if self.planning_session.uuid.is_none() {
+            self.planning_session.uuid = Some(generate_session_uuid());
+        }
 
-        // Clear wizard state and return to normal mode (skip review page)
-        self.planning_wizard = None;
-        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
-        self.mode = Mode::Normal;
-        self.current_view = ViewType::TreeView;
+        // Transition to PlanningPreview to show tasks and allow user to confirm/add more/cancel
+        // (not yet saved - will be saved on user confirmation)
+        self.mode = Mode::PlanningPreview;
+        self.current_view = ViewType::PlanningPreview;
+        self.review_state.preview_focus = 1; // Default to CONFIRM button
     }
 
     fn close_planning_session(&mut self) {
@@ -3080,9 +3086,32 @@ impl App {
         if let Some(ref mut wizard) = self.task_wizard
             && let Some(task) = task_wizard::confirm_task_detail_wizard(wizard)
         {
+            // Update task file on disk with any changes
+            let task_path = task.path.clone();
+            let updates = [
+                ("status", Some(task.status.clone())),
+                ("assigned_to", task.assigned_to.clone()),
+                ("start_date", task.start_date.clone()),
+                ("due_date", task.due_date.clone()),
+                ("priority", task.priority.clone()),
+            ];
+            let updates_map: std::collections::HashMap<&str, Option<String>> =
+                updates.iter().map(|(k, v)| (*k, v.clone())).collect();
+            if let Err(e) = crate::storage::md::update_task_fields(&task_path, updates_map) {
+                tracing::warn!("Failed to update task file: {}", e);
+            }
+
+            // Add task to planning session
             self.planning_session.tasks.push(task);
-            // Save after adding task
-            self.save_current_planning_session();
+
+            // Mark task as selected in picker so checkbox shows [x]
+            let path_str = task_path.to_string_lossy().to_string();
+            self.hierarchical_picker.selected_tasks.insert(path_str);
+
+            // Save session if UUID exists (finalized state)
+            if self.planning_session.uuid.is_some() {
+                self.save_current_planning_session();
+            }
         }
 
         // Return to picker

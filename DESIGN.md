@@ -92,21 +92,68 @@ The project follows a reasonable modular structure:
 | 8 | Error handling consistency | storage/planning.rs, error.rs | Pending |
 | 9 | Add integration tests | Various | Pending |
 
+### Recently Fixed (2026-03-17)
+
+- **Planning Preview Screen** - Pressing 'f' now shows Preview screen with three buttons (ADD TASKS TO PLAN, CONFIRM, CANCEL) instead of closing directly
+- **Removed Review Mode** - Simplified workflow: Preview → CONFIRM → saves and returns to Normal mode
+
 ### Known Bugs (TODO)
 
-1. **Planning Session Date Fields Not Editable**
-   - In the new planning session creator (start/end dates), the date fields should be editable but are not
-   - Location: Planning wizard / task detail wizard
+1. ~~**Planning Session Date Fields Not Editable**~~ - ✅ FIXED (2026-03-17)
+   - Date fields are now editable in the planning wizard
 
-2. **Task Selection Navigation UX**
-   - When selecting a task to add to plan, pressing Enter should move navigation down to the next row
-   - Currently toggles editable/non-editable on fields, cycles through a list incorrectly
-   - Expected: Fields editable, Enter jumps to next field, on final field jumps to "ADD TO PLAN", Escape jumps to "CANCEL"
+2. ~~**Task Selection Navigation UX**~~ - ✅ FIXED (2026-03-17)
+   - Enter now properly navigates through fields
+   - On final editable field (Description), Enter jumps to "ADD TO PLAN" button
+   - Escape jumps to "CANCEL" button
 
-3. **Add to Plan Not Working**
-   - After selecting "ADD TO PLAN" on a task, the checkbox is not set
-   - Task does not actually appear in the plan
-   - Location: Task picker / planning wizard
+3. ~~**Add to Plan Not Working**~~ - ✅ FIXED (2026-03-17)
+   - Task file is now updated on disk with any changes (status, dates, priority)
+   - Task UUID is added to planning session
+   - Checkbox correctly shows [x] after adding
+
+---
+
+## Task Selection Workflow (2026-03-17)
+
+This workflow describes how users add tasks to a planning session. **Space bar is NOT used for selection.**
+
+### Flow
+1. User starts a new planning session (via command palette or key binding)
+2. User navigates through Programs → Projects → Milestones → Tasks
+3. At Tasks level, user presses **Enter** on a task to open the Task Detail Wizard
+4. User can edit task fields:
+   - **Task Name** (display only, not editable)
+   - **Status** - press Enter to cycle through workflow statuses
+   - **Assigned To** - type to edit
+   - **Start Date** - type to edit (YYYY-MM-DD format)
+   - **Due Date** - type to edit (YYYY-MM-DD format)
+   - **Priority** - press Enter to cycle (low → medium → high)
+   - **Description** - type to edit
+5. User navigates to **ADD TO PLAN** button and presses Enter
+6. **On confirm**:
+   - Task file is updated on disk with any changes
+   - Task UUID is added to planning session
+   - Checkbox shows [x] in the task list
+   - User returns to task picker to add more tasks
+7. Press **f** to finish and view the Preview screen
+
+### Preview Screen
+After pressing **f**, the Preview screen shows:
+- List of selected tasks with their details (program, project, milestone, dates, priority)
+- Three buttons at the bottom:
+  - **ADD TASKS TO PLAN** - returns to task picker to add more tasks
+  - **CONFIRM** - saves the planning session and returns to Normal mode
+  - **CANCEL** - cancels the planning session and returns to Normal mode
+
+### Key Behaviors
+- **Enter** on task at Tasks level → Opens Task Detail Wizard
+- **Enter** in wizard → Cycles status/priority OR advances to next field OR confirms ADD TO PLAN
+- **Escape** → Jumps to CANCEL button (does NOT immediately cancel)
+- **Space** → Does nothing (no direct task selection)
+- **f** → Shows Preview screen with task list and action buttons
+- **CONFIRM** in Preview → Saves session and returns to Normal mode
+- **CANCEL** in Preview → Cancels session and returns to Normal mode
 
 ---
 
@@ -751,10 +798,14 @@ In `confirm_template_field`, the `target_path` field was initialized as `None` w
 
 | Date | Event |
 |------|-------|
+| 2026-03-17 | Bug fix: Planning session Preview screen now shows with ADD TASKS TO PLAN, CONFIRM, CANCEL buttons |
+| 2026-03-17 | Bug fix: Task detail wizard properly updates task file on disk when adding to plan |
+| 2026-03-17 | Bug fix: Task selection UX improved - Enter navigates fields, Escape jumps to Cancel |
+| 2026-03-17 | Refactor: Removed Review mode from planning workflow - Preview directly saves on CONFIRM |
 | 2026-03-06 | Bug fix: Navigator now stays at parent level after element creation, /refresh command added |
 | 2026-03-05 | Bug fix: Element creation not working - `target_path` was never set, now computes path based on element type and context |
 | 2026-03-05 | Bug fix: Navigator not refreshing on element creation - added missing `load_tree_view_data()` call and fixed name key lookup |
-| 2026-03-05 | Sprint `fix/wizard-template-formats` complete - UUID placeholder support, inline YAML templates |
+| 2026-03-05 | Sprint `fix/wizard_template_formats` complete - UUID placeholder support, inline YAML templates |
 | 2026-03-04 | Corrected architecture assessment - command.rs and navigation.rs are NOT empty |
 | 2026-03-03 | Created DESIGN.md with actual codebase assessment |
 | 2026-03-03 | Created branch `feat/app-modes` |

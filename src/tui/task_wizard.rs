@@ -146,7 +146,7 @@ pub fn cycle_task_wizard_field_or_next(wizard: &mut TaskWizardState, workflow: &
                 wizard.next_field();
             }
             5 => {
-                // Cycle priority
+                // Cycle priority, then move to next field
                 let priorities = ["low", "medium", "high"];
                 let current = task.priority.clone().unwrap_or_default();
                 let current_idx = priorities
@@ -157,6 +157,11 @@ pub fn cycle_task_wizard_field_or_next(wizard: &mut TaskWizardState, workflow: &
                 if let Some(ref mut t) = wizard.task {
                     t.priority = Some(priorities[next_idx].to_string());
                 }
+                wizard.next_field();
+            }
+            6 => {
+                // Description - move to ADD TO PLAN button
+                wizard.next_field();
             }
             _ => {}
         }

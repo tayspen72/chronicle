@@ -1620,7 +1620,7 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     );
     f.render_widget(tasks_para, chunks[1]);
 
-    let buttons = ["ADD MORE", "CONFIRM", "CANCEL"];
+    let buttons = ["ADD TASKS TO PLAN", "CONFIRM", "CANCEL"];
     let mut spans = Vec::new();
     for (i, label) in buttons.iter().enumerate() {
         let style = if i == app.review_state.preview_focus {
