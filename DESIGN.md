@@ -39,10 +39,19 @@ The project follows a reasonable modular structure:
 
 ### Technical Debt
 
-1. **App Struct is a God Object**
+1. **App Struct Refactoring (IN PROGRESS)**
    - Manages UI rendering, input handling, navigation, planning state, wizard state
-   - ~4200 lines in single file
-   - Hard to test, difficult to understand
+   - Was ~4200 lines, reduced through extractions
+
+   **Completed Extractions (app_struct_refactor branch):**
+   - ✅ NavigationState (tree_model, sidebar_items, selected_entry_index, current_*)
+   - ✅ WizardState (template_field_state)
+   - ✅ ReviewState (review_selection_index, review_input_focus, planning_preview_focus)
+   - ✅ PlanningSessionState (active, uuid, tasks, start_date, due_date, rolled_over_tasks)
+   - ✅ CommandState (input, matches, selection_index) - wired up existing CommandPalette
+
+   **Remaining to Extract:**
+   - TreeData (programs, projects, milestones, tasks, subtasks) - ~221 refs
 
 2. **Duplicate Error Types**
    - `PlanningError` in `storage/planning.rs` not integrated into main `Error` hierarchy
@@ -71,13 +80,17 @@ The project follows a reasonable modular structure:
 
 ### Recommendations
 
-| Priority | Issue | Files to Modify |
-|----------|-------|----------------|
-| 1 | Refactor App struct | tui/mod.rs (split into modules) |
-| 2 | Wire up existing abstractions | command.rs, navigation.rs |
-| 3 | Fix navigation bug | tui/mod.rs:819-842 |
-| 4 | Error handling consistency | storage/planning.rs, error.rs |
-| 5 | Add integration tests | Various |
+| Priority | Issue | Files to Modify | Status |
+|----------|-------|----------------|--------|
+| 1 | Extract NavigationState | tui/navigation.rs | ✅ Complete |
+| 2 | Extract WizardState | tui/wizard.rs | ✅ Complete |
+| 3 | Extract ReviewState | tui/review.rs | ✅ Complete |
+| 4 | Extract PlanningSessionState | tui/planning_session.rs | ✅ Complete |
+| 5 | Wire up CommandPalette | tui/command.rs | ✅ Complete |
+| 6 | Extract TreeData | tui/mod.rs (programs, projects, etc.) | Pending |
+| 7 | Fix navigation bug | tui/mod.rs:819-842 | Pending |
+| 8 | Error handling consistency | storage/planning.rs, error.rs | Pending |
+| 9 | Add integration tests | Various | Pending |
 
 ---
 
