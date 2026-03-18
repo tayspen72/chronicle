@@ -1,10 +1,10 @@
 use super::views;
 use crate::tui::{App, Mode, ViewType};
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
 };
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -81,78 +81,82 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let idx = app.navigation_state.selected_entry_index;
     let in_selection_mode = app.mode == Mode::TaskSelection;
 
-    let items: Vec<ListItem> =
-        app.navigation_state
-            .sidebar_items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                let is_selected = i == idx;
-                let indent_str = "    ".repeat(item.indent);
+    let items: Vec<ListItem> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let is_selected = i == idx;
+            let indent_str = "    ".repeat(item.indent);
 
-                // Determine checkbox prefix for TaskSelection mode
-                let checkbox_prefix = (in_selection_mode && !item.is_header && item.indent >= 3)
-                    .then(|| {
-                        let is_selected = item.path.as_ref().is_some_and(|p| {
-                            app.planning_session_tasks.iter().any(|t| t.path == *p)
-                        });
-                        if is_selected { "[x] " } else { "[ ] " }
+            // Determine checkbox prefix for TaskSelection mode
+            let checkbox_prefix =
+                (in_selection_mode && !item.is_header && item.indent >= 3).then(|| {
+                    let is_selected = item.path.as_ref().is_some_and(|p| {
+                        app.planning_session.is_path_selected(&p.to_string_lossy())
                     });
-
-                let prefix = if item.is_header || item.indent == 0 {
-                    item.name.clone()
-                } else {
-                    let is_last = app
-                        .navigation_state
-                        .sidebar_items
-                        .iter()
-                        .skip(i + 1)
-                        .take_while(|p| p.indent == item.indent)
-                        .next()
-                        .is_none();
-                    if is_last {
-                        format!("└── {}", item.name)
-                    } else {
-                        format!("├── {}", item.name)
-                    }
-                };
-
-                let full_label = if let Some(cb) = checkbox_prefix {
-                    format!(
-                        "{}{}{}",
-                        indent_str,
-                        cb,
-                        prefix.trim_start_matches("└── ").trim_start_matches("├── ")
-                    )
-                } else {
-                    format!("{}{}", indent_str, prefix)
-                };
-
-                let style = if item.is_header {
-                    Style::default().fg(Color::DarkGray)
-                } else if item.is_create_action {
-                    // Style create action items with dimmed cyan to indicate it's an action
                     if is_selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                        "[x] "
                     } else {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(ratatui::style::Modifier::ITALIC)
+                        "[ ] "
                     }
-                } else if is_selected {
+                });
+
+            let prefix = if item.is_header || item.indent == 0 {
+                item.name.clone()
+            } else {
+                let is_last = app
+                    .navigation_state
+                    .sidebar_items
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|p| p.indent == item.indent)
+                    .next()
+                    .is_none();
+                if is_last {
+                    format!("└── {}", item.name)
+                } else {
+                    format!("├── {}", item.name)
+                }
+            };
+
+            let full_label = if let Some(cb) = checkbox_prefix {
+                format!(
+                    "{}{}{}",
+                    indent_str,
+                    cb,
+                    prefix.trim_start_matches("└── ").trim_start_matches("├── ")
+                )
+            } else {
+                format!("{}{}", indent_str, prefix)
+            };
+
+            let style = if item.is_header {
+                Style::default().fg(Color::DarkGray)
+            } else if item.is_create_action {
+                // Style create action items with dimmed cyan to indicate it's an action
+                if is_selected {
                     Style::default()
                         .fg(Color::Black)
-                        .bg(Color::LightBlue)
-                        .add_modifier(ratatui::style::Modifier::BOLD)
+                        .bg(Color::Cyan)
+                        .add_modifier(ratatui::style::Modifier::ITALIC)
                 } else {
-                    Style::default().fg(Color::White)
-                };
-                ListItem::new(full_label).style(style)
-            })
-            .collect();
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                }
+            } else if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightBlue)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(full_label).style(style)
+        })
+        .collect();
 
     let list = List::new(items)
         .block(

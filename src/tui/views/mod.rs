@@ -3,11 +3,11 @@
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::{App, Mode};
 use ratatui::{
-    Frame,
     layout::Constraint,
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
+    Frame,
 };
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -59,10 +59,9 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 match plan_type.as_str() {
                     "WeeklyPlanning" => {
                         title = "Current Plan".to_string();
-                        if app.planning_session_active {
-                            let start = app.planning_session_start_date.as_deref().unwrap_or("?");
-                            let end = app.planning_session_due_date.as_deref().unwrap_or("?");
-                            let count = app.planning_session_tasks.len();
+                        if app.planning_session.active {
+                            let (start, end) = app.planning_session.date_range();
+                            let count = app.planning_session.task_count();
                             content_to_show = format!(
                                 "# Current Plan\n\n\
                                 Period: {} to {}\n\
@@ -218,7 +217,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
     // Collect tasks and build rows
     let is_review = app.mode == Mode::ReviewSession;
     let selected_idx = app.review_state.selection_index;
-    let rolled_over = &app.rolled_over_tasks;
+    let rolled_over = &app.planning_session.rolled_over_tasks;
     let (rows, completed_count, total_count) =
         build_planning_rows(workflow_columns, is_review, selected_idx, rolled_over, app);
 
@@ -238,7 +237,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
 
     let title = if app.mode == Mode::ReviewSession {
         format!("Review Session [{}/{}]", completed_count, total_count)
-    } else if app.planning_session_active {
+    } else if app.planning_session.active {
         format!("Current Plan [{}/{}]", completed_count, total_count)
     } else {
         "Current Plan".to_string()
@@ -317,15 +316,17 @@ fn build_planning_rows(
     rolled_over: &[String],
     app: &App,
 ) -> (Vec<Row<'static>>, usize, usize) {
-    if app.planning_session_active && !app.planning_session_tasks.is_empty() {
-        let total = app.planning_session_tasks.len();
+    if app.planning_session.active && app.planning_session.has_tasks() {
+        let total = app.planning_session.task_count();
         let completed = app
-            .planning_session_tasks
+            .planning_session
+            .tasks
             .iter()
             .filter(|t| t.status == "done" || t.status == "complete")
             .count();
         let rows: Vec<Row> = app
-            .planning_session_tasks
+            .planning_session
+            .tasks
             .iter()
             .enumerate()
             .map(|(i, t)| {
@@ -342,7 +343,7 @@ fn build_planning_rows(
             })
             .collect();
         (rows, completed, total)
-    } else if app.planning_session_active {
+    } else if app.planning_session.active {
         // Active session but no tasks selected
         let mut cells = vec![
             Cell::from("No tasks selected"),
@@ -1357,11 +1358,7 @@ pub fn render_planning_task_picker(f: &mut Frame, app: &App, area: ratatui::layo
             .add_modifier(ratatui::style::Modifier::BOLD),
     )]);
     let date_info = Line::from(Span::styled(
-        format!(
-            "{} → {}",
-            app.planning_session_start_date.as_deref().unwrap_or("?"),
-            app.planning_session_due_date.as_deref().unwrap_or("?")
-        ),
+        app.planning_session.format_date_range(),
         Style::default().fg(Color::DarkGray),
     ));
     let header = Paragraph::new(vec![prompt_line, date_info]);
@@ -1487,7 +1484,11 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
             let check_prefix = if is_task_level {
                 let path_str = item.path.to_string_lossy().to_string();
                 let is_selected = picker.selected_tasks.contains(&path_str);
-                if is_selected { "[x] " } else { "[ ] " }
+                if is_selected {
+                    "[x] "
+                } else {
+                    "[ ] "
+                }
             } else {
                 ""
             };
@@ -1528,7 +1529,7 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
         PickerLevel::Milestones => "↑/↓: Navigate | Enter: Select | ←/→: Back/Forward | Esc: Back",
         PickerLevel::Tasks => "↑/↓: Navigate | Enter: Add Task | Esc: Back",
     };
-    let session_task_count = app.planning_session_tasks.len();
+    let session_task_count = app.planning_session.task_count();
     let count_text = if session_task_count > 0 && picker.is_wizard_mode {
         format!("{} | f: Finish | Tasks: {}", hint_text, session_task_count)
     } else {
@@ -1561,8 +1562,8 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
             .add_modifier(ratatui::style::Modifier::BOLD),
     )]);
     let date_range = if let (Some(start), Some(end)) = (
-        &app.planning_session_start_date,
-        &app.planning_session_due_date,
+        &app.planning_session.start_date,
+        &app.planning_session.due_date,
     ) {
         format!("{} → {}", start, end)
     } else {
@@ -1575,7 +1576,7 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     let header = Paragraph::new(vec![title, subtitle]);
     f.render_widget(header, chunks[0]);
 
-    let tasks = &app.planning_session_tasks;
+    let tasks = &app.planning_session.tasks;
     let task_count = tasks.len();
     let task_lines: Vec<Line> = if task_count == 0 {
         vec![Line::from(Span::styled(

@@ -3,6 +3,7 @@ pub mod command;
 pub mod hierarchical_picker;
 pub mod layout;
 pub mod navigation;
+pub mod planning_session;
 pub mod planning_wizard;
 pub mod review;
 pub mod task_wizard;
@@ -39,6 +40,7 @@ use chrono::Local;
 use command::{CommandAction, CommandMatch, get_command_list};
 use hierarchical_picker::HierarchicalPickerState;
 use navigation::{NavigationState, SidebarItem, SidebarSection};
+use planning_session::PlanningSessionState;
 use planning_wizard::PlanningDateFocus;
 use review::ReviewState;
 use wizard::{FieldInfo, TemplateFieldState, WizardFocus, WizardState};
@@ -110,13 +112,7 @@ pub struct App {
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
     pub wizard_state: WizardState,
-    // Planning session state
-    pub planning_session_active: bool,
-    pub planning_session_uuid: Option<String>,
-    pub planning_session_tasks: Vec<SelectedTask>,
-    pub planning_session_start_date: Option<String>,
-    pub planning_session_due_date: Option<String>,
-    pub rolled_over_tasks: Vec<String>,
+    pub planning_session: PlanningSessionState,
     pub review_state: ReviewState,
     // Hierarchical task picker state
     pub hierarchical_picker: HierarchicalPickerState,
@@ -156,12 +152,7 @@ impl App {
             selected_content: None,
             current_content_text: None,
             wizard_state: WizardState::new(),
-            planning_session_active: false,
-            planning_session_uuid: None,
-            planning_session_tasks: Vec::new(),
-            planning_session_start_date: None,
-            planning_session_due_date: None,
-            rolled_over_tasks: Vec::new(),
+            planning_session: PlanningSessionState::new(),
             review_state: ReviewState::new(),
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
@@ -234,7 +225,7 @@ impl App {
                     self.toggle_task_selection();
                 }
                 KeyCode::Enter => {
-                    if !self.planning_session_tasks.is_empty() {
+                    if self.planning_session.has_tasks() {
                         self.mode = Mode::Normal;
                         self.current_view = ViewType::WeeklyPlanning;
                     }
@@ -273,7 +264,7 @@ impl App {
                     if !self.hierarchical_picker.go_back() {
                         // At root level - only cancel if no tasks selected or in session
                         let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
-                        let has_session_tasks = !self.planning_session_tasks.is_empty();
+                        let has_session_tasks = self.planning_session.has_tasks();
                         if !has_picker_tasks && !has_session_tasks {
                             self.cancel_planning_wizard();
                         }
@@ -306,7 +297,7 @@ impl App {
                 KeyCode::Char('f') => {
                     // 'f' for "Finish plan" - finalize if in wizard mode with tasks
                     let has_picker_selections = !self.hierarchical_picker.selected_tasks.is_empty();
-                    let has_session_tasks = !self.planning_session_tasks.is_empty();
+                    let has_session_tasks = self.planning_session.has_tasks();
                     if (has_picker_selections || has_session_tasks)
                         && self.hierarchical_picker.is_wizard_mode
                     {
@@ -317,7 +308,7 @@ impl App {
                     if !self.hierarchical_picker.go_back() {
                         // At root level - only cancel if no tasks selected or in session
                         let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
-                        let has_session_tasks = !self.planning_session_tasks.is_empty();
+                        let has_session_tasks = self.planning_session.has_tasks();
                         if !has_picker_tasks && !has_session_tasks {
                             self.cancel_planning_wizard();
                         }
@@ -329,7 +320,7 @@ impl App {
                     if !self.hierarchical_picker.go_back() {
                         // At root level - only cancel if no tasks selected or in session
                         let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
-                        let has_session_tasks = !self.planning_session_tasks.is_empty();
+                        let has_session_tasks = self.planning_session.has_tasks();
                         if !has_picker_tasks && !has_session_tasks {
                             self.cancel_planning_wizard();
                         }
@@ -371,7 +362,7 @@ impl App {
                     // Set assigned to - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session_tasks
+                        .planning_session.tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.assigned_to.clone())
                         .unwrap_or_default();
@@ -380,7 +371,7 @@ impl App {
                     // Set start date - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session_tasks
+                        .planning_session.tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.start_date.clone())
                         .unwrap_or_default();
@@ -389,7 +380,7 @@ impl App {
                     // Set due date - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session_tasks
+                        .planning_session.tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.due_date.clone())
                         .unwrap_or_default();
@@ -431,9 +422,9 @@ impl App {
                         0 => self.add_more_tasks_to_session(),
                         1 => {
                             // Activate session and start review
-                            self.planning_session_active = true;
-                            if self.planning_session_uuid.is_none() {
-                                self.planning_session_uuid =
+                            self.planning_session.active = true;
+                            if self.planning_session.uuid.is_none() {
+                                self.planning_session.uuid =
                                     Some(crate::storage::planning::generate_session_uuid());
                             }
                             self.save_current_planning_session();
@@ -1727,7 +1718,7 @@ impl App {
 
     fn start_planning_session(&mut self) {
         // If a session already exists, go directly to the task picker to edit it
-        if self.planning_session_active {
+        if self.planning_session.active {
             self.open_hierarchical_task_picker_for_existing_session();
             return;
         }
@@ -1878,8 +1869,8 @@ impl App {
         wizard.date_error = None;
 
         // Set session dates
-        self.planning_session_start_date = Some(start_date.format("%Y-%m-%d").to_string());
-        self.planning_session_due_date = Some(due_date);
+        self.planning_session.start_date = Some(start_date.format("%Y-%m-%d").to_string());
+        self.planning_session.due_date = Some(due_date);
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
         self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
         self.mode = Mode::HierarchicalSelection;
@@ -1888,12 +1879,12 @@ impl App {
 
     fn finalize_planning_session(&mut self) {
         let uuid = generate_session_uuid();
-        self.planning_session_uuid = Some(uuid.clone());
-        self.planning_session_active = true;
+        self.planning_session.uuid = Some(uuid.clone());
+        self.planning_session.active = true;
 
         // If tasks are already loaded (from picker flow), use them; otherwise load from UUIDs
-        if self.planning_session_tasks.is_empty() {
-            self.rolled_over_tasks.clear();
+        if !self.planning_session.has_tasks() {
+            self.planning_session.rolled_over_tasks.clear();
             let all_tasks = self.load_all_tasks();
             // Get selected tasks from wizard state
             let selected_uuids: Vec<String> = self
@@ -1904,7 +1895,7 @@ impl App {
 
             for task_uuid in selected_uuids {
                 if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
-                    self.planning_session_tasks.push(SelectedTask {
+                    self.planning_session.tasks.push(SelectedTask {
                         uuid: meta.uuid.clone(),
                         path: meta.path.clone(),
                         program: meta.program.clone(),
@@ -1925,7 +1916,7 @@ impl App {
             if let Some(ref mut wizard) = self.planning_wizard {
                 wizard.selected_tasks.clear();
             }
-            self.rolled_over_tasks.clear();
+            self.planning_session.rolled_over_tasks.clear();
         }
 
         if let Err(e) = create_planning_session(
@@ -1933,11 +1924,11 @@ impl App {
             &uuid,
             &format!(
                 "Plan for {}",
-                self.planning_session_start_date.as_ref().unwrap()
+                self.planning_session.start_date.as_ref().unwrap()
             ),
             &chrono::Local::now().format("%Y-%m-%d").to_string(),
-            self.planning_session_start_date.as_ref().unwrap(),
-            self.planning_session_due_date.as_ref().unwrap(),
+            self.planning_session.start_date.as_ref().unwrap(),
+            self.planning_session.due_date.as_ref().unwrap(),
             self.planning_wizard
                 .as_ref()
                 .map(|w| w.duration.as_str())
@@ -1956,7 +1947,7 @@ impl App {
         use crate::storage::md::parse_element;
 
         let existing_uuids: std::collections::HashSet<String> = self
-            .planning_session_tasks
+            .planning_session.tasks
             .iter()
             .map(|t| t.uuid.clone())
             .collect();
@@ -1972,7 +1963,7 @@ impl App {
                     continue; // Already in session, skip
                 }
 
-                self.planning_session_tasks.push(SelectedTask {
+                self.planning_session.tasks.push(SelectedTask {
                     uuid: uuid.clone(),
                     path: path.clone(),
                     program: self
@@ -2019,24 +2010,24 @@ impl App {
     }
 
     fn close_planning_session(&mut self) {
-        if !self.planning_session_active {
+        if !self.planning_session.active {
             println!("No active planning session to close.");
             return;
         }
 
-        let rolled_tasks = std::mem::take(&mut self.rolled_over_tasks);
+        let rolled_tasks = std::mem::take(&mut self.planning_session.rolled_over_tasks);
 
-        if let Some(start_date) = &self.planning_session_start_date
+        if let Some(start_date) = &self.planning_session.start_date
             && let Err(e) = archive_planning_session(&self.config.workspace, start_date)
         {
             eprintln!("Failed to archive planning session: {e}");
         }
 
-        self.planning_session_active = false;
-        self.planning_session_uuid = None;
-        self.planning_session_start_date = None;
-        self.planning_session_due_date = None;
-        self.planning_session_tasks.clear();
+        self.planning_session.active = false;
+        self.planning_session.uuid = None;
+        self.planning_session.start_date = None;
+        self.planning_session.due_date = None;
+        self.planning_session.tasks.clear();
 
         if !rolled_tasks.is_empty() {
             self.start_planning_session_with_rolled_tasks(rolled_tasks);
@@ -2061,21 +2052,21 @@ impl App {
 
         // Start a fresh session and add the rolled tasks
         self.start_planning_session();
-        self.planning_session_tasks = tasks;
-        self.rolled_over_tasks = task_uuids;
+        self.planning_session.tasks = tasks;
+        self.planning_session.rolled_over_tasks = task_uuids;
         self.save_current_planning_session();
         self.mode = Mode::Normal;
         self.current_view = ViewType::WeeklyPlanning;
     }
 
     fn save_current_planning_session(&mut self) {
-        let Some(uuid) = &self.planning_session_uuid else {
+        let Some(uuid) = &self.planning_session.uuid else {
             return;
         };
-        let Some(start_date) = &self.planning_session_start_date else {
+        let Some(start_date) = &self.planning_session.start_date else {
             return;
         };
-        let Some(due_date) = &self.planning_session_due_date else {
+        let Some(due_date) = &self.planning_session.due_date else {
             return;
         };
 
@@ -2090,7 +2081,7 @@ impl App {
             duration: self.config.planning_duration.clone(),
             status: SessionStatus::Active,
             tasks: self
-                .planning_session_tasks
+                .planning_session.tasks
                 .iter()
                 .map(|t| t.uuid.clone())
                 .collect(),
@@ -2129,13 +2120,13 @@ impl App {
         let Some(task) = selected_task else { return };
 
         if let Some(pos) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .iter()
             .position(|t| t.uuid == task.uuid)
         {
-            self.planning_session_tasks.remove(pos);
+            self.planning_session.tasks.remove(pos);
         } else {
-            self.planning_session_tasks.push(task);
+            self.planning_session.tasks.push(task);
         }
 
         // Save session to file
@@ -2176,7 +2167,7 @@ impl App {
 
     fn cancel_task_selection(&mut self) {
         // Delete the planning session file if it exists
-        if let Some(start_date) = &self.planning_session_start_date {
+        if let Some(start_date) = &self.planning_session.start_date {
             let path = self
                 .config
                 .workspace
@@ -2190,11 +2181,11 @@ impl App {
             }
         }
 
-        self.planning_session_active = false;
-        self.planning_session_uuid = None;
-        self.planning_session_tasks.clear();
-        self.planning_session_start_date = None;
-        self.planning_session_due_date = None;
+        self.planning_session.active = false;
+        self.planning_session.uuid = None;
+        self.planning_session.tasks.clear();
+        self.planning_session.start_date = None;
+        self.planning_session.due_date = None;
         self.mode = Mode::Normal;
     }
 
@@ -2244,29 +2235,29 @@ impl App {
     }
 
     fn start_review_session(&mut self) {
-        if !self.planning_session_active || self.planning_session_tasks.is_empty() {
+        if !self.planning_session.active || !self.planning_session.has_tasks() {
             return;
         }
         self.review_state.reset();
-        self.rolled_over_tasks.clear();
+        self.planning_session.rolled_over_tasks.clear();
         self.mode = Mode::ReviewSession;
     }
 
     fn navigate_review(&mut self, direction: isize) {
-        if self.planning_session_tasks.is_empty() {
+        if !self.planning_session.has_tasks() {
             return;
         }
         let new_idx = if direction < 0 {
             self.review_state.selection_index.saturating_sub(1)
         } else {
-            (self.review_state.selection_index + 1).min(self.planning_session_tasks.len() - 1)
+            (self.review_state.selection_index + 1).min(self.planning_session.tasks.len() - 1)
         };
         self.review_state.selection_index = new_idx;
     }
 
     fn cycle_task_status(&mut self) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get(self.review_state.selection_index)
         else {
             return;
@@ -2283,7 +2274,7 @@ impl App {
 
     fn set_task_start_date(&mut self, date: String) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2299,7 +2290,7 @@ impl App {
 
     fn set_task_due_date(&mut self, date: String) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2315,7 +2306,7 @@ impl App {
 
     fn set_task_assigned_to(&mut self, name: String) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2335,7 +2326,7 @@ impl App {
 
     fn update_review_task_status(&mut self, new_status: &str) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2360,42 +2351,42 @@ impl App {
 
     fn toggle_rollover(&mut self) {
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get(self.review_state.selection_index)
         else {
             return;
         };
         let uuid = &task.uuid;
 
-        if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == uuid) {
-            self.rolled_over_tasks.remove(pos);
+        if let Some(pos) = self.planning_session.rolled_over_tasks.iter().position(|u| u == uuid) {
+            self.planning_session.rolled_over_tasks.remove(pos);
         } else {
-            self.rolled_over_tasks.push(uuid.clone());
+            self.planning_session.rolled_over_tasks.push(uuid.clone());
         }
     }
 
     fn remove_task_from_session(&mut self) {
-        if self.planning_session_tasks.is_empty() {
+        if !self.planning_session.has_tasks() {
             return;
         }
         let Some(task) = self
-            .planning_session_tasks
+            .planning_session.tasks
             .get(self.review_state.selection_index)
         else {
             return;
         };
 
         // Remove from rolled_over if present
-        if let Some(pos) = self.rolled_over_tasks.iter().position(|u| u == &task.uuid) {
-            self.rolled_over_tasks.remove(pos);
+        if let Some(pos) = self.planning_session.rolled_over_tasks.iter().position(|u| u == &task.uuid) {
+            self.planning_session.rolled_over_tasks.remove(pos);
         }
 
         // Remove from planning session tasks
-        self.planning_session_tasks
+        self.planning_session.tasks
             .remove(self.review_state.selection_index);
 
         // Adjust selection index
-        if self.review_state.selection_index >= self.planning_session_tasks.len()
+        if self.review_state.selection_index >= self.planning_session.tasks.len()
             && self.review_state.selection_index > 0
         {
             self.review_state.selection_index -= 1;
@@ -2433,16 +2424,16 @@ impl App {
         };
 
         // Restore session state
-        self.planning_session_active = true;
-        self.planning_session_uuid = Some(session.uuid);
-        self.planning_session_start_date = Some(session.start_date);
-        self.planning_session_due_date = Some(session.end_date);
+        self.planning_session.active = true;
+        self.planning_session.uuid = Some(session.uuid);
+        self.planning_session.start_date = Some(session.start_date);
+        self.planning_session.due_date = Some(session.end_date);
 
         // Rebuild task list from UUIDs by loading tasks on-demand
         let all_tasks = self.load_all_tasks();
         for uuid in &session.tasks {
             if let Some(meta) = all_tasks.iter().find(|t| &t.uuid == uuid).cloned() {
-                self.planning_session_tasks.push(SelectedTask::from(meta));
+                self.planning_session.tasks.push(SelectedTask::from(meta));
             }
         }
     }
@@ -3097,7 +3088,7 @@ impl App {
         if let Some(ref mut wizard) = self.task_wizard
             && let Some(task) = task_wizard::confirm_task_detail_wizard(wizard)
         {
-            self.planning_session_tasks.push(task);
+            self.planning_session.tasks.push(task);
             // Save after adding task
             self.save_current_planning_session();
         }
