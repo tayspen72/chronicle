@@ -1,10 +1,6 @@
 //! Command palette module.
 //!
 //! Handles command palette state, filtering, and execution.
-//!
-//! NOTE: This module contains extracted types and logic for the command palette.
-//! The App struct in mod.rs still has inline implementations that duplicate this logic.
-//! TODO: Wire up CommandPalette to replace inline command handling in App.
 
 use crossterm::event::KeyCode;
 
@@ -60,7 +56,6 @@ impl CommandPalette {
     ///
     /// Returns `Some(CommandMatch)` when a command is executed,
     /// `None` otherwise.
-    #[allow(dead_code)]
     pub fn handle_input(&mut self, code: KeyCode) -> Option<CommandMatch> {
         match code {
             KeyCode::Char(c) => {
@@ -99,21 +94,25 @@ impl CommandPalette {
     }
 
     /// Closes the command palette and resets its state.
-    #[allow(dead_code)]
     pub fn close(&mut self) {
         self.input.clear();
         self.selection_index = 0;
     }
 
     /// Opens the command palette and resets the input.
-    #[allow(dead_code)]
     pub fn open(&mut self) {
         self.input.clear();
         self.selection_index = 0;
         self.matches = get_command_list();
     }
 
-    /// Filters commands based on input and current context.
+    /// Filters commands based on current input (simple filter without context).
+    pub fn filter(&mut self) {
+        self.matches = filter_commands(&self.input, None, None, None, true);
+        self.selection_index = 0;
+    }
+
+    /// Filters commands based on input and navigation context.
     pub fn filter_with_context(
         &mut self,
         current_program: Option<&str>,
@@ -129,6 +128,11 @@ impl CommandPalette {
             has_programs,
         );
         self.selection_index = 0;
+    }
+
+    /// Returns the display text for the command bar/palette.
+    pub fn display_text(&self) -> String {
+        format!("/{}", self.input)
     }
 }
 

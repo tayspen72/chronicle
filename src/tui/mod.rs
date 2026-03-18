@@ -37,7 +37,7 @@ use crate::storage::{
 };
 use cache::TaskMetadata;
 use chrono::Local;
-use command::{CommandAction, CommandMatch, get_command_list};
+use command::{CommandAction, CommandMatch, CommandPalette};
 use hierarchical_picker::HierarchicalPickerState;
 use navigation::{NavigationState, SidebarItem, SidebarSection};
 use planning_session::PlanningSessionState;
@@ -97,11 +97,9 @@ pub struct App {
     pub current_view: ViewType,
     pub navigation_state: NavigationState,
     pub mode: Mode,
-    pub command_input: String,
-    pub command_matches: Vec<CommandMatch>,
+    pub command_palette: CommandPalette,
     pub should_exit: bool,
     pub journal_entries: Vec<JournalEntry>,
-    pub command_selection_index: usize,
     pub needs_terminal_reinit: bool,
     pub programs: Vec<DirectoryEntry>,
     pub projects: Vec<DirectoryEntry>,
@@ -130,18 +128,14 @@ impl App {
     const FOCUS_DUE_DATE: usize = 102;
 
     pub fn new(config: Config) -> Self {
-        let command_matches = get_command_list();
-
         let mut app = App {
             config,
             current_view: ViewType::TreeView,
             navigation_state: NavigationState::new(),
             mode: Mode::Normal,
-            command_input: String::new(),
-            command_matches,
+            command_palette: CommandPalette::new(),
             should_exit: false,
             journal_entries: Vec::new(),
-            command_selection_index: 0,
             needs_terminal_reinit: false,
             programs: Vec::new(),
             projects: Vec::new(),
@@ -490,14 +484,14 @@ impl App {
         match code {
             KeyCode::Char('/') => {
                 self.mode = Mode::CommandPalette;
-                self.command_input.clear();
+                self.command_palette.input.clear();
                 self.filter_commands();
             }
             KeyCode::Esc => {
                 if matches!(self.mode, Mode::CommandPalette) {
                     self.mode = Mode::Normal;
-                    self.command_input.clear();
-                    self.command_selection_index = 0;
+                    self.command_palette.input.clear();
+                    self.command_palette.selection_index = 0;
                 } else if self.current_view == ViewType::InputTemplateField {
                     // Escape jumps to CANCEL button
                     if let Some(ref mut state) = self.wizard_state.template {
@@ -1470,24 +1464,24 @@ impl App {
     fn handle_command_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char(c) => {
-                self.command_input.push(c);
-                self.command_selection_index = 0;
+                self.command_palette.input.push(c);
+                self.command_palette.selection_index = 0;
                 self.filter_commands();
             }
             KeyCode::Backspace => {
-                self.command_input.pop();
-                self.command_selection_index = 0;
+                self.command_palette.input.pop();
+                self.command_palette.selection_index = 0;
                 self.filter_commands();
             }
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.command_input.clear();
-                self.command_selection_index = 0;
+                self.command_palette.input.clear();
+                self.command_palette.selection_index = 0;
             }
             KeyCode::Enter => {
                 if let Some(cmd) = self
-                    .command_matches
-                    .get(self.command_selection_index)
+                    .command_palette.matches
+                    .get(self.command_palette.selection_index)
                     .cloned()
                 {
                     self.execute_command(&cmd);
@@ -1499,17 +1493,17 @@ impl App {
                 ) {
                     self.mode = Mode::Normal;
                 }
-                self.command_input.clear();
-                self.command_selection_index = 0;
+                self.command_palette.input.clear();
+                self.command_palette.selection_index = 0;
             }
             KeyCode::Up => {
-                if self.command_selection_index > 0 {
-                    self.command_selection_index -= 1;
+                if self.command_palette.selection_index > 0 {
+                    self.command_palette.selection_index -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.command_selection_index < self.command_matches.len().saturating_sub(1) {
-                    self.command_selection_index += 1;
+                if self.command_palette.selection_index < self.command_palette.matches.len().saturating_sub(1) {
+                    self.command_palette.selection_index += 1;
                 }
             }
             _ => {}
@@ -2833,14 +2827,12 @@ impl App {
     }
 
     fn filter_commands(&mut self) {
-        self.command_matches = command::filter_commands(
-            &self.command_input,
+        self.command_palette.filter_with_context(
             self.navigation_state.current_program.as_deref(),
             self.navigation_state.current_project.as_deref(),
             self.navigation_state.current_milestone.as_deref(),
             !self.programs.is_empty(),
         );
-        self.command_selection_index = 0;
     }
 
     fn draw(&self, f: &mut Frame) {
@@ -3203,19 +3195,19 @@ mod tests {
 
         // Verify "New Program" is in the command list
         assert!(
-            app.command_matches.iter().any(|c| c.label == "New Program"),
+            app.command_palette.matches.iter().any(|c| c.label == "New Program"),
             "New Program command should be available even with empty workspace"
         );
 
         // Verify we can navigate the command list
         assert!(
-            !app.command_matches.is_empty(),
+            !app.command_palette.matches.is_empty(),
             "Command list should not be empty"
         );
 
         // Verify we can select "New Program" command
         let new_program_idx = app
-            .command_matches
+            .command_palette.matches
             .iter()
             .position(|c| c.label == "New Program");
         assert!(
@@ -3225,8 +3217,8 @@ mod tests {
 
         // Navigate to New program command
         if let Some(idx) = new_program_idx {
-            app.command_selection_index = idx;
-            assert_eq!(app.command_matches[idx].label, "New Program");
+            app.command_palette.selection_index = idx;
+            assert_eq!(app.command_palette.matches[idx].label, "New Program");
         }
     }
 

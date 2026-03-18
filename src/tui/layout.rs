@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Command bar
     let command_text = if matches!(app.mode, Mode::CommandPalette) {
-        format!("/{}", app.command_input)
+        app.command_palette.display_text()
     } else {
         "Commands: /".to_string()
     };
@@ -224,7 +224,7 @@ fn render_command_palette(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     // Command input
-    let input = Paragraph::new(format!("/{}", app.command_input))
+    let input = Paragraph::new(app.command_palette.display_text())
         .style(Style::default().fg(Color::White).bg(Color::Black))
         .block(
             Block::default()
@@ -237,11 +237,12 @@ fn render_command_palette(f: &mut Frame, app: &App) {
 
     // Command results
     let items: Vec<ListItem> = app
-        .command_matches
+        .command_palette
+        .matches
         .iter()
         .enumerate()
         .map(|(idx, cmd)| {
-            let style = if idx == app.command_selection_index {
+            let style = if idx == app.command_palette.selection_index {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
