@@ -1,6 +1,7 @@
 // Views module - content display handlers
 
 use crate::storage::{JournalStorage, WorkspaceStorage};
+use crate::tui::cache::build_journal_tree;
 use crate::tui::{App, Mode};
 use ratatui::{
     layout::Constraint,
@@ -152,12 +153,39 @@ pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .journal_entries
+    let tree_items = build_journal_tree(&app.journal_entries);
+    let selected_idx = app.navigation_state.selected_entry_index;
+
+    let items: Vec<ListItem> = tree_items
         .iter()
         .enumerate()
-        .map(|(idx, entry)| {
-            let style = if idx == app.navigation_state.selected_entry_index {
+        .map(|(i, (indent, label, is_header))| {
+            let is_selected = i == selected_idx;
+            let indent_str = "    ".repeat(*indent);
+
+            let prefix = if *is_header {
+                String::new()
+            } else {
+                let is_last = tree_items
+                    .iter()
+                    .skip(i + 1)
+                    .take_while(|(nindent, _, _)| *nindent == *indent)
+                    .next()
+                    .is_none();
+                if is_last { "└── " } else { "├── " }.to_string()
+            };
+
+            let full_label = format!("{}{}{}", indent_str, prefix, label);
+
+            let style = if *is_header {
+                if *indent == 0 {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
+            } else if is_selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::LightBlue)
@@ -165,18 +193,16 @@ pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect
             } else {
                 Style::default().fg(Color::White)
             };
-            let label = entry.filename.trim_end_matches(".md");
-            ListItem::new(label.to_string()).style(style)
+            ListItem::new(full_label).style(style)
         })
         .collect();
 
-    let title = "Journal History";
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(title),
+                .title("Journal History"),
         )
         .style(Style::default().fg(Color::White));
 
@@ -901,12 +927,13 @@ pub fn render_placeholder(f: &mut Frame, area: ratatui::layout::Rect, title: &st
 pub fn render_programs_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = "Programs";
 
-    if app.programs.is_empty() {
+    if app.tree_data.programs.is_empty() {
         render_input(f, app, area, "No programs yet. Type to create one:");
         return;
     }
 
     let items: Vec<ListItem> = app
+        .tree_data
         .programs
         .iter()
         .enumerate()
@@ -943,7 +970,7 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
         "Projects".to_string()
     };
 
-    if app.projects.is_empty() {
+    if app.tree_data.projects.is_empty() {
         let content = format!(
             "{}\n\n(No projects yet. Use /new project to create one.)",
             title
@@ -961,6 +988,7 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
     }
 
     let items: Vec<ListItem> = app
+        .tree_data
         .projects
         .iter()
         .enumerate()
@@ -1000,7 +1028,7 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
         "Milestones".to_string()
     };
 
-    if app.milestones.is_empty() {
+    if app.tree_data.milestones.is_empty() {
         let content = format!(
             "{}\n\n(No milestones yet. Use /new milestone to create one.)",
             title
@@ -1018,6 +1046,7 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
     }
 
     let items: Vec<ListItem> = app
+        .tree_data
         .milestones
         .iter()
         .enumerate()
@@ -1058,7 +1087,7 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         "Tasks".to_string()
     };
 
-    if app.tasks.is_empty() {
+    if app.tree_data.tasks.is_empty() {
         let content = format!("{}\n\n(No tasks yet. Use /new task to create one.)", title);
         let paragraph = Paragraph::new(content)
             .style(Style::default().fg(Color::White))
@@ -1073,6 +1102,7 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     }
 
     let items: Vec<ListItem> = app
+        .tree_data
         .tasks
         .iter()
         .enumerate()
@@ -1180,11 +1210,11 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
                     .bg(Color::LightBlue)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
+            Span::styled(
+                "  Type to enter custom date (YYYY-MM-DD)",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
-        lines.push(Line::from(Span::styled(
-            "    Type to enter custom date (YYYY-MM-DD)",
-            Style::default().fg(Color::DarkGray),
-        )));
     } else {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default().fg(Color::White)),
@@ -1231,10 +1261,6 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )]));
         lines.push(Line::from(option_spans));
-        lines.push(Line::from(Span::styled(
-            "    ←/→: Cycle options",
-            Style::default().fg(Color::DarkGray),
-        )));
     } else {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default().fg(Color::White)),
@@ -1276,18 +1302,6 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
         ]));
-        // Show hint about auto-calculation - only when field is focused
-        if wizard.end_date.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    (suggested based on {} duration)", duration),
-                Style::default().fg(Color::DarkGray),
-            )));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "    Enter to confirm your custom date",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
     } else {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default().fg(Color::White)),

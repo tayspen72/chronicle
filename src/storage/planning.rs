@@ -1,4 +1,4 @@
-use crate::error::{PlanningError, Result};
+use crate::error::{Error, ModelError, PlanningError, Result};
 use crate::model::{PlanningSession, SessionStatus};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -77,7 +77,7 @@ pub fn create_planning_session(
         .write(true)
         .truncate(true)
         .open(&lock_path)
-        .map_err(PlanningError::Io)?;
+        .map_err(Error::Io)?;
 
     let mut values = HashMap::new();
     values.insert("UUID".to_string(), uuid.to_string());
@@ -131,15 +131,13 @@ pub fn save_planning_session(workspace: &Path, session: &PlanningSession) -> Res
 
 /// Loads a planning session from disk.
 pub fn load_planning_session(path: &Path) -> Result<PlanningSession> {
-    let content = fs::read_to_string(path)?;
-    parse_session_from_content(&content)
+    parse_session_from_content(&fs::read_to_string(path)?)
 }
 
 /// Parses a planning session from content.
 pub fn parse_session_from_content(content: &str) -> Result<PlanningSession> {
-    let frontmatter = extract_frontmatter(content)?;
-    let session: PlanningSession = serde_yaml::from_str(&frontmatter)?;
-    Ok(session)
+    serde_yaml::from_str(&extract_frontmatter(content)?)
+        .map_err(|e| ModelError::Parse(e.to_string()).into())
 }
 
 /// Extracts YAML frontmatter from content.

@@ -65,7 +65,8 @@ pub fn parse_element(content: &str) -> Result<Option<Element>> {
         }
         "task" | "subtask" => {
             let mut task: Task = serde_yaml::from_str(frontmatter)?;
-            task.description = body.trim().to_string();
+            let desc = body.trim().trim_start_matches("# Description").trim();
+            task.description = desc.to_string();
             Element::Task(task)
         }
         _ => {
@@ -278,14 +279,10 @@ pub fn element_to_markdown(element: &Element) -> String {
 /// Update the status field in a task file's YAML frontmatter.
 pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
-    let Some(parsed) = parse_element(&content).ok().flatten() else {
+    let Ok(Some(Element::Task(mut task))) = parse_element(&content) else {
         return Err(Error::Model(ModelError::Parse(
             "Failed to parse element".into(),
         )));
-    };
-
-    let Element::Task(mut task) = parsed else {
-        return Err(Error::Model(ModelError::Parse("Not a task file".into())));
     };
 
     task.status = new_status.to_string();
@@ -301,14 +298,10 @@ pub fn update_task_fields(
     updates: std::collections::HashMap<&str, Option<String>>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
-    let Some(parsed) = parse_element(&content).ok().flatten() else {
+    let Ok(Some(Element::Task(mut task))) = parse_element(&content) else {
         return Err(Error::Model(ModelError::Parse(
             "Failed to parse element".into(),
         )));
-    };
-
-    let Element::Task(mut task) = parsed else {
-        return Err(Error::Model(ModelError::Parse("Not a task file".into())));
     };
 
     if let Some(status) = updates.get("status") {

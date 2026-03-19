@@ -35,7 +35,7 @@ use crate::storage::planning::{
 use crate::storage::{
     DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
-use cache::TaskMetadata;
+use cache::{build_journal_tree, TaskMetadata, TreeData};
 use chrono::Local;
 use command::{CommandAction, CommandMatch, CommandPalette};
 use hierarchical_picker::HierarchicalPickerState;
@@ -101,11 +101,7 @@ pub struct App {
     pub should_exit: bool,
     pub journal_entries: Vec<JournalEntry>,
     pub needs_terminal_reinit: bool,
-    pub programs: Vec<DirectoryEntry>,
-    pub projects: Vec<DirectoryEntry>,
-    pub milestones: Vec<DirectoryEntry>,
-    pub tasks: Vec<DirectoryEntry>,
-    pub subtasks: Vec<DirectoryEntry>,
+    pub tree_data: TreeData,
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
@@ -120,6 +116,8 @@ pub struct App {
     pub task_wizard: Option<task_wizard::TaskWizardState>,
     // Planning preview confirmed flag
     pub show_confirmation_message: bool,
+    // Archive list tree structure (maps tree index -> journal entry index)
+    pub archive_tree_mapping: Vec<Option<usize>>,
 }
 
 impl App {
@@ -137,11 +135,7 @@ impl App {
             should_exit: false,
             journal_entries: Vec::new(),
             needs_terminal_reinit: false,
-            programs: Vec::new(),
-            projects: Vec::new(),
-            milestones: Vec::new(),
-            tasks: Vec::new(),
-            subtasks: Vec::new(),
+            tree_data: TreeData::new(),
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
@@ -152,6 +146,7 @@ impl App {
             planning_wizard: None,
             task_wizard: None,
             show_confirmation_message: false,
+            archive_tree_mapping: Vec::new(),
         };
 
         app.load_tree_view_data();
@@ -889,10 +884,14 @@ impl App {
                 }
                 "History" => {
                     match self.config.workspace.list_journal_entries() {
-                        Ok(entries) => self.journal_entries = entries,
+                        Ok(entries) => {
+                            self.journal_entries = entries;
+                            self.build_archive_tree_mapping();
+                        }
                         Err(e) => {
                             eprintln!("Failed to list journal entries: {}", e);
                             self.journal_entries.clear();
+                            self.archive_tree_mapping.clear();
                         }
                     }
                     self.current_view = ViewType::JournalArchiveList;
@@ -949,21 +948,21 @@ impl App {
     }
 
     fn load_tree_view_data(&mut self) {
-        self.programs = self.load_tree_level(&[]);
+        self.tree_data.programs = self.load_tree_level(&[]);
         self.navigation_state.update_scope_from_tree();
 
-        self.projects = self.load_tree_level_for_selected_depth(1);
-        self.milestones = self.load_tree_level_for_selected_depth(2);
-        self.tasks = self.load_tree_level_for_selected_depth(3);
-        self.subtasks = self.load_tree_level_for_selected_depth(4);
+        self.tree_data.projects = self.load_tree_level_for_selected_depth(1);
+        self.tree_data.milestones = self.load_tree_level_for_selected_depth(2);
+        self.tree_data.tasks = self.load_tree_level_for_selected_depth(3);
+        self.tree_data.subtasks = self.load_tree_level_for_selected_depth(4);
 
         tracing::debug!(
             path = ?self.navigation_state.tree_model.selected_path(),
-            programs = self.programs.len(),
-            projects = self.projects.len(),
-            milestones = self.milestones.len(),
-            tasks = self.tasks.len(),
-            subtasks = self.subtasks.len(),
+            programs = self.tree_data.programs.len(),
+            projects = self.tree_data.projects.len(),
+            milestones = self.tree_data.milestones.len(),
+            tasks = self.tree_data.tasks.len(),
+            subtasks = self.tree_data.subtasks.len(),
             "loaded tree view data"
         );
         self.build_sidebar_items();
@@ -1245,7 +1244,7 @@ impl App {
             .sidebar_items
             .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
 
-        if self.programs.is_empty() {
+        if self.tree_data.programs.is_empty() {
             self.navigation_state.sidebar_items.push(
                 SidebarItem::new("+ Create Program...", SidebarSection::Programs)
                     .indent(1)
@@ -1285,7 +1284,7 @@ impl App {
 
     fn push_tree_level_items(&mut self, parent_path: &[String], depth: usize) {
         let entries = if depth == 0 {
-            self.programs.clone()
+            self.tree_data.programs.clone()
         } else {
             self.load_tree_level(parent_path)
         };
@@ -1608,8 +1607,24 @@ impl App {
         }
     }
 
-    fn open_archive_entry(&mut self, index: usize) {
-        if let Some(entry) = self.journal_entries.get(index) {
+    fn build_archive_tree_mapping(&mut self) {
+        let tree = build_journal_tree(&self.journal_entries);
+        self.archive_tree_mapping = tree.iter().map(|(depth, label, _)| {
+            if *depth == 2 {
+                // Find the journal entry index by matching the filename
+                self.journal_entries.iter().position(|e| {
+                    e.filename.trim_end_matches(".md") == *label
+                })
+            } else {
+                None
+            }
+        }).collect();
+    }
+
+    fn open_archive_entry(&mut self, tree_index: usize) {
+        if let Some(Some(entry_idx)) = self.archive_tree_mapping.get(tree_index)
+            && let Some(entry) = self.journal_entries.get(*entry_idx)
+        {
             let path = entry.path.clone();
             self.launch_editor(&path);
         }
@@ -2837,7 +2852,7 @@ impl App {
             self.navigation_state.current_program.as_deref(),
             self.navigation_state.current_project.as_deref(),
             self.navigation_state.current_milestone.as_deref(),
-            !self.programs.is_empty(),
+            !self.tree_data.programs.is_empty(),
         );
     }
 
@@ -3208,7 +3223,7 @@ mod tests {
 
         // Verify programs list is empty
         assert!(
-            app.programs.is_empty(),
+            app.tree_data.programs.is_empty(),
             "Programs should be empty in new workspace"
         );
 
@@ -3340,7 +3355,7 @@ Test description
         let mut app = App::new(config);
 
         // Verify we're at root level with programs loaded
-        assert!(!app.programs.is_empty(), "Programs should be loaded");
+        assert!(!app.tree_data.programs.is_empty(), "Programs should be loaded");
         assert_eq!(
             app.navigation_state.tree_model.selected_depth(),
             0,
@@ -3784,7 +3799,7 @@ Test description
         let mut app = App::new(config);
 
         // We're at root level - verify there are programs
-        assert!(!app.programs.is_empty(), "Programs should be loaded");
+        assert!(!app.tree_data.programs.is_empty(), "Programs should be loaded");
 
         // Record the initial selection position (before creating new element)
         let _initial_selected_index = app.navigation_state.selected_entry_index;

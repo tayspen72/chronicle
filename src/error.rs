@@ -68,10 +68,6 @@ pub enum ModelError {
 /// Planning-related errors.
 #[derive(Error, Debug)]
 pub enum PlanningError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("YAML parse error: {0}")]
-    YamlParse(#[from] serde_yaml::Error),
     #[error("Session not found: {0}")]
     NotFound(String),
     #[error("Invalid session file: {0}")]

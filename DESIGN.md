@@ -21,21 +21,9 @@ The project follows a reasonable modular structure:
 
 ---
 
-## Issues Found
+## Critical Bugs
 
-### Critical Bugs
-
-1. **Navigation Bug** (`tui/mod.rs:819-842`)
-   ```rust
-   // BUG: This should go to project level but jumps to program level
-   ```
-   The `navigate_left()` function collapses to parent level unconditionally instead of one level at a time.
-
-2. **Empty Workspace Handling**
-   First-run prompts use blocking I/O which could cause issues in TUI context.
-
-3. **Concurrent File Access**
-   No file locking for planning sessions - potential race conditions.
+None currently known.
 
 ### Technical Debt
 
@@ -54,8 +42,8 @@ The project follows a reasonable modular structure:
    - TreeData (programs, projects, milestones, tasks, subtasks) - ~221 refs
 
 2. **Duplicate Error Types**
-   - `PlanningError` in `storage/planning.rs` not integrated into main `Error` hierarchy
-   - Mix of `eprintln!()`, `tracing::error!()`, and proper `Result` returns
+   - ✅ PlanningError now integrated into main Error hierarchy
+   - Remaining: Mix of `eprintln!()` in TUI for user-facing errors (acceptable pattern)
 
 3. **Dead Code**
    - `command.rs` and `navigation.rs` have extracted types not fully wired up
@@ -81,16 +69,11 @@ The project follows a reasonable modular structure:
 ### Recommendations
 
 | Priority | Issue | Files to Modify | Status |
-|----------|-------|----------------|--------|
-| 1 | Extract NavigationState | tui/navigation.rs | ✅ Complete |
-| 2 | Extract WizardState | tui/wizard.rs | ✅ Complete |
-| 3 | Extract ReviewState | tui/review.rs | ✅ Complete |
-| 4 | Extract PlanningSessionState | tui/planning_session.rs | ✅ Complete |
-| 5 | Wire up CommandPalette | tui/command.rs | ✅ Complete |
-| 6 | Extract TreeData | tui/mod.rs (programs, projects, etc.) | Pending |
-| 7 | Fix navigation bug | tui/mod.rs:819-842 | Pending |
-| 8 | Error handling consistency | storage/planning.rs, error.rs | Pending |
-| 9 | Add integration tests | Various | Pending |
+|----------|-------|-----------------|--------|
+| 1 | Extract TreeData | tui/cache.rs, tui/mod.rs, tui/views/mod.rs | ✅ Complete |
+| 2 | Error handling consistency | error.rs, storage/planning.rs | ✅ Complete |
+| 3 | Add integration tests | Various | Pending |
+| 4 | History tree structure | tui/views/mod.rs, tui/mod.rs | ✅ Complete |
 
 ### Recently Fixed (2026-03-17)
 
@@ -99,18 +82,44 @@ The project follows a reasonable modular structure:
 
 ### Known Bugs (TODO)
 
-1. ~~**Planning Session Date Fields Not Editable**~~ - ✅ FIXED (2026-03-17)
-   - Date fields are now editable in the planning wizard
+#### Start Planning Session Workflow
 
-2. ~~**Task Selection Navigation UX**~~ - ✅ FIXED (2026-03-17)
-   - Enter now properly navigates through fields
-   - On final editable field (Description), Enter jumps to "ADD TO PLAN" button
-   - Escape jumps to "CANCEL" button
+*All wizard formatting issues resolved.*
 
-3. ~~**Add to Plan Not Working**~~ - ✅ FIXED (2026-03-17)
-   - Task file is now updated on disk with any changes (status, dates, priority)
-   - Task UUID is added to planning session
-   - Checkbox correctly shows [x] after adding
+#### Edit Task Details
+
+*All task editing bugs have been resolved.*
+
+#### Preview Plan
+
+*All preview bugs have been resolved.*
+
+---
+
+## Remaining Work
+
+### Open Bugs
+
+1. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
+
+2. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded.
+
+3. **Navigation issues when expanding/contracting tree**: There are navigation issues when working through and expanding/contracting the tree, especially while also creating new elements. Selection may jump unexpectedly or not follow expected patterns.
+
+### Technical Debt
+
+1. **App Struct Refactoring (COMPLETE)**
+   - ✅ TreeData extracted to `cache.rs` with helper methods (`at_depth`, `at_depth_mut`)
+   - Consolidated 5 fields into `app.tree_data`
+
+2. **Duplicate Error Types**
+   - `PlanningError` in `storage/planning.rs` not integrated into main `Error` hierarchy
+
+3. **Dead Code**
+   - `command.rs` and `navigation.rs` have extracted types not fully wired up
+
+4. **Overloaded `input_buffer`**
+   - Used for many different input types without clear ownership
 
 ---
 
@@ -763,11 +772,15 @@ In `confirm_template_field`, the `target_path` field was initialized as `None` w
 
 ## Open Bugs
 
-1. ~~**"New Program" command not showing when workspace is empty**~~: ✅ **FIXED** - Sidebar now shows "+ Create Program..." when programs list is empty (tag: `stable/sidebar-empty-state-2026-03-04`). Command palette also works correctly.
+1. ~~**History navigator not expanding tree structure**~~: ✅ **FIXED** - Journal history shows year/month hierarchy
 
-2. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
+2. **Journal History navigation flow**: The history should expand in the navigator sidebar (like programs):
+   - When "History" is selected in navigator → main window shows list of non-empty months
+   - Right arrow → navigate into month, navigator shows files in that month
+   - Main window shows markdown rendering of selected file
+   - This should be handled via the navigator sidebar, not duplicated in main content window
 
-3. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded. Currently the tree lines break when expanding/collapsing items.
+3. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded.
 
 4. **Navigation issues when expanding/contracting tree**: There are navigation issues when working through and expanding/contracting the tree, especially while also creating new elements. Selection may jump unexpectedly or not follow expected patterns.
 
@@ -798,6 +811,10 @@ In `confirm_template_field`, the `target_path` field was initialized as `None` w
 
 | Date | Event |
 |------|-------|
+| 2026-03-18 | Feature: Journal history now shows entries grouped by year/month in tree structure |
+| 2026-03-18 | Refactor: Integrated PlanningError into Error hierarchy, removed redundant Io/Yaml variants |
+| 2026-03-18 | Refactor: Extracted TreeData struct in cache.rs, consolidated 5 fields into `app.tree_data` |
+| 2026-03-18 | Bug fix: Task description no longer shows duplicate "# Description" header |
 | 2026-03-17 | Bug fix: Planning session Preview screen now shows with ADD TASKS TO PLAN, CONFIRM, CANCEL buttons |
 | 2026-03-17 | Bug fix: Task detail wizard properly updates task file on disk when adding to plan |
 | 2026-03-17 | Bug fix: Task selection UX improved - Enter navigates fields, Escape jumps to Cancel |
