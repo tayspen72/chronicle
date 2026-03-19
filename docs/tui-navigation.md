@@ -36,6 +36,10 @@ Sidebar always includes:
 - Planning (`Weekly Planning`, `Backlog`)
 - Journal (`Today`, `History`)
 
+## Main Window
+
+The main window is a **viewport into the current selection**. Whenever the selected entry in the navigator changes, the main window updates to show the content of that selection. It is a passive viewer — it simply reflects what is selected in the sidebar. This applies to all sidebar sections: Programs, Planning, and Journal.
+
 ## Journal History Navigation
 
 History expands inline in the sidebar:

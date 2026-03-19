@@ -65,6 +65,17 @@ src/
 2. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
 3. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
 
+### Journal History Navigation Bugs (TODO)
+
+1. **Today not opening editor**: Pressing Enter on "Today" has no response — should open today's journal in external editor
+2. **Programs disappear when History expands**: Navigating Right on "History" causes all programs to disappear from sidebar and become inaccessible
+3. **History selection should move to child**: Right on History/Year/Month should select the newly revealed child, not stay on parent (match programs behavior)
+4. **Cannot collapse month level**: After opening the final tier (months) in history tree, there is no way to close it
+
+### Planning Navigation Bug (TODO)
+
+1. **Current Plan view cannot be closed**: When a planning session exists and user presses Enter on "Current Plan", the view shows useful content but cannot be dismissed without a command (e.g., `/programs`). Esc should return to the previous view or tree root.
+
 ---
 
 ## Data Flow
@@ -156,3 +167,32 @@ Journal sidebar:
 | 2026-03-03 | Bug fix: First program selected on load, Right moves to first child |
 | 2026-03-03 | Bug fix: Storage discovery handles flat and nested structures |
 | 2026-03-03 | Bug fix: TOML config parsing fixed |
+
+---
+
+## Future Features
+
+### Program/Element Reports
+
+Add a report view for each element type in the Programs section that shows children with their status:
+
+- **Program report**: lists all projects under it with status (e.g., "Alpha: Project 1 [Active], Project 2 [Blocked], Project 3 [New]")
+- **Project report**: lists milestones under it with status
+- **Milestone report**: lists tasks under it with status
+- **Task report**: lists subtasks under it with status
+
+Reports appear in the main window when the element is selected in the sidebar (matching the viewport principle).
+
+### Planning Reports
+
+1. **Current Plan report**: When a planning session exists, Enter on "Current Plan" shows a structured report of tasks in the session. Tasks should be grouped and separated by Program → Project → Milestone, with task details (name, status, dates, priority) shown in a readable table format.
+
+2. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
+
+3. **Backlog report**: Currently shows all tasks. Should be refined to show only tasks in the current plan that are in the "New" state and assigned to the current user.
+
+4. **My Tasks**: Add a new entry under the Planning section that shows a useful report of all tasks assigned to the current user that are not in the "New" state (i.e., Active, Blocked, Testing, etc.).
+
+### Theming
+
+Support theme files (e.g., from Helix editor's `themes/` directory or Alacritty). Users should be able to select from a list of themes to customize the TUI color scheme. The `ayu_evolve` theme from Helix can be used as a reference or directly ported.
