@@ -10,6 +10,9 @@
 - `src/storage/`: filesystem discovery + template write APIs
 - `src/model/`: domain structs and element enums
 - `src/tui/`: application state, event handling, rendering
+  - `cache.rs`: TreeData struct
+  - `navigation.rs`: JournalTreeState, sidebar helpers
+  - `command.rs`: command palette types
 - `src/commands/`: non-TUI command helpers (init/jot/new_task/extract)
 
 ## Runtime Flow

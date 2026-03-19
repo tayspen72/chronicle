@@ -7,6 +7,7 @@ pub mod planning_session;
 pub mod planning_wizard;
 pub mod review;
 pub mod task_wizard;
+pub mod test_utils;
 pub mod tree;
 pub mod views;
 pub mod wizard;
@@ -35,11 +36,11 @@ use crate::storage::planning::{
 use crate::storage::{
     DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
-use cache::{build_journal_tree, TaskMetadata, TreeData};
+use cache::{TaskMetadata, TreeData};
 use chrono::Local;
 use command::{CommandAction, CommandMatch, CommandPalette};
 use hierarchical_picker::HierarchicalPickerState;
-use navigation::{NavigationState, SidebarItem, SidebarSection};
+use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarSection};
 use planning_session::PlanningSessionState;
 use planning_wizard::PlanningDateFocus;
 use review::ReviewState;
@@ -118,6 +119,8 @@ pub struct App {
     pub show_confirmation_message: bool,
     // Archive list tree structure (maps tree index -> journal entry index)
     pub archive_tree_mapping: Vec<Option<usize>>,
+    // Journal tree state for sidebar expansion
+    pub journal_tree_state: JournalTreeState,
 }
 
 impl App {
@@ -147,6 +150,7 @@ impl App {
             task_wizard: None,
             show_confirmation_message: false,
             archive_tree_mapping: Vec::new(),
+            journal_tree_state: JournalTreeState::new(),
         };
 
         app.load_tree_view_data();
@@ -206,7 +210,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, code: KeyCode) {
+    pub fn handle_key(&mut self, code: KeyCode) {
         // Handle TaskSelection mode specially
         if self.mode == Mode::TaskSelection {
             match code {
@@ -351,7 +355,8 @@ impl App {
                     // Set assigned to - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session.tasks
+                        .planning_session
+                        .tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.assigned_to.clone())
                         .unwrap_or_default();
@@ -360,7 +365,8 @@ impl App {
                     // Set start date - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session.tasks
+                        .planning_session
+                        .tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.start_date.clone())
                         .unwrap_or_default();
@@ -369,7 +375,8 @@ impl App {
                     // Set due date - use input mode
                     self.mode = Mode::Input;
                     self.input_buffer = self
-                        .planning_session.tasks
+                        .planning_session
+                        .tasks
                         .get(self.review_state.selection_index)
                         .and_then(|t| t.due_date.clone())
                         .unwrap_or_default();
@@ -739,13 +746,57 @@ impl App {
 
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
-            tracing::debug!(
-                selected_index = self.navigation_state.selected_entry_index,
-                path = ?self.navigation_state.tree_model.selected_path(),
-                "navigate right"
-            );
-            self.open_tree_item_with_leaf_open(false);
+            let idx = self.navigation_state.selected_entry_index;
+            if idx < self.navigation_state.sidebar_items.len() {
+                let item = &self.navigation_state.sidebar_items[idx];
+
+                let is_journal = item.section == SidebarSection::Journal;
+                let is_history = item.name == "History" && item.is_journal_item.is_some();
+                let is_journal_item = item.is_journal_item.is_some();
+                let journal_path = item.journal_path.clone();
+
+                if is_journal {
+                    // Handle journal history expansion
+                    if is_history {
+                        self.expand_history();
+                        return;
+                    }
+
+                    // Handle journal tree navigation (month/year headers)
+                    if let Some(ref jpath) = journal_path
+                        && !is_journal_item
+                    {
+                        // This is a journal header (year/month) - expand it
+                        self.expand_journal_item(jpath);
+                        return;
+                    }
+                }
+
+                tracing::debug!(
+                    selected_index = self.navigation_state.selected_entry_index,
+                    path = ?self.navigation_state.tree_model.selected_path(),
+                    "navigate right"
+                );
+                self.open_tree_item_with_leaf_open(false);
+            }
         }
+    }
+
+    /// Expands the History item: loads journal entries if needed, expands the tree,
+    /// rebuilds sidebar items, and selects the first child.
+    fn expand_history(&mut self) {
+        // Load journal entries if not already loaded
+        if self.journal_entries.is_empty() {
+            if let Ok(entries) = self.config.workspace.list_journal_entries() {
+                self.journal_entries = entries;
+                self.journal_tree_state.set_entries(self.journal_entries.clone());
+            }
+        }
+
+        // Expand history to show years/months/entries
+        self.journal_tree_state.expand(&[]);
+        self.build_journal_sidebar_items();
+        self.select_first_journal_child(&[]);
     }
 
     fn navigate_left(&mut self) {
@@ -753,13 +804,47 @@ impl App {
             return;
         }
 
-        let Some(item) = self
-            .navigation_state
-            .sidebar_items
-            .get(self.navigation_state.selected_entry_index)
-        else {
+        let idx = self.navigation_state.selected_entry_index;
+        if idx >= self.navigation_state.sidebar_items.len() {
             return;
-        };
+        }
+
+        let item = &self.navigation_state.sidebar_items[idx];
+
+        let is_journal = item.section == SidebarSection::Journal;
+        let journal_path = item.journal_path.clone();
+
+        // Handle journal history navigation
+        if is_journal {
+            if let Some(ref jpath) = journal_path {
+                if !jpath.is_empty() {
+                    // Collapse current level
+                    let path_clone = jpath.clone();
+                    self.collapse_journal_item(&path_clone);
+                    self.build_journal_sidebar_items();
+                    // Select parent
+                    if jpath.len() > 1 {
+                        let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
+                        self.select_journal_item_by_path(&parent_path);
+                    } else {
+                        // Back to History item
+                        self.navigation_state.selected_entry_index = self
+                            .navigation_state
+                            .sidebar_items
+                            .iter()
+                            .position(|i| i.name == "History" && i.is_journal_item.is_some())
+                            .unwrap_or(idx);
+                    }
+                    return;
+                }
+                // At History level, don't collapse further
+                return;
+            }
+            // Journal section item without journal_path (e.g., "Today") - nothing to collapse
+            return;
+        }
+
+        // Program tree navigation
         let Some(selected_path) = item.tree_path.clone() else {
             return;
         };
@@ -775,6 +860,186 @@ impl App {
         self.collapse_path(&parent);
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
+    }
+
+    pub(crate) fn build_journal_sidebar_items(&mut self) {
+        // Rebuild sidebar with journal history tree structure
+        self.navigation_state.sidebar_items.clear();
+
+        // Programs section
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
+
+        // Planning section
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("", SidebarSection::Planning));
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Current Plan", SidebarSection::Planning)
+                .planning_item("WeeklyPlanning"),
+        );
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
+
+        // Journal section
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("", SidebarSection::Journal));
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
+
+        // History item (whether expanded or not)
+        let history_path: Vec<String> = vec!["History".to_string()];
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("History", SidebarSection::Journal)
+                .journal_item("History")
+                .journal_path(history_path.clone()),
+        );
+
+        // If history is expanded, add years/months/entries with simplification rules
+        if self.journal_tree_state.is_expanded(&[]) {
+            let years = self.journal_tree_state.years();
+
+            // Simplification: Only create year level if there are multiple years
+            // If only one year, show months/entries directly (flattened)
+            if years.len() > 1 {
+                // Show years as intermediate level
+                for year in &years {
+                    let year_path = vec![year.clone()];
+                    self.navigation_state.sidebar_items.push(
+                        SidebarItem::new(year, SidebarSection::Journal)
+                            .journal_path(year_path.clone())
+                            .journal_header()
+                            .indent(1),
+                    );
+
+                    // If year is expanded, add months
+                    if self.journal_tree_state.is_expanded(&year_path) {
+                        self.add_journal_months_and_entries(year);
+                    }
+                }
+            } else if let Some(year) = years.first() {
+                // Single year - add months/entries directly under History
+                // Check if there are multiple months (for simplification check later)
+                let months = self.journal_tree_state.months_for_year(year);
+
+                if months.len() > 1 {
+                    // Multiple months - create month level
+                    for month in &months {
+                        let month_path = vec![year.clone(), month.clone()];
+                        self.navigation_state.sidebar_items.push(
+                            SidebarItem::new(month, SidebarSection::Journal)
+                                .journal_path(month_path.clone())
+                                .journal_header()
+                                .indent(1),
+                        );
+
+                        // If month is expanded, add entries
+                        if self.journal_tree_state.is_expanded(&month_path) {
+                            self.add_journal_entries_for_month(year, month);
+                        }
+                    }
+                } else if let Some(month) = months.first() {
+                    // Single month - show entries directly (flattened)
+                    self.add_journal_entries_for_month(year, month);
+                } else {
+                    // No months/entries
+                    let entries = self.journal_tree_state.entries_for_month(year, "");
+                    if !entries.is_empty() {
+                        self.add_journal_entries_for_month(year, "");
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_journal_months_and_entries(&mut self, year: &str) {
+        let months = self.journal_tree_state.months_for_year(year);
+
+        // Simplification: Only create month level if multiple months exist
+        if months.len() > 1 {
+            for month in &months {
+                let month_path = vec![year.to_string(), month.clone()];
+                self.navigation_state.sidebar_items.push(
+                    SidebarItem::new(month, SidebarSection::Journal)
+                        .journal_path(month_path.clone())
+                        .journal_header()
+                        .indent(2),
+                );
+
+                // If month is expanded, add entries
+                if self.journal_tree_state.is_expanded(&month_path) {
+                    self.add_journal_entries_for_month(year, month);
+                }
+            }
+        } else if let Some(month) = months.first() {
+            // Single month - show entries directly under year
+            self.add_journal_entries_with_indent(year, month, 2);
+        }
+    }
+
+    fn add_journal_entries_for_month(&mut self, year: &str, month: &str) {
+        self.add_journal_entries_with_indent(year, month, 3);
+    }
+
+    fn add_journal_entries_with_indent(&mut self, year: &str, month: &str, indent_level: usize) {
+        let entries = self.journal_tree_state.entries_for_month(year, month);
+        for entry in entries {
+            let label = entry.filename.trim_end_matches(".md").to_string();
+            let entry_path = if month.is_empty() {
+                vec![year.to_string(), label.clone()]
+            } else {
+                vec![year.to_string(), month.to_string(), label.clone()]
+            };
+            self.navigation_state.sidebar_items.push(
+                SidebarItem::new(&label, SidebarSection::Journal)
+                    .journal_path(entry_path)
+                    .indent(indent_level),
+            );
+        }
+    }
+
+    fn expand_journal_item(&mut self, path: &[String]) {
+        self.journal_tree_state.expand(path);
+        self.journal_tree_state.set_selected_path(path.to_vec());
+        self.build_journal_sidebar_items();
+        // Select first child
+        self.select_first_journal_child(path);
+    }
+
+    fn collapse_journal_item(&mut self, path: &[String]) {
+        self.journal_tree_state.collapse(path);
+    }
+
+    fn select_first_journal_child(&mut self, parent_path: &[String]) {
+        let child_depth = parent_path.len() + 1;
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+            item.journal_path
+                .as_ref()
+                .is_some_and(|p| p.len() == child_depth && p.starts_with(parent_path))
+        }) {
+            self.navigation_state.selected_entry_index = idx;
+        }
+    }
+
+    fn select_journal_item_by_path(&mut self, path: &[String]) {
+        if let Some(idx) = self
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|item| item.journal_path.as_ref() == Some(&path.to_vec()))
+        {
+            self.navigation_state.selected_entry_index = idx;
+        }
     }
 
     fn return_from_view(&mut self) {
@@ -817,7 +1082,7 @@ impl App {
         self.sync_scope_from_sidebar_selection();
     }
 
-    fn sync_scope_from_sidebar_selection(&mut self) {
+    pub fn sync_scope_from_sidebar_selection(&mut self) {
         let idx = self.navigation_state.selected_entry_index;
         if idx >= self.navigation_state.sidebar_items.len() {
             return;
@@ -883,20 +1148,32 @@ impl App {
                     }
                 }
                 "History" => {
-                    match self.config.workspace.list_journal_entries() {
-                        Ok(entries) => {
-                            self.journal_entries = entries;
-                            self.build_archive_tree_mapping();
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to list journal entries: {}", e);
-                            self.journal_entries.clear();
-                            self.archive_tree_mapping.clear();
-                        }
-                    }
-                    self.current_view = ViewType::JournalArchiveList;
+                    self.expand_history();
                 }
                 _ => {}
+            }
+            return;
+        }
+
+        // Handle journal history entries (when journal_path is set but not a header)
+        if let Some(ref jpath) = item.journal_path
+            && !item.is_journal_header
+        {
+            // This is a journal entry - open it in viewer
+            let label = navigation::journal_entry_label(jpath).unwrap_or(&item.name);
+            if let Some(entry) = self
+                .journal_entries
+                .iter()
+                .find(|e| *e.filename.trim_end_matches(".md") == *label)
+                && let Ok(content) = self.config.workspace.read_journal_entry(&entry.path)
+            {
+                self.current_content_text = Some(content);
+                self.selected_content = Some(DirectoryEntry {
+                    name: entry.filename.clone(),
+                    path: entry.path.clone(),
+                    is_dir: false,
+                });
+                self.current_view = ViewType::ViewingContent;
             }
             return;
         }
@@ -1280,6 +1557,55 @@ impl App {
         self.navigation_state
             .sidebar_items
             .push(SidebarItem::new("History", SidebarSection::Journal).journal_item("History"));
+
+        // If journal history is expanded, add the tree structure
+        if self.journal_tree_state.is_expanded(&[]) {
+            self.add_journal_tree_items();
+        }
+    }
+
+    fn add_journal_tree_items(&mut self) {
+        let years = self.journal_tree_state.years();
+
+        // Simplification: Only create year level if there are multiple years
+        if years.len() > 1 {
+            for year in &years {
+                let year_path = vec![year.clone()];
+                self.navigation_state.sidebar_items.push(
+                    SidebarItem::new(year, SidebarSection::Journal)
+                        .journal_path(year_path.clone())
+                        .journal_header()
+                        .indent(1),
+                );
+
+                if self.journal_tree_state.is_expanded(&year_path) {
+                    self.add_journal_months_and_entries(year);
+                }
+            }
+        } else if let Some(year) = years.first() {
+            // Single year - add months/entries directly under History
+            let months = self.journal_tree_state.months_for_year(year);
+
+            if months.len() > 1 {
+                // Multiple months - create month level
+                for month in &months {
+                    let month_path = vec![year.to_string(), month.clone()];
+                    self.navigation_state.sidebar_items.push(
+                        SidebarItem::new(month, SidebarSection::Journal)
+                            .journal_path(month_path.clone())
+                            .journal_header()
+                            .indent(1),
+                    );
+
+                    if self.journal_tree_state.is_expanded(&month_path) {
+                        self.add_journal_entries_for_month(year, month);
+                    }
+                }
+            } else if let Some(month) = months.first() {
+                // Single month - show entries directly
+                self.add_journal_entries_for_month(year, month);
+            }
+        }
     }
 
     fn push_tree_level_items(&mut self, parent_path: &[String], depth: usize) {
@@ -1303,6 +1629,8 @@ impl App {
                 tree_path: Some(node_path.clone()),
                 has_children,
                 is_create_action: false,
+                journal_path: None,
+                is_journal_header: false,
             });
 
             if self.navigation_state.tree_model.is_expanded(&node_path) {
@@ -1483,7 +1811,8 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(cmd) = self
-                    .command_palette.matches
+                    .command_palette
+                    .matches
                     .get(self.command_palette.selection_index)
                     .cloned()
                 {
@@ -1505,7 +1834,9 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if self.command_palette.selection_index < self.command_palette.matches.len().saturating_sub(1) {
+                if self.command_palette.selection_index
+                    < self.command_palette.matches.len().saturating_sub(1)
+                {
                     self.command_palette.selection_index += 1;
                 }
             }
@@ -1605,20 +1936,6 @@ impl App {
                 eprintln!("Error loading archive list: {}", e);
             }
         }
-    }
-
-    fn build_archive_tree_mapping(&mut self) {
-        let tree = build_journal_tree(&self.journal_entries);
-        self.archive_tree_mapping = tree.iter().map(|(depth, label, _)| {
-            if *depth == 2 {
-                // Find the journal entry index by matching the filename
-                self.journal_entries.iter().position(|e| {
-                    e.filename.trim_end_matches(".md") == *label
-                })
-            } else {
-                None
-            }
-        }).collect();
     }
 
     fn open_archive_entry(&mut self, tree_index: usize) {
@@ -1960,7 +2277,8 @@ impl App {
         use crate::storage::md::parse_element;
 
         let existing_uuids: std::collections::HashSet<String> = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .iter()
             .map(|t| t.uuid.clone())
             .collect();
@@ -2096,7 +2414,8 @@ impl App {
             duration: self.config.planning_duration.clone(),
             status: SessionStatus::Active,
             tasks: self
-                .planning_session.tasks
+                .planning_session
+                .tasks
                 .iter()
                 .map(|t| t.uuid.clone())
                 .collect(),
@@ -2135,7 +2454,8 @@ impl App {
         let Some(task) = selected_task else { return };
 
         if let Some(pos) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .iter()
             .position(|t| t.uuid == task.uuid)
         {
@@ -2272,7 +2592,8 @@ impl App {
 
     fn cycle_task_status(&mut self) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get(self.review_state.selection_index)
         else {
             return;
@@ -2289,7 +2610,8 @@ impl App {
 
     fn set_task_start_date(&mut self, date: String) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2305,7 +2627,8 @@ impl App {
 
     fn set_task_due_date(&mut self, date: String) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2321,7 +2644,8 @@ impl App {
 
     fn set_task_assigned_to(&mut self, name: String) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2341,7 +2665,8 @@ impl App {
 
     fn update_review_task_status(&mut self, new_status: &str) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get_mut(self.review_state.selection_index)
         else {
             return;
@@ -2366,14 +2691,20 @@ impl App {
 
     fn toggle_rollover(&mut self) {
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get(self.review_state.selection_index)
         else {
             return;
         };
         let uuid = &task.uuid;
 
-        if let Some(pos) = self.planning_session.rolled_over_tasks.iter().position(|u| u == uuid) {
+        if let Some(pos) = self
+            .planning_session
+            .rolled_over_tasks
+            .iter()
+            .position(|u| u == uuid)
+        {
             self.planning_session.rolled_over_tasks.remove(pos);
         } else {
             self.planning_session.rolled_over_tasks.push(uuid.clone());
@@ -2385,19 +2716,26 @@ impl App {
             return;
         }
         let Some(task) = self
-            .planning_session.tasks
+            .planning_session
+            .tasks
             .get(self.review_state.selection_index)
         else {
             return;
         };
 
         // Remove from rolled_over if present
-        if let Some(pos) = self.planning_session.rolled_over_tasks.iter().position(|u| u == &task.uuid) {
+        if let Some(pos) = self
+            .planning_session
+            .rolled_over_tasks
+            .iter()
+            .position(|u| u == &task.uuid)
+        {
             self.planning_session.rolled_over_tasks.remove(pos);
         }
 
         // Remove from planning session tasks
-        self.planning_session.tasks
+        self.planning_session
+            .tasks
             .remove(self.review_state.selection_index);
 
         // Adjust selection index
@@ -3239,7 +3577,10 @@ mod tests {
 
         // Verify "New Program" is in the command list
         assert!(
-            app.command_palette.matches.iter().any(|c| c.label == "New Program"),
+            app.command_palette
+                .matches
+                .iter()
+                .any(|c| c.label == "New Program"),
             "New Program command should be available even with empty workspace"
         );
 
@@ -3251,7 +3592,8 @@ mod tests {
 
         // Verify we can select "New Program" command
         let new_program_idx = app
-            .command_palette.matches
+            .command_palette
+            .matches
             .iter()
             .position(|c| c.label == "New Program");
         assert!(
@@ -3355,7 +3697,10 @@ Test description
         let mut app = App::new(config);
 
         // Verify we're at root level with programs loaded
-        assert!(!app.tree_data.programs.is_empty(), "Programs should be loaded");
+        assert!(
+            !app.tree_data.programs.is_empty(),
+            "Programs should be loaded"
+        );
         assert_eq!(
             app.navigation_state.tree_model.selected_depth(),
             0,
@@ -3799,7 +4144,10 @@ Test description
         let mut app = App::new(config);
 
         // We're at root level - verify there are programs
-        assert!(!app.tree_data.programs.is_empty(), "Programs should be loaded");
+        assert!(
+            !app.tree_data.programs.is_empty(),
+            "Programs should be loaded"
+        );
 
         // Record the initial selection position (before creating new element)
         let _initial_selected_index = app.navigation_state.selected_entry_index;

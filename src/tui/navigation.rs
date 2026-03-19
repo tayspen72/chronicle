@@ -86,6 +86,10 @@ pub struct SidebarItem {
     pub has_children: bool,
     /// If true, this item triggers an action (e.g., "Create Program") rather than navigation
     pub is_create_action: bool,
+    /// For journal items: path components like ["2024", "December", "2024-12-15"]
+    pub journal_path: Option<Vec<String>>,
+    /// Whether this is a journal section item (year/month)
+    pub is_journal_header: bool,
 }
 
 impl SidebarItem {
@@ -104,6 +108,8 @@ impl SidebarItem {
             tree_path: None,
             has_children: false,
             is_create_action: false,
+            journal_path: None,
+            is_journal_header: false,
         }
     }
 
@@ -152,6 +158,20 @@ impl SidebarItem {
     #[allow(dead_code)]
     pub fn create_action(mut self) -> Self {
         self.is_create_action = true;
+        self
+    }
+
+    /// Sets the journal path for this item.
+    #[must_use]
+    pub fn journal_path(mut self, path: Vec<String>) -> Self {
+        self.journal_path = Some(path);
+        self
+    }
+
+    /// Marks this as a journal header (year/month).
+    #[must_use]
+    pub fn journal_header(mut self) -> Self {
+        self.is_journal_header = true;
         self
     }
 }
@@ -468,4 +488,126 @@ mod tests {
         assert!(items[1].is_create_action);
         assert_eq!(items[1].indent, 1);
     }
+}
+
+/// Tracks expansion state for the journal history tree
+#[derive(Debug, Clone, Default)]
+pub struct JournalTreeState {
+    selected_path: Vec<String>,
+    expanded_paths: std::collections::BTreeSet<Vec<String>>,
+    entries: Vec<crate::storage::JournalEntry>,
+}
+
+/// Month names in order (1-indexed)
+const MONTH_NAMES: &[&str] = &[
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+];
+
+/// Extracts the entry label from a journal path (handles both 2 and 3 element paths)
+pub fn journal_entry_label(jpath: &[String]) -> Option<&str> {
+    let label = if jpath.len() == 3 {
+        jpath.get(2)
+    } else {
+        jpath.get(1)
+    }?;
+    Some(label)
+}
+
+impl JournalTreeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn is_expanded(&self, path: &[String]) -> bool {
+        self.expanded_paths.contains(path)
+    }
+
+    pub fn expand(&mut self, path: &[String]) {
+        self.expanded_paths.insert(path.to_vec());
+    }
+
+    pub fn collapse(&mut self, path: &[String]) {
+        self.expanded_paths
+            .retain(|expanded| !is_same_or_descendant(expanded, path));
+    }
+
+    pub fn selected_path(&self) -> &[String] {
+        &self.selected_path
+    }
+
+    pub fn set_selected_path(&mut self, path: Vec<String>) {
+        self.selected_path = path;
+    }
+
+    pub fn depth(&self) -> usize {
+        self.selected_path.len()
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<crate::storage::JournalEntry>) {
+        self.entries = entries;
+    }
+
+    pub fn entries(&self) -> &[crate::storage::JournalEntry] {
+        &self.entries
+    }
+
+    pub fn reset(&mut self) {
+        self.selected_path.clear();
+        self.expanded_paths.clear();
+    }
+
+    pub fn years(&self) -> Vec<String> {
+        let mut years: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if let Some(year) = entry.filename.split('-').next() {
+                years.insert(year.to_string());
+            }
+        }
+        years.into_iter().rev().collect()
+    }
+
+    pub fn months_for_year(&self, year: &str) -> Vec<String> {
+        let mut months: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            let parts: Vec<&str> = entry.filename.split('-').collect();
+            if parts.len() >= 2
+                && parts[0] == year
+                && let Ok(num) = parts[1].parse::<usize>()
+                && (1..=12).contains(&num)
+            {
+                months.insert(MONTH_NAMES[num - 1].to_string());
+            }
+        }
+        months.into_iter().collect()
+    }
+
+    pub fn entries_for_month(&self, year: &str, month: &str) -> Vec<&crate::storage::JournalEntry> {
+        let month_num = MONTH_NAMES.iter().position(|&m| m == month).map(|p| p + 1);
+
+        self.entries
+            .iter()
+            .filter(|entry| {
+                let parts: Vec<&str> = entry.filename.split('-').collect();
+                if parts.len() >= 2
+                    && parts[0] == year
+                    && let (Ok(month_int), Some(target)) = (parts[1].parse::<usize>(), month_num)
+                {
+                    return month_int == target;
+                }
+                false
+            })
+            .collect()
+    }
+}
+
+fn is_same_or_descendant(path: &[String], target: &[String]) -> bool {
+    if target.len() > path.len() {
+        return false;
+    }
+    path.starts_with(target)
 }

@@ -1,830 +1,158 @@
 # Chronicle Design Document
 
-## Latest Architectural Review (2026-03-15)
+## Overview
 
-### Overall Architecture
-
-The project follows a reasonable modular structure:
-- **main.rs**: Binary entry point
-- **lib.rs**: Library root with module exports
-- **config/**: User configuration management
-- **model/**: Domain models (Program, Project, Milestone, Task, etc.)
-- **storage/**: File I/O, markdown parsing, template resolution
-- **tui/**: Terminal UI application (the dominant component)
-- **commands/**: CLI commands (appears to be legacy/disconnected)
-- **diagnostics/**: Logging/tracing setup
-
-### Patterns Used
-- **Trait-based storage**: `JournalStorage` and `WorkspaceStorage` traits for testability
-- **Template method**: `resolve_template()` for Markdown generation
-- **State machine**: `Mode` enum for interaction states
+Chronicle is a Markdown-native planner and journal with a terminal UI (TUI). It uses a hierarchical folder structure (`programs/ → projects/ → milestones/ → tasks/`) plus `journal/` and `planning/` directories.
 
 ---
-
-## Critical Bugs
-
-None currently known.
-
-### Technical Debt
-
-1. **App Struct Refactoring (IN PROGRESS)**
-   - Manages UI rendering, input handling, navigation, planning state, wizard state
-   - Was ~4200 lines, reduced through extractions
-
-   **Completed Extractions (app_struct_refactor branch):**
-   - ✅ NavigationState (tree_model, sidebar_items, selected_entry_index, current_*)
-   - ✅ WizardState (template_field_state)
-   - ✅ ReviewState (review_selection_index, review_input_focus, planning_preview_focus)
-   - ✅ PlanningSessionState (active, uuid, tasks, start_date, due_date, rolled_over_tasks)
-   - ✅ CommandState (input, matches, selection_index) - wired up existing CommandPalette
-
-   **Remaining to Extract:**
-   - TreeData (programs, projects, milestones, tasks, subtasks) - ~221 refs
-
-2. **Duplicate Error Types**
-   - ✅ PlanningError now integrated into main Error hierarchy
-   - Remaining: Mix of `eprintln!()` in TUI for user-facing errors (acceptable pattern)
-
-3. **Dead Code**
-   - `command.rs` and `navigation.rs` have extracted types not fully wired up
-   - CLI commands in `commands/` directory not integrated with TUI
-
-4. **Overloaded `input_buffer`**
-   - Used for many different input types without clear ownership
-
-### Testing Coverage
-
-**Present:**
-- Config module: 7 tests
-- Storage: 20+ tests
-- TUI submodules: planning_wizard, task_wizard, navigation, command, hierarchical_picker, tree
-
-**Missing:**
-- Main App logic (`handle_key`)
-- Layout/rendering (`layout.rs`)
-- Navigation integration flows
-- Error recovery paths
-- End-to-end integration tests
-
-### Recommendations
-
-| Priority | Issue | Files to Modify | Status |
-|----------|-------|-----------------|--------|
-| 1 | Extract TreeData | tui/cache.rs, tui/mod.rs, tui/views/mod.rs | ✅ Complete |
-| 2 | Error handling consistency | error.rs, storage/planning.rs | ✅ Complete |
-| 3 | Add integration tests | Various | Pending |
-| 4 | History tree structure | tui/views/mod.rs, tui/mod.rs | ✅ Complete |
-
-### Recently Fixed (2026-03-17)
-
-- **Planning Preview Screen** - Pressing 'f' now shows Preview screen with three buttons (ADD TASKS TO PLAN, CONFIRM, CANCEL) instead of closing directly
-- **Removed Review Mode** - Simplified workflow: Preview → CONFIRM → saves and returns to Normal mode
-
-### Known Bugs (TODO)
-
-#### Start Planning Session Workflow
-
-*All wizard formatting issues resolved.*
-
-#### Edit Task Details
-
-*All task editing bugs have been resolved.*
-
-#### Preview Plan
-
-*All preview bugs have been resolved.*
-
----
-
-## Remaining Work
-
-### Open Bugs
-
-1. **History navigator not expanding tree structure**: When navigating history, the tree should expand following the same structure used in the programs field (showing parent-child relationships).
-
-2. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded.
-
-3. **Navigation issues when expanding/contracting tree**: There are navigation issues when working through and expanding/contracting the tree, especially while also creating new elements. Selection may jump unexpectedly or not follow expected patterns.
-
-### Technical Debt
-
-1. **App Struct Refactoring (COMPLETE)**
-   - ✅ TreeData extracted to `cache.rs` with helper methods (`at_depth`, `at_depth_mut`)
-   - Consolidated 5 fields into `app.tree_data`
-
-2. **Duplicate Error Types**
-   - `PlanningError` in `storage/planning.rs` not integrated into main `Error` hierarchy
-
-3. **Dead Code**
-   - `command.rs` and `navigation.rs` have extracted types not fully wired up
-
-4. **Overloaded `input_buffer`**
-   - Used for many different input types without clear ownership
-
----
-
-## Task Selection Workflow (2026-03-17)
-
-This workflow describes how users add tasks to a planning session. **Space bar is NOT used for selection.**
-
-### Flow
-1. User starts a new planning session (via command palette or key binding)
-2. User navigates through Programs → Projects → Milestones → Tasks
-3. At Tasks level, user presses **Enter** on a task to open the Task Detail Wizard
-4. User can edit task fields:
-   - **Task Name** (display only, not editable)
-   - **Status** - press Enter to cycle through workflow statuses
-   - **Assigned To** - type to edit
-   - **Start Date** - type to edit (YYYY-MM-DD format)
-   - **Due Date** - type to edit (YYYY-MM-DD format)
-   - **Priority** - press Enter to cycle (low → medium → high)
-   - **Description** - type to edit
-5. User navigates to **ADD TO PLAN** button and presses Enter
-6. **On confirm**:
-   - Task file is updated on disk with any changes
-   - Task UUID is added to planning session
-   - Checkbox shows [x] in the task list
-   - User returns to task picker to add more tasks
-7. Press **f** to finish and view the Preview screen
-
-### Preview Screen
-After pressing **f**, the Preview screen shows:
-- List of selected tasks with their details (program, project, milestone, dates, priority)
-- Three buttons at the bottom:
-  - **ADD TASKS TO PLAN** - returns to task picker to add more tasks
-  - **CONFIRM** - saves the planning session and returns to Normal mode
-  - **CANCEL** - cancels the planning session and returns to Normal mode
-
-### Key Behaviors
-- **Enter** on task at Tasks level → Opens Task Detail Wizard
-- **Enter** in wizard → Cycles status/priority OR advances to next field OR confirms ADD TO PLAN
-- **Escape** → Jumps to CANCEL button (does NOT immediately cancel)
-- **Space** → Does nothing (no direct task selection)
-- **f** → Shows Preview screen with task list and action buttons
-- **CONFIRM** in Preview → Saves session and returns to Normal mode
-- **CANCEL** in Preview → Cancels session and returns to Normal mode
-
----
-
-## Original Documentation
-
-Chronicle is a Markdown-native planner and journal with a terminal UI (TUI). It uses a hierarchical folder structure (`programs/ → projects/ → milestones/ → tasks/`) plus `journal/` and `planning/` for daily notes and planning cycles.
 
 ## Architecture
 
-### Current Module Map
+### Module Map
 
 ```
 src/
-├── main.rs           # Entry point: config::Config::load_or_create() → tui::App::new().run()
-├── config.rs         # Config loading from ~/.config/chronicle/config.toml
+├── main.rs           # Entry: Config::load_or_create() → App::new().run()
+├── lib.rs            # Crate root with module exports
+├── config.rs        # Config loading from ~/.config/chronicle/config.toml
+├── error.rs         # Layered error types (thiserror)
 ├── model/
-│   └── mod.rs        # Task struct, ParseError (minimal domain model)
+│   └── mod.rs        # Domain types: Task, Program, Project, Milestone + parse_element()
 ├── storage/
-│   ├── mod.rs        # JournalStorage, WorkspaceStorage traits + impls
-│   └── md.rs         # parse_task(), task_to_markdown() (not wired up)
-├── commands/
-│   ├── mod.rs        # CLI command exports
-│   ├── init.rs       # `chronicle init` - create workspace
-│   ├── new_task.rs   # `chronicle new` - CLI task creation
-│   ├── jot.rs        # `chronicle jot` - quick journal entry
-│   └── extract.rs    # `chronicle extract` - extract content
+│   ├── mod.rs        # JournalStorage, WorkspaceStorage traits
+│   ├── md.rs         # Markdown parsing, template resolution
+│   └── planning.rs   # Planning session persistence
 └── tui/
-    ├── mod.rs        # App struct (MONOLITHIC - 1430+ lines)
-    ├── command.rs    # CommandPalette, CommandMatch, CommandAction (NOT WIRED UP)
-    ├── navigation.rs # SidebarItem, TreeState, navigation helpers (NOT WIRED UP)
-    ├── layout.rs     # Rendering functions (all views)
+    ├── mod.rs        # App state and event loop (~1500 lines)
+    ├── cache.rs      # TreeData struct (programs/projects/milestones/tasks/subtasks)
+    ├── layout.rs     # Layout orchestration
+    ├── navigation.rs # JournalTreeState, SidebarItem, tree helpers
+    ├── command.rs    # Command palette types
     └── views/
-        └── mod.rs    # Placeholder comment only
+        └── mod.rs    # All view render functions
 ```
 
 ### Key Types
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `App` | tui/mod.rs | Main TUI application state and event loop |
-| `Mode` | tui/mod.rs | Interaction mode enum (Normal, CommandPalette, Input) |
-| `ViewType` | tui/mod.rs | Enum of all views (TreeView, Journal, Input*, etc.) |
-| `CommandMatch` | tui/mod.rs | Command palette item with label, view, action |
-| `CommandAction` | tui/mod.rs | Actions commands can trigger |
-| `Config` | config.rs | User configuration (workspace, editor, workflow, keys) |
-| `Task` | model/mod.rs | Task data structure (title, status, priority, etc.) |
-| `SidebarItem` | tui/mod.rs | Tree view item for sidebar |
-| `DirectoryEntry` | storage/mod.rs | File system entry with name, path, is_dir |
-| `JournalEntry` | storage/mod.rs | Journal file entry |
+| `App` | tui/mod.rs | Main TUI state, event loop, key handling |
+| `Mode` | tui/mod.rs | Normal, CommandPalette, Input |
+| `ViewType` | tui/mod.rs | All view variants |
+| `Config` | config.rs | Workspace, editor, workflow, keys |
+| `TreeData` | tui/cache.rs | Cached tree vectors (programs/projects/milestones/tasks/subtasks) |
+| `JournalTreeState` | tui/navigation.rs | Tracks journal history expansion state |
+| `Task` | model/mod.rs | Task with title, status, priority, dates, description |
+| `PlanningSessionState` | tui/mod.rs | Active planning session data |
+
+---
 
 ## Current Implementation Status
 
-### ✅ Working Features
+### Working Features
 
-- **Command Palette**: `/` opens, typing filters, Up/Down navigates, Enter executes
-- **Navigation**: Arrow keys work, tree expansion, hierarchy traversal (4 levels deep)
-- **Element Creation**: Template-based wizard for Programs/Projects/Milestones/Tasks
-- **Journal**: Open today's journal, browse history
-- **Tree View**: Programs → Projects → Milestones → Tasks → Subtasks hierarchy
-- **External Editor**: Launches configured editor, restores TUI after
-- **Mode Enum**: Proper `Mode` enum exists (Normal, CommandPalette, Input)
+- Command palette (`/` opens, typing filters, Up/Down navigates, Enter executes)
+- Tree navigation: arrow keys, expand/collapse, 4-level hierarchy
+- Element creation: template-based wizard for Programs/Projects/Milestones/Tasks
+- Journal: today's journal, history browser with year/month tree expansion
+- External editor: launches configured editor, restores TUI
+- Planning sessions: weekly planning with task selection and preview
+- Keyboard shortcuts: hjkl, Tab, Escape, Enter
 
-### ⚠️ Needs Improvement
+### Open Issues
 
-- **Monolithic App**: 1430+ lines in `tui/mod.rs`, hard to maintain
-- **Duplicate Types**: `command.rs` and `navigation.rs` have full implementations but are NOT WIRED UP
-  - `tui/mod.rs` defines its own inline `SidebarItem`, `TreeState`, `CommandMatch`, `CommandAction`
-  - Extracted modules have `#[allow(dead_code)]` on everything
-- **Template Wizard Inline**: All template field handling is in App, not extracted
-- **Minimal Domain Model**: Only Task struct, no Program/Project/Milestone types
-- **No Archive**: Design calls for `.archive/` but not implemented
+1. **Tree vertical pipes**: Tree view lacks visual `│` connecting sibling elements
+2. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
+3. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
 
-### ❌ Missing
-
-- **Layered Error Types**: Uses anyhow everywhere, no thiserror types
-- **Status/Assignee Commands**: No way to modify existing elements
-- **Fuzzy Search**: Substring match only
-- **Markdown Rendering**: Content shown as raw text
-- **views/mod.rs**: Only contains placeholder comment
-
-## Module Contracts
-
-### config.rs
-
-```rust
-pub struct NavigationKeys {
-    pub left: char,   // default 'h'
-    pub right: char,  // default 'l'
-    pub up: char,     // default 'k'
-    pub down: char,   // default 'j'
-}
-
-pub struct Config {
-    pub workspace: PathBuf,           // Workspace directory
-    pub editor: String,               // Editor command (default "hx")
-    pub workflow: Vec<String>,        // Status workflow
-    pub navigator_width: u16,         // Sidebar width (default 60)
-    pub planning_duration: String,    // "biweekly"
-    pub navigation_keys: NavigationKeys,
-}
-
-impl Config {
-    pub fn load_or_create() -> Result<Self>;
-    pub fn config_path() -> Option<PathBuf>;
-    pub fn config_dir() -> Option<PathBuf>;
-}
-```
-
-### storage/mod.rs
-
-```rust
-pub struct DirectoryEntry {
-    pub name: String,
-    pub path: PathBuf,
-    pub is_dir: bool,
-}
-
-pub struct JournalEntry {
-    pub filename: String,
-    pub path: PathBuf,
-}
-
-pub trait JournalStorage {
-    fn journal_dir(&self) -> PathBuf;
-    fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)>;
-    fn list_journal_entries(&self) -> Result<Vec<JournalEntry>>;
-}
-
-pub trait WorkspaceStorage {
-    fn programs_dir(&self) -> PathBuf;
-    fn list_programs(&self) -> Result<Vec<DirectoryEntry>>;
-    fn list_projects(&self, program: &str) -> Result<Vec<DirectoryEntry>>;
-    fn list_milestones(&self, program: &str, project: &str) -> Result<Vec<DirectoryEntry>>;
-    fn list_tasks(&self, program: &str, project: &str, milestone: &str) -> Result<Vec<DirectoryEntry>>;
-    fn list_subtasks(&self, program: &str, project: &str, milestone: &str, task: &str) -> Result<Vec<DirectoryEntry>>;
-    fn create_from_template(&self, template_name: &str, target: &Path, values: &HashMap<String, String>, strip_labels: &HashSet<String>) -> Result<PathBuf>;
-}
-
-pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)>;
-pub fn resolve_template(template: &str, values: &HashMap<String, String>, strip_labels: &HashSet<String>) -> String;
-```
-
-### tui/mod.rs (Current - needs refactoring)
-
-```rust
-pub enum Mode {
-    Normal,
-    CommandPalette,
-    Input,  // TODO: Will be used for input mode
-}
-
-pub enum ViewType {
-    TreeView,
-    Journal,
-    JournalArchiveList,
-    JournalToday,       // TODO
-    Backlog,
-    WeeklyPlanning,
-    ViewingContent,
-    InputProgram,
-    InputProject,
-    InputMilestone,
-    InputTask,
-    InputTemplateField,
-}
-
-pub struct App {
-    // Configuration
-    pub config: Config,
-    
-    // View state
-    pub current_view: ViewType,
-    pub mode: Mode,  // Good: proper enum exists
-    
-    // Navigation (duplicates types in navigation.rs)
-    pub tree_state: TreeState,
-    pub sidebar_items: Vec<SidebarItem>,
-    pub selected_entry_index: usize,
-    pub current_program: Option<String>,
-    pub current_project: Option<String>,
-    pub current_milestone: Option<String>,
-    pub current_task: Option<String>,
-    
-    // Command palette (duplicates types in command.rs)
-    pub command_input: String,
-    pub command_matches: Vec<CommandMatch>,
-    pub command_selection_index: usize,
-    
-    // Data
-    pub programs: Vec<DirectoryEntry>,
-    pub projects: Vec<DirectoryEntry>,
-    pub milestones: Vec<DirectoryEntry>,
-    pub tasks: Vec<DirectoryEntry>,
-    pub subtasks: Vec<DirectoryEntry>,
-    pub journal_entries: Vec<JournalEntry>,
-    
-    // Input handling
-    pub input_buffer: String,
-    pub template_field_state: Option<TemplateFieldState>,
-    
-    // Content viewing
-    pub selected_content: Option<DirectoryEntry>,
-    pub current_content_text: Option<String>,
-    
-    // Lifecycle
-    pub should_exit: bool,
-    pub needs_terminal_reinit: bool,
-}
-```
-
-### tui/command.rs (NOT WIRED UP - all #[allow(dead_code)])
-
-```rust
-pub struct CommandPalette {
-    pub input: String,
-    pub matches: Vec<CommandMatch>,
-    pub selection_index: usize,
-}
-
-impl CommandPalette {
-    pub fn new() -> Self;
-    pub fn handle_input(&mut self, code: KeyCode) -> Option<CommandMatch>;
-    pub fn open(&mut self);
-    pub fn close(&mut self);
-}
-
-pub fn get_command_list() -> Vec<CommandMatch>;
-pub fn filter_commands(input: &str, depth: usize) -> Vec<CommandMatch>;
-```
-
-### tui/navigation.rs (NOT WIRED UP - all #[allow(dead_code)])
-
-```rust
-pub struct TreeState {
-    pub path: Vec<String>,
-    pub expanded: Vec<String>,
-}
-
-impl TreeState {
-    pub fn depth(&self) -> usize;
-    pub fn is_root(&self) -> bool;
-    pub fn push(&mut self, name: impl Into<String>);
-    pub fn pop(&mut self) -> Option<String>;
-}
-
-pub fn build_sidebar_items(...) -> Vec<SidebarItem>;
-pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize;
-pub fn navigate_down(items: &[SidebarItem], current_index: usize) -> usize;
-```
+---
 
 ## Data Flow
 
 ### Application Startup
 
-```mermaid
-graph TD
-    A[main.rs] --> B[Config::load_or_create]
-    B --> C[App::new]
-    C --> D[load_tree_view_data]
-    D --> E[App::run]
-    E --> F{Event Loop}
-    F --> G[Poll event]
-    G --> H{mode?}
-    H -->|CommandPalette| I[handle_command_input]
-    H -->|Normal| J[handle_key]
-    I --> K[filter_commands]
-    J --> L[Navigate/Action]
-    K --> F
-    L --> F
+```
+main.rs
+  └─ Config::load_or_create()
+       └─ App::new()
+            └─ load_tree_view_data()  →  App::run()
+                                              └─ Event Loop
+                                                   ├─ CommandPalette  →  filter_commands()
+                                                   └─ Normal  →  handle_key()
 ```
 
-### Element Creation Flow
+### Planning Session Flow
 
-```mermaid
-graph TD
-    A[Command: New Program] --> B[ViewType::InputProgram]
-    B --> C[User types name]
-    C --> D[Enter: confirm_create_program]
-    D --> E[Load template from disk]
-    E --> F[parse_template_fields]
-    F --> G[ViewType::InputTemplateField]
-    G --> H[For each field]
-    H --> I[User input]
-    I --> J{More fields?}
-    J -->|Yes| H
-    J -->|No| K[create_from_template]
-    K --> L[Refresh tree]
-    L --> M[Navigate to new item]
+```
+Start Planning Session
+  └─ Wizard (name, duration, dates)
+       └─ Task Picker (Programs → Projects → Milestones → Tasks)
+            └─ Enter on task  →  Task Detail Wizard
+                 └─ ADD TO PLAN  →  return to picker
+                      └─ f  →  Preview Screen
+                           ├─ ADD TASKS TO PLAN  →  return to picker
+                           ├─ CONFIRM  →  save session, return to Normal
+                           └─ CANCEL  →  discard, return to Normal
 ```
 
-## Key Decisions
+### Journal History Navigation
 
-### 2026-03-03: Sprint Planning Assessment
-
-**Finding**: The original sprint plan ("App Modes & Command Palette") was based on outdated analysis. The command palette is already fully implemented.
-
-**Decision**: Revised sprint to focus on:
-1. Refactoring the monolithic `tui/mod.rs` (1430+ lines)
-2. Wiring up the extracted `command.rs` and `navigation.rs` modules
-3. Removing duplicate type definitions
-
-**Rationale**: The codebase is functional but has significant duplication. The extracted modules exist but are not used.
-
-### 2026-03-04: Architecture Assessment
-
-**Finding**: The `command.rs` and `navigation.rs` modules are NOT empty stubs - they contain complete implementations with tests. However, they are marked `#[allow(dead_code)]` and the `App` struct defines duplicate types inline.
-
-**Next Steps**:
-1. Wire up `CommandPalette` from `command.rs` to replace inline command handling in App
-2. Wire up `TreeState` and navigation functions from `navigation.rs`
-3. Remove duplicate type definitions from `tui/mod.rs`
-
-## Current Sprint
-
-**Branch**: `fix/navigator-auto-navigate-on-create`
-**Status**: In Progress
-
-### Issue
-After creating a new element (program/project/milestone/task), the code automatically navigates into it. This causes the sidebar to show the children of the new element instead of the parent's list. Users don't see the newly created element in the list because they've already been pushed into it.
-
-### Root Cause
-In `confirm_template_field`, after calling `load_tree_view_data()` at line 1914, the code:
-1. Sets `current_project`/`current_milestone`/`current_task`
-2. Pushes to `tree_state.path`
-3. Calls `load_tree_view_data()` again at line 1955
-
-This second call loads children (e.g., milestones after creating a project), hiding the new element from view.
-
-### Fix Required
-- Remove auto-navigation into new element after creation
-- After creating element, stay at parent level with new element selected
-- User can manually navigate into new element with arrow key
-
-### Additional Task: Add `/refresh` Command
-- Add a `/refresh` command that forces `load_tree_view_data()`
-- Useful when navigator gets out of sync with filesystem
-
-### Tasks
-- [x] Fix auto-navigation behavior - stay at parent level after element creation
-- [x] Add `/refresh` command to command palette
-- [x] Verify navigator shows new element after creation
-- [x] Run tests and ensure clippy clean
+```
+Journal sidebar:
+  ├─ Today  →  opens today's journal in viewer
+  └─ History
+       ├─ Right  →  expands years
+       │    ├─ Right on year  →  expands months
+       │    │    └─ Right on month  →  shows entries
+       │    │         └─ Enter on entry  →  opens in viewer
+       │    └─ Left  →  collapses to parent level
+       └─ Left on History  →  collapses entire history tree
+```
 
 ---
 
-### Bug: Creation Wizard File/Folder Structure
+## Keyboard Reference
 
-**Status**: Verified OK - elements are created in correct locations
-
-### Bug: History Not Sorting by Year/Month
-
-**Status**: Verified OK - current implementation sorts correctly for flat journal structure
-
-### Work Completed
-- Converted templates from block YAML to inline YAML format (`field: {{PLACEHOLDER}}`)
-- Added UUID placeholder support in `resolve_template()` function
-- Added `FieldInfo` and `WizardFocus` structs for better wizard state management
-- Added Tab key handling for wizard field navigation
-- Added `uuid` crate dependency to Cargo.toml
-
-### Verification
-- All 61 tests passing ✓ (including new navigator refresh test)
-- Cargo clippy clean ✓
-- Code compiles ✓
+| Key | Context | Action |
+|-----|---------|--------|
+| `j` / `↓` | Normal | Navigate down in sidebar |
+| `k` / `↑` | Normal | Navigate up in sidebar |
+| `l` / `→` | Normal | Expand item / enter subdirectory |
+| `h` / `←` | Normal | Collapse parent / go back |
+| `Enter` | Normal | Open item / confirm action |
+| `Esc` | Any | Cancel / go back |
+| `/` | Normal | Open command palette |
+| `Space` | Task picker | Open task detail wizard |
+| `f` | Task picker | Show preview screen |
+| Tab | Wizard | Next field |
+| `Shift+Tab` | Wizard | Previous field |
 
 ---
-
-### Bug Fix: Navigator Not Refreshing on Element Creation
-
-**Branch**: `fix/navigator-refresh-on-create`
-**Status**: Complete
-
-### Issue
-The navigator panel was not being refreshed when a new element was created via the template wizard.
-
-### Root Cause (Two bugs)
-1. **Missing reload**: After creating a new element and navigating into it, `load_tree_view_data()` was not called to refresh the sidebar with the new children.
-2. **Wrong key lookup**: The code looked for `PROGRAM_NAME`, `PROJECT_NAME`, `MILESTONE_NAME` but templates use `NAME` as the placeholder - causing navigation to never happen.
-
-### Fix Applied
-- Added second `load_tree_view_data()` call after navigating into new element
-- Fixed name lookup to use correct template placeholder key (`NAME`)
-- Added test `test_navigator_refreshes_after_creating_element`
-
-### Verification
-- All 65 tests passing ✓ (updated count)
-- Clippy clean ✓
-
----
-
-### Bug Fix: Element Creation Not Working
-
-**Branch**: `fix/element-creation-not-working`
-**Status**: Complete
-
-### Issue
-Elements were not being created at all when completing the template wizard - files were never written to disk.
-
-### Root Cause
-In `confirm_template_field`, the `target_path` field was initialized as `None` with a comment "Will be set when confirmed" but the code to compute it was never implemented. The code checked `if let Some(ref target) = state.target_path` which was always `None`, so `create_from_template` was skipped entirely.
-
-### Fix Applied
-- Modified `confirm_template_field` to compute `target_path` based on element type (program/project/milestone/task), current context, and element name
-- Updated `start_new_milestone` to use template wizard
-- Updated `start_new_task` to use template wizard with proper navigation
-
-### Tests Added
-- `test_wizard_creates_program_file_on_disk`
-- `test_wizard_creates_project_file_on_disk`
-- `test_wizard_creates_milestone_file_on_disk`
-- `test_wizard_creates_task_file_on_disk`
-
-### Verification
-- All 65 tests passing ✓
-- Clippy clean ✓
-- All 60 tests passing, clippy clean
-- Bold prompts with `::` separator
-- "empty" for unfilled fields
-- "(auto-filled)" suffix for auto-populated fields
-- Removed brackets from buttons
-- Background highlight instead of arrow for selection
-- Fixed title appearing in separate window
-- All 60 tests passing, clippy clean
-
-**Branch**: `fix/wizard-inline-edit` — **MERGED** (tag: `stable/wizard-inline-edit-2026-03-04`)
-- Redesigned wizard with inline editing
-- Field names and values on same line
-- All 60 tests passing, clippy clean
-
-**Branch**: `fix/wizard-inline-edit` — **MERGED** (tag: `stable/wizard-inline-edit-2026-03-04`)
-- Redesigned wizard with inline editing
-- Field names and values on same line
-- All fields visible at once (no separate input area)
-- Prepopulated fields show "(auto)" suffix with dimmed style
-- Focused editable fields have yellow highlight
-- Added `test_inline_editing_updates_field_value`
-- All 60 tests passing, clippy clean
-
-**Branch**: `fix/sidebar-empty-programs` — **MERGED** (tag: `stable/sidebar-empty-state-2026-03-04`)
-- Added `is_create_action` field to `SidebarItem` struct
-- Show "+ Create Program..." in sidebar when programs list is empty
-- All 59 tests passing, clippy clean
-
----
-- Added `is_create_action` field to `SidebarItem` struct
-- Show "+ Create Program..." in sidebar when programs list is empty
-- Handle create action selection to trigger program creation wizard
-- Styled with cyan italic text
-- Added test `test_build_sidebar_items_empty_shows_create`
-- All 59 tests passing, clippy clean
-
-**Branch**: `fix/new-program-empty-workspace` — **MERGED** (tag: `stable/new-program-tests-2026-03-04`)
-- Investigated bug report: "New Program" not showing in empty workspace
-- **Finding**: Command palette works correctly; sidebar issue addressed in next sprint
-- Added tests for command palette behavior
-
-**Branch**: `fix/creation-wizard-v2` — **MERGED** (tag: `stable/creation-wizard-v2-2026-03-04`)
-- Added `owner` field to Config struct
-- Added `is_editable` and `display_order` to FieldInfo struct
-- Added `WizardFocus` enum for field/button navigation
-- Keywords (TODAY, OWNER, DEFAULT_STATUS, NAME) prepopulated and non-editable
-- Custom placeholders are editable user input fields
-- Template order preserved with display_order
-- CONFIRM button creates file, CANCEL returns to tree view
-- Escape jumps to CANCEL, Enter navigates to next editable field
-- All 56 tests passing, clippy clean
-
-**Branch**: `feat/status-panel` — **MERGED** (tag: `stable/status-panel-2026-03-04`)
-- Redesigned status bar with breadcrumb and mode indicator
-- Left side: Shows Program > Project > Milestone > Task hierarchy
-- Right side: Shows mode (NORMAL/COMMAND/INPUT) with color coding
-
-**Branch**: `feat/planning-views` — **MERGED** (tag: `stable/planning-views-2026-03-04`)
-- Implemented Backlog view showing all tasks with parent context
-- Implemented WeeklyPlanning view with week range and task statistics
-
-**Branch**: `feat/domain-model` — **MERGED** (tag: `stable/domain-model-2026-03-04`)
-- Added Program, Project, Milestone, Task structs with serde support
-- Added `parse_element()` for YAML frontmatter parsing
-
-**Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
-- Wired up functions from command.rs and navigation.rs
-- `mod.rs`: 1735 → 1411 lines (**324 lines removed**)
-
-**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
-- Fixed command palette context awareness
-- Single-page wizard UI with up/down/tab navigation
-- Updated templates to YAML frontmatter
-
-**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
-- Created `src/error.rs` with layered error types
-- Created `src/lib.rs` as crate root
-
-**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
-- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
-- `layout.rs`: 674 → 272 lines (60% reduction)
-
-**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
-- Wired up type imports from `navigation.rs` and `command.rs`
-
----
-
-### Recent Sprints (Completed)
-
-**Branch**: `refactor/wire-extracted-functions` — **MERGED** (tag: `stable/function-wire-up-2026-03-04`)
-- Wired up `get_command_list()`, `filter_commands()` from command.rs
-- Wired up `navigate_up()`, `navigate_down()`, `build_sidebar_items()` from navigation.rs
-- App methods now delegate to module functions
-- Removed dead code annotations from wired functions
-- `mod.rs`: 1735 → 1411 lines (**324 lines removed**)
-- All 50 tests passing, clippy clean
-
-**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
-- Fixed command palette context awareness
-- Single-page wizard UI with up/down/tab navigation
-- Updated templates to YAML frontmatter
-- All 50 tests passing, clippy clean
-
-**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
-- Created `src/error.rs` with layered error types
-- Created `src/lib.rs` as crate root
-- Library code uses `thiserror`, only `main.rs` uses `anyhow`
-
-**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
-- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
-- `layout.rs`: 674 → 272 lines (60% reduction)
-
-**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
-- Wired up type imports from `navigation.rs` and `command.rs`
-
----
-
-### Recent Sprints (Completed)
-
-**Branch**: `fix/creation-wizard` — **MERGED** (tag: `stable/creation-wizard-fix-2026-03-04`)
-- Fixed command palette context awareness (uses current_program/project/milestone instead of depth)
-- "New Program" always available (especially when no programs exist)
-- Implemented single-page wizard UI with up/down/tab navigation
-- All template fields shown at once with scroll support
-- Removed obsolete DateInputPart enum
-- Updated templates to proper YAML frontmatter format
-- All 50 tests passing, clippy clean
-
-**Branch**: `feat/layered-error-types` — **MERGED** (tag: `stable/layered-errors-2026-03-04`)
-- Created `src/error.rs` with layered error types
-- Created `src/lib.rs` as crate root
-- Library code uses `thiserror`, only `main.rs` uses `anyhow`
-- All 49 tests passing, clippy clean
-
-**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
-- Extracted 11 view functions from `layout.rs` to `views/mod.rs`
-- `layout.rs`: 674 → 272 lines (60% reduction)
-
-**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
-- Wired up type imports from `navigation.rs` and `command.rs`
-
----
-- Fixed pre-existing bug in `new_task.rs` (unterminated char literal)
-- All 49 tests passing, clippy clean
-
-**Branch**: `refactor/extract-views-module` — **MERGED** (tag: `stable/views-extraction-2026-03-04`)
-- Extracted 11 view-specific render functions from `layout.rs` to `views/mod.rs`
-- `layout.rs`: 674 → 272 lines (60% reduction)
-- All 49 tests passing, clippy clean
-
-**Branch**: `refactor/wire-extracted-modules` — **MERGED** (tag: `stable/type-wire-up-2026-03-04`)
-- Wired up type imports from extracted modules
-- Removed duplicate inline type definitions from `tui/mod.rs`
-- All 49 tests passing, clippy clean
-
----
-
-### Future Work (Not Yet Scheduled)
-
-**Function Wiring**: The extracted modules still contain functions that duplicate App methods:
-- `command::filter_commands()` vs `App::filter_commands()`
-- `command::get_command_list()` vs inline function in mod.rs
-- `navigation::build_sidebar_items()` vs `App::build_sidebar_items()`
-- `navigation::navigate_up()`/`navigate_down()` vs App methods
-
-**Challenge**: The extracted functions are designed as pure functions taking parameters, while App methods use internal state. Options:
-1. Refactor App methods to delegate to module functions (passing internal state)
-2. Keep both and accept some duplication (current state)
-3. Redesign the interface
-
----
-
-**Branch**: `refactor/tree-navigation-dry` — **MERGED** (tag: `stable/tree-navigation-refactor-2026-03-03`)
-- Fixed flat tasks discovery in `tasks/` subdirectory
-- Added subtasks support (depth 4 navigation)
-- Added `discover_elements()` helper to reduce code duplication
-- Added tracing for error logging
-- 49 tests passing
-
-**Branch**: `fix/collapse-on-navigate-left` — **MERGED** (tag: `stable/navigate-left-fix-2026-03-03`)
-- Navigate left now selects parent item instead of header
-
-**Branch**: `fix/selection-on-navigate` — **MERGED** (tag: `stable/selection-fix-2026-03-03`)
-- On initial load, first program is selected
-- On navigate right, selection moves to first child item
-
-**Branch**: `fix/storage-discovery` — **MERGED** (tag: `stable/storage-discovery-2026-03-03`)
-- Fix storage discovery to handle both flat and nested element structures
-
-**Branch**: `fix/config-toml-parsing` — **MERGED** (tag: `stable/config-toml-fix-2026-03-03`)
-- Fixed TOML config parsing, added missing fields, renamed data_path to workspace
-
-## Open Bugs
-
-1. ~~**History navigator not expanding tree structure**~~: ✅ **FIXED** - Journal history shows year/month hierarchy
-
-2. **Journal History navigation flow**: The history should expand in the navigator sidebar (like programs):
-   - When "History" is selected in navigator → main window shows list of non-empty months
-   - Right arrow → navigate into month, navigator shows files in that month
-   - Main window shows markdown rendering of selected file
-   - This should be handled via the navigator sidebar, not duplicated in main content window
-
-3. **Tree vertical pipe connecting elements**: The tree view should show vertical pipes connecting elements at the same level, even when an element in the middle of the list is expanded.
-
-4. **Navigation issues when expanding/contracting tree**: There are navigation issues when working through and expanding/contracting the tree, especially while also creating new elements. Selection may jump unexpectedly or not follow expected patterns.
-
-## Open Questions
-
-1. **Domain Model Expansion**: Should we add proper `Program`, `Project`, `Milestone` structs to `model/mod.rs`, or keep the current approach of treating everything as `DirectoryEntry`? ✅ RESOLVED: Implemented in `feat/domain-model` sprint.
-
-2. **Error Type Migration**: Should we migrate from `anyhow` to layered `thiserror` types in this sprint, or defer to a future sprint? ✅ RESOLVED: Implemented in `feat/layered-error-types` sprint.
-
-3. **Async Runtime**: Tokio is a dependency but not used. Should we remove it or plan for async operations (e.g., file watching)?
-
-4. **Module Wiring Strategy**: Should we wire up `command.rs` and `navigation.rs` in one sprint or split into two? ✅ RESOLVED: Implemented in `refactor/wire-extracted-functions` sprint.
-
-5. **Status Panel Design** ✅ RESOLVED: Implemented in `feat/status-panel` sprint (2026-03-04).
-
-6. **Config.toml Creator Wizard**: Instead of hardcoded defaults and first-run CLI prompts, should we have a TUI-based config creator wizard? This would allow users to set owner, workflow statuses, etc. in a more user-friendly way.
-
-7. **Custom Field Selection Lists**: Should we allow custom selection lists for custom placeholders in config.toml? For example, a section like:
-   ```toml
-   [[custom_fields]]
-   field = "priority"
-   placeholder = "MY_PRIORITY"
-   values = ["Low", "Medium", "High"]
-   ```
-   This would present the user with a dropdown/selection list instead of a free-form text field when creating elements with custom templates.
 
 ## Changelog
 
 | Date | Event |
 |------|-------|
-| 2026-03-18 | Feature: Journal history now shows entries grouped by year/month in tree structure |
-| 2026-03-18 | Refactor: Integrated PlanningError into Error hierarchy, removed redundant Io/Yaml variants |
-| 2026-03-18 | Refactor: Extracted TreeData struct in cache.rs, consolidated 5 fields into `app.tree_data` |
+| 2026-03-18 | Feature: Journal history tree structure (grouped by year/month) |
+| 2026-03-18 | Feature: Journal history navigates in sidebar (Right expands, Left collapses, Enter opens) |
+| 2026-03-18 | Refactor: TreeData extracted to cache.rs — 5 fields consolidated into `app.tree_data` |
+| 2026-03-18 | Refactor: PlanningError integrated into Error hierarchy, removed redundant Io/Yaml variants |
 | 2026-03-18 | Bug fix: Task description no longer shows duplicate "# Description" header |
-| 2026-03-17 | Bug fix: Planning session Preview screen now shows with ADD TASKS TO PLAN, CONFIRM, CANCEL buttons |
-| 2026-03-17 | Bug fix: Task detail wizard properly updates task file on disk when adding to plan |
-| 2026-03-17 | Bug fix: Task selection UX improved - Enter navigates fields, Escape jumps to Cancel |
-| 2026-03-17 | Refactor: Removed Review mode from planning workflow - Preview directly saves on CONFIRM |
-| 2026-03-06 | Bug fix: Navigator now stays at parent level after element creation, /refresh command added |
-| 2026-03-05 | Bug fix: Element creation not working - `target_path` was never set, now computes path based on element type and context |
-| 2026-03-05 | Bug fix: Navigator not refreshing on element creation - added missing `load_tree_view_data()` call and fixed name key lookup |
-| 2026-03-05 | Sprint `fix/wizard_template_formats` complete - UUID placeholder support, inline YAML templates |
-| 2026-03-04 | Corrected architecture assessment - command.rs and navigation.rs are NOT empty |
-| 2026-03-03 | Created DESIGN.md with actual codebase assessment |
-| 2026-03-03 | Created branch `feat/app-modes` |
-| 2026-03-03 | Tagged `stable/pre-app-modes-2026-03-03` |
-| 2026-03-03 | Committed AGENTS.md improvements |
+| 2026-03-18 | Integration tests: 18 navigation and command palette tests added (142 total tests) |
+| 2026-03-17 | Feature: Planning Preview screen with ADD TASKS TO PLAN, CONFIRM, CANCEL buttons |
+| 2026-03-17 | Refactor: Removed Review mode — Preview directly saves on CONFIRM |
+| 2026-03-17 | Bug fix: Task detail wizard properly updates task file on disk |
+| 2026-03-17 | Bug fix: Enter navigates wizard fields, Escape jumps to Cancel |
+| 2026-03-06 | Bug fix: Navigator stays at parent level after element creation |
+| 2026-03-06 | Feature: `/refresh` command to reload tree from disk |
+| 2026-03-05 | Bug fix: Element creation broken — `target_path` was never set |
+| 2026-03-05 | Bug fix: Navigator not refreshing after element creation |
+| 2026-03-04 | Feature: Status bar with breadcrumb and mode indicator |
+| 2026-03-04 | Feature: Backlog and WeeklyPlanning views |
+| 2026-03-04 | Feature: Domain model (Program, Project, Milestone, Task structs + parse_element) |
+| 2026-03-04 | Refactor: Error types layered with thiserror, lib.rs crate root |
+| 2026-03-04 | Refactor: View functions extracted to views/mod.rs |
+| 2026-03-03 | Bug fix: Navigate left selects parent instead of header |
+| 2026-03-03 | Bug fix: First program selected on load, Right moves to first child |
+| 2026-03-03 | Bug fix: Storage discovery handles flat and nested structures |
+| 2026-03-03 | Bug fix: TOML config parsing fixed |

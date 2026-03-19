@@ -15,14 +15,16 @@ cargo fmt --check
 - Diagnostics: `src/diagnostics.rs`
 - Storage API: `src/storage/mod.rs`
 - TUI State/Event Loop: `src/tui/mod.rs`
+- TUI Cache: `src/tui/cache.rs` (TreeData struct)
+- TUI Navigation: `src/tui/navigation.rs` (JournalTreeState, sidebar helpers)
 - TUI Rendering: `src/tui/layout.rs`, `src/tui/views/mod.rs`
 - Commands: `src/commands/*.rs`
 
 ## Current Notes
 
-- `src/tui/navigation.rs` and `src/tui/command.rs` include extracted logic, but `App` in `src/tui/mod.rs` still owns the active behavior.
+- `TreeData` in `src/tui/cache.rs` holds programs/projects/milestones/tasks/subtasks vectors.
+- `JournalTreeState` in `src/tui/navigation.rs` tracks journal history tree expansion.
 - Storage discovery supports mixed layouts for backwards compatibility.
-- Wizard writes should remain canonical unless a migration decision says otherwise.
 
 ## When Changing Navigation
 

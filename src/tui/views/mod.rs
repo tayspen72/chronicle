@@ -2,7 +2,7 @@
 
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::cache::build_journal_tree;
-use crate::tui::{App, Mode};
+use crate::tui::{navigation, App, Mode};
 use ratatui::{
     layout::Constraint,
     style::{Color, Style},
@@ -20,7 +20,63 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let item = &app.navigation_state.sidebar_items[idx];
 
         if !item.is_header && !item.name.is_empty() {
-            if let Some(journal_action) = &item.is_journal_item {
+            // Handle journal tree navigation items (years, months, entries)
+            if let Some(ref jpath) = item.journal_path {
+                if item.is_journal_header {
+                    // This is a journal header (year or month) - show contents at this level
+                    if jpath.is_empty() {
+                        // History level - show years list
+                        title = "Journal History".to_string();
+                        let years = app.journal_tree_state.years();
+                        if years.is_empty() {
+                            content_to_show = "No journal entries found.\n\nUse /journal to create today's entry.".to_string();
+                        } else {
+                            content_to_show = years.join("\n");
+                        }
+                    } else if jpath.len() == 1 {
+                        // Year level - show months list
+                        let year = &jpath[0];
+                        title = format!("Journal - {}", year);
+                        let months = app.journal_tree_state.months_for_year(year);
+                        if months.is_empty() {
+                            content_to_show = format!("No entries for {}", year);
+                        } else {
+                            content_to_show = months.join("\n");
+                        }
+                    } else if jpath.len() == 2 {
+                        // Month level - show entries list
+                        let year = &jpath[0];
+                        let month = &jpath[1];
+                        title = format!("Journal - {} {}", month, year);
+                        let entries = app.journal_tree_state.entries_for_month(year, month);
+                        if entries.is_empty() {
+                            content_to_show = format!("No entries for {} {}", month, year);
+                        } else {
+                            content_to_show = entries
+                                .iter()
+                                .map(|e| e.filename.trim_end_matches(".md").to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                        }
+                    }
+                } else {
+                    // Entry level - show the entry content
+                    let label = navigation::journal_entry_label(jpath).unwrap_or(&item.name);
+                    if let Some(entry) = app
+                        .journal_entries
+                        .iter()
+                        .find(|e| *e.filename.trim_end_matches(".md") == *label)
+                    {
+                        title = entry.filename.trim_end_matches(".md").to_string();
+                        content_to_show = app
+                            .config
+                            .workspace
+                            .read_journal_entry(&entry.path)
+                            .unwrap_or_else(|_| "Failed to load entry".to_string());
+                    }
+                }
+            } else if let Some(journal_action) = &item.is_journal_item {
+                // Handle journal action items (Today, History)
                 match journal_action.as_str() {
                     "Today" => {
                         title = "Today".to_string();
@@ -39,19 +95,24 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     }
                     "History" => {
                         title = "Journal History".to_string();
-                        let entries = app
-                            .config
-                            .workspace
-                            .list_journal_entries()
-                            .unwrap_or_default();
-                        if entries.is_empty() {
-                            content_to_show = "No journal entries found".to_string();
+                        if app.journal_entries.is_empty() {
+                            content_to_show = "No journal entries found.\n\nUse /journal to create today's entry.".to_string();
                         } else {
-                            content_to_show = entries
-                                .iter()
-                                .map(|e| e.filename.trim_end_matches(".md").to_string())
-                                .collect::<Vec<_>>()
-                                .join("\n");
+                            // Show years as the top-level view
+                            let years = app.journal_tree_state.years();
+                            if years.len() == 1 {
+                                // Only one year - flatten to show entries directly
+                                let year = &years[0];
+                                let entries: Vec<_> = app
+                                    .journal_entries
+                                    .iter()
+                                    .filter(|e| e.filename.starts_with(year))
+                                    .map(|e| e.filename.trim_end_matches(".md").to_string())
+                                    .collect();
+                                content_to_show = entries.join("\n");
+                            } else {
+                                content_to_show = years.join("\n");
+                            }
                         }
                     }
                     _ => {}
