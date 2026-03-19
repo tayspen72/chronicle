@@ -67,14 +67,18 @@ src/
 
 ### Journal History Navigation Bugs (TODO)
 
-1. **Today not opening editor**: Pressing Enter on "Today" has no response — should open today's journal in external editor
-2. **Programs disappear when History expands**: Navigating Right on "History" causes all programs to disappear from sidebar and become inaccessible
-3. **History selection should move to child**: Right on History/Year/Month should select the newly revealed child, not stay on parent (match programs behavior)
-4. **Cannot collapse month level**: After opening the final tier (months) in history tree, there is no way to close it
+1. **L-arrow collapse behavior is broken**: After expanding History → month → entries:
+   - L-arrow jumps to top program instead of collapsing the current level
+   - Selection does not stay in the journal tree hierarchy
+   - R-arrow twice expands month then entries; L-arrow once jumps to month but does NOT collapse entries; L-arrow again jumps to top program and collapses entries (should collapse one level per L-arrow press)
 
-### Planning Navigation Bug (TODO)
+### Planning Session Bug (TODO)
 
-1. **Current Plan view cannot be closed**: When a planning session exists and user presses Enter on "Current Plan", the view shows useful content but cannot be dismissed without a command (e.g., `/programs`). Esc should return to the previous view or tree root.
+1. **CONFIRM does not check task checkbox**: Selecting CONFIRM and adding a task to the plan does not mark the checkbox as selected.
+
+### Creation Wizard
+
+Fields should come from a mix of what the software is creating and dynamic parsed fields from the template files. Field names should be bold, field values should be white. Three field value types: auto-filled (eg uuid, creation date), suggested (eg start date in new planning session) and empty (eg title). auto-filled are non adjustable, suggested will start with a value but the user can select that field and edit the value, and empty should read "empty" until the user adjusts it. When stored in the resulting object file after creation, empty should not be transferred. Field name should be bold, field value should be white if fixed or adjusted, gray if suggested or empty until edited.
 
 ---
 
@@ -144,6 +148,10 @@ Journal sidebar:
 
 | Date | Event |
 |------|-------|
+| 2026-03-19 | Bug fix: Today journal opens in external editor (Enter key) |
+| 2026-03-19 | Bug fix: Programs remain visible when History is expanded or collapsed |
+| 2026-03-19 | Bug fix: Esc dismisses Current Plan view and returns to TreeView |
+| 2026-03-19 | Partial fix: Journal history expansion shows hierarchy; collapse behavior still broken |
 | 2026-03-18 | Feature: Journal history tree structure (grouped by year/month) |
 | 2026-03-18 | Feature: Journal history navigates in sidebar (Right expands, Left collapses, Enter opens) |
 | 2026-03-18 | Refactor: TreeData extracted to cache.rs — 5 fields consolidated into `app.tree_data` |
@@ -172,6 +180,13 @@ Journal sidebar:
 
 ## Future Features
 
+### Creation Wizard UX
+
+Refactor all element creation wizards (Program, Project, Milestone, Task, Subtask) to use consistent field handling:
+- Field names bold, field values white (fixed/adjusted) or gray (suggested/empty)
+- Three field types: auto-filled (non-editable, gray), suggested (editable, gray until changed), empty (shows "empty", not stored)
+- This applies to all wizards: element creation, planning session, etc.
+
 ### Program/Element Reports
 
 Add a report view for each element type in the Programs section that shows children with their status:
@@ -196,3 +211,11 @@ Reports appear in the main window when the element is selected in the sidebar (m
 ### Theming
 
 Support theme files (e.g., from Helix editor's `themes/` directory or Alacritty). Users should be able to select from a list of themes to customize the TUI color scheme. The `ayu_evolve` theme from Helix can be used as a reference or directly ported.
+
+### Unified Navigation Tree
+
+Consolidate program elements and journal history to use a generic `TreeModel<N>` abstraction. Currently, programs use `TreeModel` + `tree_path` while journals use `JournalTreeState` + `journal_path`. Extract a depth-agnostic tree model that works for both use cases:
+- Programs: 4-level depth (Program → Project → Milestone → Task)
+- Journal: 3-level depth (History → Year → Month → Entry)
+
+This eliminates duplicate navigation code and enables future features like cross-references between elements.

@@ -500,8 +500,18 @@ pub struct JournalTreeState {
 
 /// Month names in order (1-indexed)
 const MONTH_NAMES: &[&str] = &[
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 /// Extracts the entry label from a journal path (handles both 2 and 3 element paths)

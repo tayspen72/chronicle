@@ -239,6 +239,128 @@ fn test_sidebar_includes_programs_when_journal_expanded() {
 }
 
 #[test]
+fn test_expand_history_shows_month_items() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    // Find and select History
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .unwrap();
+    app.navigation_state.selected_entry_index = history_idx;
+
+    // Expand History
+    app.handle_key(KeyCode::Right);
+
+    // For single-year case, month items should be visible at indent 1
+    let month_items: Vec<_> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .filter(|item| item.name == "February" || item.name == "March")
+        .collect();
+
+    assert!(
+        !month_items.is_empty(),
+        "Month items (February, March) should be visible after History expand"
+    );
+
+    // Should have indent 1 (under History)
+    for month_item in &month_items {
+        assert_eq!(
+            month_item.indent, 1,
+            "Month '{}' should have indent 1",
+            month_item.name
+        );
+    }
+}
+
+#[test]
+fn test_expand_history_with_preloaded_entries_shows_months() {
+    // This tests the case where journal_entries is already populated
+    // (e.g., user viewed "Today" first, then clicked History)
+    let (_temp, mut app) = app_with_journal_entries();
+
+    // Pre-populate journal_entries as if user viewed Today first
+    let entries = app.config.workspace.list_journal_entries().unwrap();
+    app.journal_entries = entries;
+
+    // Find and select History
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .unwrap();
+    app.navigation_state.selected_entry_index = history_idx;
+
+    // Expand History
+    app.handle_key(KeyCode::Right);
+
+    // Month items should be visible (same as test_expand_history_shows_month_items)
+    let month_items: Vec<_> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .filter(|item| item.name == "February" || item.name == "March")
+        .collect();
+
+    assert!(
+        !month_items.is_empty(),
+        "Month items should be visible even when journal_entries was pre-populated"
+    );
+
+    // Selection should be on a month, not a program
+    let selected_idx = app.navigation_state.selected_entry_index;
+    let selected_item = &app.navigation_state.sidebar_items[selected_idx];
+    assert!(
+        selected_item.name == "February" || selected_item.name == "March",
+        "Selection should be on a month item, got '{}'",
+        selected_item.name
+    );
+}
+
+#[test]
+fn test_expand_history_selection_stays_on_journal() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    // Find and select History
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .unwrap();
+    app.navigation_state.selected_entry_index = history_idx;
+
+    // Expand History
+    app.handle_key(KeyCode::Right);
+
+    // Selection should be on a journal item (February or March), NOT a program
+    let selected_idx = app.navigation_state.selected_entry_index;
+    let selected_item = &app.navigation_state.sidebar_items[selected_idx];
+
+    // Should be a month item
+    assert!(
+        selected_item.name == "February" || selected_item.name == "March",
+        "Selection should be on a month item, got '{}'",
+        selected_item.name
+    );
+
+    // Should NOT be a program (programs have 'path' set, not 'journal_path')
+    assert!(
+        selected_item.journal_path.is_some(),
+        "Selected item should be a journal item"
+    );
+    assert!(
+        selected_item.path.is_none(),
+        "Selected item should NOT be a program (no path)"
+    );
+}
+
+#[test]
 fn test_hjkl_mappings_do_not_crash() {
     let (_, mut app) = app_with_empty_workspace();
 
@@ -254,4 +376,170 @@ fn test_hjkl_mappings_do_not_crash() {
 
     // Should still be in valid state
     assert!(matches!(app.mode, Mode::Normal | Mode::CommandPalette));
+}
+
+#[test]
+fn test_navigate_left_from_journal_entry_collapses_to_parent() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    // Pre-populate journal entries
+    let entries = app.config.workspace.list_journal_entries().unwrap();
+    app.journal_entries = entries.clone();
+    app.journal_tree_state
+        .set_entries(app.journal_entries.clone());
+
+    // Find and select History
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .unwrap();
+    app.navigation_state.selected_entry_index = history_idx;
+
+    // Expand History (shows months)
+    app.handle_key(KeyCode::Right);
+
+    // Select March month (first or second month depending on order)
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .unwrap();
+    app.navigation_state.selected_entry_index = march_idx;
+
+    // Expand March (shows entries)
+    app.handle_key(KeyCode::Right);
+
+    // Should now have journal entry items visible
+    let has_entries = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .any(|item| item.journal_path.as_ref().map_or(false, |p| p.len() == 3));
+    assert!(
+        has_entries,
+        "Journal entries should be visible after expanding month"
+    );
+
+    // Select first journal entry
+    let entry_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.journal_path.as_ref().map_or(false, |p| p.len() == 3))
+        .unwrap();
+    app.navigation_state.selected_entry_index = entry_idx;
+
+    // Get the entry's path before navigation
+    let entry_path = app.navigation_state.sidebar_items[entry_idx]
+        .journal_path
+        .clone();
+    assert!(
+        entry_path.is_some(),
+        "Selected item should have journal_path"
+    );
+    let entry_path = entry_path.unwrap();
+
+    // Press Left to collapse entry and go to parent month
+    app.handle_key(KeyCode::Left);
+
+    // Selection should be on the parent month header
+    let selected_idx = app.navigation_state.selected_entry_index;
+    let selected_item = &app.navigation_state.sidebar_items[selected_idx];
+
+    assert_eq!(
+        selected_item.name, "March",
+        "Selection should be on March (parent), got '{}'",
+        selected_item.name
+    );
+    assert!(
+        selected_item.is_journal_header,
+        "Selected item should be a journal header (March)"
+    );
+    assert!(
+        selected_item
+            .journal_path
+            .as_ref()
+            .map_or(false, |p| p.len() == 2),
+        "Selected item should have 2-element path (year, month)"
+    );
+
+    // Verify the entry is collapsed (no longer visible)
+    let has_entries_after = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .any(|item| item.journal_path.as_ref() == Some(&entry_path));
+    assert!(
+        !has_entries_after,
+        "The entry should no longer be visible after collapse"
+    );
+}
+
+#[test]
+fn test_navigate_left_from_month_collapses_to_history() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    // Pre-populate journal entries
+    let entries = app.config.workspace.list_journal_entries().unwrap();
+    app.journal_entries = entries.clone();
+    app.journal_tree_state
+        .set_entries(app.journal_entries.clone());
+
+    // Find and select History
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .unwrap();
+    app.navigation_state.selected_entry_index = history_idx;
+
+    // Expand History (shows months)
+    app.handle_key(KeyCode::Right);
+
+    // Select March month
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .unwrap();
+    app.navigation_state.selected_entry_index = march_idx;
+
+    // Verify we're on a month header
+    let march_item = &app.navigation_state.sidebar_items[march_idx];
+    assert!(march_item.is_journal_header, "Should be on month header");
+
+    // Press Left to collapse month and go to History
+    app.handle_key(KeyCode::Left);
+
+    // Selection should be on History
+    let selected_idx = app.navigation_state.selected_entry_index;
+    let selected_item = &app.navigation_state.sidebar_items[selected_idx];
+
+    assert_eq!(
+        selected_item.name, "History",
+        "Selection should be on History after collapsing month, got '{}'",
+        selected_item.name
+    );
+    assert!(
+        selected_item.is_journal_item.is_some(),
+        "Selected item should be History journal item"
+    );
+
+    // Verify months are no longer visible
+    let month_items: Vec<_> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .filter(|item| item.name == "March" || item.name == "February")
+        .collect();
+    assert!(
+        month_items.is_empty(),
+        "Months should no longer be visible after collapsing to History. Found: {:?}",
+        month_items.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
 }

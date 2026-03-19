@@ -21,9 +21,9 @@ use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Frame, Terminal};
 use std::io::{self, Write};
 
 use crate::config::Config;
@@ -34,7 +34,7 @@ use crate::storage::planning::{
     load_planning_session, save_planning_session,
 };
 use crate::storage::{
-    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
+    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
 };
 use cache::{TaskMetadata, TreeData};
 use chrono::Local;
@@ -783,19 +783,27 @@ impl App {
     }
 
     /// Expands the History item: loads journal entries if needed, expands the tree,
-    /// rebuilds sidebar items, and selects the first child.
+    /// reloads program data, rebuilds sidebar with programs + journal tree, and selects the first child.
     fn expand_history(&mut self) {
         // Load journal entries if not already loaded
-        if self.journal_entries.is_empty() {
-            if let Ok(entries) = self.config.workspace.list_journal_entries() {
-                self.journal_entries = entries;
-                self.journal_tree_state.set_entries(self.journal_entries.clone());
-            }
+        if self.journal_entries.is_empty()
+            && let Ok(entries) = self.config.workspace.list_journal_entries()
+        {
+            self.journal_entries = entries;
+        }
+
+        // Always sync tree state with journal entries if we have entries
+        // This handles the case where journal_entries was already populated
+        // (e.g., from a previous "Today" operation)
+        if !self.journal_entries.is_empty() {
+            self.journal_tree_state
+                .set_entries(self.journal_entries.clone());
         }
 
         // Expand history to show years/months/entries
         self.journal_tree_state.expand(&[]);
-        self.build_journal_sidebar_items();
+        // Reload program data and rebuild sidebar (includes journal tree items since expanded)
+        self.load_tree_view_data();
         self.select_first_journal_child(&[]);
     }
 
@@ -816,16 +824,35 @@ impl App {
 
         // Handle journal history navigation
         if is_journal {
-            if let Some(ref jpath) = journal_path {
-                if !jpath.is_empty() {
+            // Only collapse if this is a header (year/month) with visible children
+            if item.is_journal_header {
+                if let Some(ref jpath) = journal_path {
                     // Collapse current level
                     let path_clone = jpath.clone();
                     self.collapse_journal_item(&path_clone);
-                    self.build_journal_sidebar_items();
-                    // Select parent
+                    // Select parent (before reload so the correct item is selected for the new tree)
                     if jpath.len() > 1 {
                         let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
-                        self.select_journal_item_by_path(&parent_path);
+                        // Check if parent exists as a sidebar item (in single-year case,
+                        // year header doesn't exist, so we go to History instead)
+                        let parent_exists = self
+                            .navigation_state
+                            .sidebar_items
+                            .iter()
+                            .any(|item| item.journal_path.as_ref() == Some(&parent_path));
+                        if parent_exists {
+                            self.select_journal_item_by_path(&parent_path);
+                        } else {
+                            // Parent doesn't exist (e.g., in single-year case),
+                            // collapse History level and go to History
+                            self.collapse_journal_item(&[]);
+                            self.navigation_state.selected_entry_index = self
+                                .navigation_state
+                                .sidebar_items
+                                .iter()
+                                .position(|i| i.name == "History" && i.is_journal_item.is_some())
+                                .unwrap_or(idx);
+                        }
                     } else {
                         // Back to History item
                         self.navigation_state.selected_entry_index = self
@@ -835,12 +862,38 @@ impl App {
                             .position(|i| i.name == "History" && i.is_journal_item.is_some())
                             .unwrap_or(idx);
                     }
+                    self.load_tree_view_data();
                     return;
                 }
                 // At History level, don't collapse further
                 return;
             }
-            // Journal section item without journal_path (e.g., "Today") - nothing to collapse
+            // Journal entry (leaf) - collapse to parent month/year header
+            if let Some(ref jpath) = journal_path {
+                // Collapse current entry in journal tree state
+                self.collapse_journal_item(jpath);
+                // Select parent month/year header
+                if jpath.len() > 1 {
+                    // Parent is month/year header (first len-1 elements)
+                    let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
+                    // Collapse the parent path so children (including this entry) are hidden
+                    self.collapse_journal_item(&parent_path);
+                    self.load_tree_view_data();
+                    // Select the parent header
+                    self.select_journal_item_by_path(&parent_path);
+                } else {
+                    // Edge case: single-level entry, collapse and go to History
+                    self.load_tree_view_data();
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| i.name == "History" && i.is_journal_item.is_some())
+                        .unwrap_or(idx);
+                }
+                return;
+            }
+            // Fallback for journal entries without path (e.g., History, Today) - do nothing
             return;
         }
 
@@ -854,112 +907,17 @@ impl App {
             return;
         }
 
+        // For root-level items (programs), only collapse if they have children
+        if selected_path.len() == 1 && !item.has_children {
+            return;
+        }
+
         self.collapse_path(&selected_path);
         let mut parent = selected_path;
         parent.pop();
         self.collapse_path(&parent);
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
-    }
-
-    pub(crate) fn build_journal_sidebar_items(&mut self) {
-        // Rebuild sidebar with journal history tree structure
-        self.navigation_state.sidebar_items.clear();
-
-        // Programs section
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
-
-        // Planning section
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("", SidebarSection::Planning));
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
-        self.navigation_state.sidebar_items.push(
-            SidebarItem::new("Current Plan", SidebarSection::Planning)
-                .planning_item("WeeklyPlanning"),
-        );
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
-
-        // Journal section
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("", SidebarSection::Journal));
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
-
-        // History item (whether expanded or not)
-        let history_path: Vec<String> = vec!["History".to_string()];
-        self.navigation_state.sidebar_items.push(
-            SidebarItem::new("History", SidebarSection::Journal)
-                .journal_item("History")
-                .journal_path(history_path.clone()),
-        );
-
-        // If history is expanded, add years/months/entries with simplification rules
-        if self.journal_tree_state.is_expanded(&[]) {
-            let years = self.journal_tree_state.years();
-
-            // Simplification: Only create year level if there are multiple years
-            // If only one year, show months/entries directly (flattened)
-            if years.len() > 1 {
-                // Show years as intermediate level
-                for year in &years {
-                    let year_path = vec![year.clone()];
-                    self.navigation_state.sidebar_items.push(
-                        SidebarItem::new(year, SidebarSection::Journal)
-                            .journal_path(year_path.clone())
-                            .journal_header()
-                            .indent(1),
-                    );
-
-                    // If year is expanded, add months
-                    if self.journal_tree_state.is_expanded(&year_path) {
-                        self.add_journal_months_and_entries(year);
-                    }
-                }
-            } else if let Some(year) = years.first() {
-                // Single year - add months/entries directly under History
-                // Check if there are multiple months (for simplification check later)
-                let months = self.journal_tree_state.months_for_year(year);
-
-                if months.len() > 1 {
-                    // Multiple months - create month level
-                    for month in &months {
-                        let month_path = vec![year.clone(), month.clone()];
-                        self.navigation_state.sidebar_items.push(
-                            SidebarItem::new(month, SidebarSection::Journal)
-                                .journal_path(month_path.clone())
-                                .journal_header()
-                                .indent(1),
-                        );
-
-                        // If month is expanded, add entries
-                        if self.journal_tree_state.is_expanded(&month_path) {
-                            self.add_journal_entries_for_month(year, month);
-                        }
-                    }
-                } else if let Some(month) = months.first() {
-                    // Single month - show entries directly (flattened)
-                    self.add_journal_entries_for_month(year, month);
-                } else {
-                    // No months/entries
-                    let entries = self.journal_tree_state.entries_for_month(year, "");
-                    if !entries.is_empty() {
-                        self.add_journal_entries_for_month(year, "");
-                    }
-                }
-            }
-        }
     }
 
     fn add_journal_months_and_entries(&mut self, year: &str) {
@@ -1011,7 +969,7 @@ impl App {
     fn expand_journal_item(&mut self, path: &[String]) {
         self.journal_tree_state.expand(path);
         self.journal_tree_state.set_selected_path(path.to_vec());
-        self.build_journal_sidebar_items();
+        self.load_tree_view_data();
         // Select first child
         self.select_first_journal_child(path);
     }
@@ -1022,12 +980,28 @@ impl App {
 
     fn select_first_journal_child(&mut self, parent_path: &[String]) {
         let child_depth = parent_path.len() + 1;
+
+        // First try to find children at the expected depth
         if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
             item.journal_path
                 .as_ref()
                 .is_some_and(|p| p.len() == child_depth && p.starts_with(parent_path))
         }) {
             self.navigation_state.selected_entry_index = idx;
+            return;
+        }
+
+        // For single-year case: when expanding root (empty parent_path),
+        // years aren't created, so look for months at depth 2 instead
+        if parent_path.is_empty() {
+            let month_depth = 2;
+            if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+                item.journal_path
+                    .as_ref()
+                    .is_some_and(|p| p.len() == month_depth && p.starts_with(parent_path))
+            }) {
+                self.navigation_state.selected_entry_index = idx;
+            }
         }
     }
 
@@ -1073,13 +1047,63 @@ impl App {
     }
 
     fn navigate_up(&mut self) {
+        let prev_item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .cloned();
+
         self.navigation_state.navigate_up();
         self.sync_scope_from_sidebar_selection();
+
+        // If leaving an expanded journal tier, collapse it
+        if let Some(prev) = prev_item
+            && prev.is_journal_header
+            && prev.section == SidebarSection::Journal
+            && let Some(ref prev_jpath) = prev.journal_path
+        {
+            let new_idx = self.navigation_state.selected_entry_index;
+            if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_jpath = new_item.journal_path.as_ref();
+                // Collapse if moved to different tier or left journal section entirely
+                let still_in_tier = new_jpath
+                    .is_some_and(|p| p.starts_with(prev_jpath) && p.len() > prev_jpath.len());
+                if !still_in_tier || new_item.section != SidebarSection::Journal {
+                    self.collapse_journal_item(prev_jpath);
+                    self.load_tree_view_data();
+                }
+            }
+        }
     }
 
     fn navigate_down(&mut self) {
+        let prev_item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .cloned();
+
         self.navigation_state.navigate_down();
         self.sync_scope_from_sidebar_selection();
+
+        // If leaving an expanded journal tier, collapse it
+        if let Some(prev) = prev_item
+            && prev.is_journal_header
+            && prev.section == SidebarSection::Journal
+            && let Some(ref prev_jpath) = prev.journal_path
+        {
+            let new_idx = self.navigation_state.selected_entry_index;
+            if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_jpath = new_item.journal_path.as_ref();
+                // Collapse if moved to different tier or left journal section entirely
+                let still_in_tier = new_jpath
+                    .is_some_and(|p| p.starts_with(prev_jpath) && p.len() > prev_jpath.len());
+                if !still_in_tier || new_item.section != SidebarSection::Journal {
+                    self.collapse_journal_item(prev_jpath);
+                    self.load_tree_view_data();
+                }
+            }
+        }
     }
 
     pub fn sync_scope_from_sidebar_selection(&mut self) {
@@ -1476,6 +1500,23 @@ impl App {
             }
             candidate.pop();
         }
+
+        // Check if current selection is already on a journal item.
+        // If so, preserve the journal selection instead of falling back to a program.
+        let current_idx = self.navigation_state.selected_entry_index;
+        if let Some(item) = self.navigation_state.sidebar_items.get(current_idx)
+            && item.section == SidebarSection::Journal
+            && (item.is_journal_item.is_some()
+                || item.is_journal_header
+                || item.journal_path.is_some())
+        {
+            tracing::debug!(
+                selected_name = ?item.name,
+                "preserving journal selection (no tree path match)"
+            );
+            return;
+        }
+
         tracing::warn!(
             path = ?self.navigation_state.tree_model.selected_path(),
             "selection sync fallback to first selectable item"
@@ -1602,8 +1643,18 @@ impl App {
                     }
                 }
             } else if let Some(month) = months.first() {
-                // Single month - show entries directly
-                self.add_journal_entries_for_month(year, month);
+                // Single month - show month header with entries
+                let month_path = vec![year.to_string(), month.clone()];
+                self.navigation_state.sidebar_items.push(
+                    SidebarItem::new(month, SidebarSection::Journal)
+                        .journal_path(month_path.clone())
+                        .journal_header()
+                        .indent(1),
+                );
+
+                if self.journal_tree_state.is_expanded(&month_path) {
+                    self.add_journal_entries_for_month(year, month);
+                }
             }
         }
     }
