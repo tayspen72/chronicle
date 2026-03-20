@@ -61,7 +61,7 @@ src/
 
 ### Open Issues
 
-1. **Tree vertical pipes**: Tree view lacks visual `│` connecting sibling elements
+1. **Tree vertical pipes (Programs)**: When a parent element is expanded, sibling elements below should still show vertical pipes (`│`) connecting them. Example: if Program 1 is expanded to show projects, there should still be a `│` connecting Program 1 and Program 2 in the tree view.
 2. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
 3. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
 4. **Journal folder structure**:
@@ -71,15 +71,16 @@ src/
 
 ### Journal History Navigation Bugs (TODO)
 
-1. **L-arrow collapse behavior is broken**: After expanding History → month → entries:
-   - L-arrow jumps to top program instead of collapsing the current level
-   - Selection does not stay in the journal tree hierarchy
-   - R-arrow twice expands month then entries; L-arrow once jumps to month but does NOT collapse entries; L-arrow again jumps to top program and collapses entries (should collapse one level per L-arrow press)
-2. **Entry indentation is wrong**: When expanding a month to show individual date entries, the entries are indented one level too far in the tree view
+1. **Cannot select second month in list**: When expanding to month view, only the first month is selectable; cannot navigate to or select subsequent months.
+2. **L-arrow collapse jumps to programs**: After expanding History → year → month → entries:
+   - L-arrow does not collapse the current level properly
+   - Selection jumps to the last program in the list instead of staying in the journal tree
+   - Should collapse one level per L-arrow press, staying within journal hierarchy
+3. **Entry indentation is wrong**: When expanding a month to show individual date entries, the entries are indented one level too far in the tree view.
 
 ### Planning Session Bug (TODO)
 
-1. **CONFIRM does not check task checkbox**: Selecting CONFIRM and adding a task to the plan does not mark the checkbox as selected.
+1. **CONFIRM does not check task checkbox**: Selecting CONFIRM and adding a task to the plan does not mark the checkbox as selected. (FIXED)
 
 ### Creation Wizard
 
