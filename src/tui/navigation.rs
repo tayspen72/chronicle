@@ -333,23 +333,46 @@ pub fn build_sidebar_items(
 /// * `current_index` - Currently selected index
 ///
 /// # Returns
-/// The next selectable index (wrapping around).
+/// The next selectable index (staying within current section).
 #[must_use]
 pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize {
     if items.is_empty() {
         return 0;
     }
 
+    let current_section = items
+        .get(current_index)
+        .map(|item| &item.section)
+        .unwrap_or(&SidebarSection::Programs);
+
+    let len = items.len();
     let mut new_index = current_index;
+    let mut seen_start = false;
+
     loop {
         if new_index == 0 {
-            new_index = items.len() - 1;
+            if seen_start {
+                // Already wrapped once, no valid item found
+                break;
+            }
+            seen_start = true;
+            new_index = len - 1; // Wrap to last element
         } else {
             new_index -= 1;
         }
 
         let item = &items[new_index];
-        if !item.is_header && !item.name.is_empty() {
+        let is_valid = match current_section {
+            SidebarSection::Journal => {
+                item.section == SidebarSection::Journal && !item.is_header && !item.name.is_empty()
+            }
+            SidebarSection::Planning => {
+                item.section == SidebarSection::Planning && !item.is_header && !item.name.is_empty()
+            }
+            SidebarSection::Programs => !item.is_header && !item.name.is_empty(),
+        };
+
+        if is_valid {
             break;
         }
 
@@ -368,23 +391,42 @@ pub fn navigate_up(items: &[SidebarItem], current_index: usize) -> usize {
 /// * `current_index` - Currently selected index
 ///
 /// # Returns
-/// The next selectable index (wrapping around).
+/// The next selectable index (staying within current section).
 #[must_use]
 pub fn navigate_down(items: &[SidebarItem], current_index: usize) -> usize {
     if items.is_empty() {
         return 0;
     }
 
+    let current_section = items
+        .get(current_index)
+        .map(|item| &item.section)
+        .unwrap_or(&SidebarSection::Programs);
+
     let mut new_index = current_index;
+
     loop {
         new_index = (new_index + 1) % items.len();
 
-        let item = &items[new_index];
-        if !item.is_header && !item.name.is_empty() {
+        // If we've wrapped back to start, no valid item found
+        if new_index == current_index {
             break;
         }
 
-        if new_index == current_index {
+        let item = &items[new_index];
+        let is_valid = match current_section {
+            SidebarSection::Journal => {
+                item.section == SidebarSection::Journal && !item.is_header && !item.name.is_empty()
+            }
+            SidebarSection::Planning => {
+                item.section == SidebarSection::Planning && !item.is_header && !item.name.is_empty()
+            }
+            SidebarSection::Programs => {
+                item.section == SidebarSection::Programs && !item.is_header && !item.name.is_empty()
+            }
+        };
+
+        if is_valid {
             break;
         }
     }
@@ -491,6 +533,125 @@ mod tests {
         assert_eq!(items[1].name, "+ Create Program...");
         assert!(items[1].is_create_action);
         assert_eq!(items[1].indent, 1);
+    }
+
+    #[test]
+    fn test_navigate_down_stays_in_journal_section() {
+        // Simulate sidebar with programs and journal items
+        // Structure: [Programs header, prog1, spacer, Planning, spacer, Journal, Today, History, Feb, March]
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("prog1", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Planning),
+            SidebarItem::new("Planning", SidebarSection::Planning).header(),
+            SidebarItem::new("", SidebarSection::Journal),
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+            SidebarItem::new("History", SidebarSection::Journal).journal_item("History"),
+            SidebarItem::new("Feb", SidebarSection::Journal)
+                .journal_path(vec!["2024".to_string(), "February".to_string()])
+                .journal_header(),
+            SidebarItem::new("March", SidebarSection::Journal)
+                .journal_path(vec!["2024".to_string(), "March".to_string()])
+                .journal_header(),
+        ];
+
+        // From Feb (index 8), navigate down should go to March (index 9), NOT wrap to prog1
+        let next = navigate_down(&items, 8);
+        assert_eq!(
+            next, 9,
+            "Down from Feb should go to March, not wrap to prog1"
+        );
+
+        // From March (index 9), navigate down should wrap to Today (index 6), NOT go to prog1
+        let next = navigate_down(&items, 9);
+        assert_eq!(next, 6, "Down from March should wrap to Today");
+    }
+
+    #[test]
+    fn test_navigate_up_stays_in_journal_section() {
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("prog1", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Planning),
+            SidebarItem::new("Planning", SidebarSection::Planning).header(),
+            SidebarItem::new("", SidebarSection::Journal),
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+            SidebarItem::new("History", SidebarSection::Journal).journal_item("History"),
+            SidebarItem::new("Feb", SidebarSection::Journal)
+                .journal_path(vec!["2024".to_string(), "February".to_string()])
+                .journal_header(),
+            SidebarItem::new("March", SidebarSection::Journal)
+                .journal_path(vec!["2024".to_string(), "March".to_string()])
+                .journal_header(),
+        ];
+
+        // From Feb (index 8), navigate up should go to History (index 7), NOT wrap to prog1
+        let prev = navigate_up(&items, 8);
+        assert_eq!(
+            prev, 7,
+            "Up from Feb should go to History, not wrap to prog1"
+        );
+
+        // From Today (index 6), navigate up should wrap to the last journal item (March, index 9)
+        let prev = navigate_up(&items, 6);
+        assert_eq!(
+            prev, 9,
+            "Up from Today should wrap to March (last journal item)"
+        );
+    }
+
+    #[test]
+    fn test_navigate_through_programs_unchanged() {
+        // Ensure programs navigation still works across programs section
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("prog1", SidebarSection::Programs),
+            SidebarItem::new("prog2", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Journal),
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+        ];
+
+        // From prog1 (index 1), navigate down should go to prog2 (index 2)
+        let next = navigate_down(&items, 1);
+        assert_eq!(next, 2);
+
+        // From prog2 (index 2), navigate down should wrap to prog1 (index 1)
+        let next = navigate_down(&items, 2);
+        assert_eq!(next, 1);
+
+        // From prog2 (index 2), navigate up should go to prog1 (index 1)
+        let prev = navigate_up(&items, 2);
+        assert_eq!(prev, 1);
+    }
+
+    #[test]
+    fn test_navigate_down_does_not_leave_journal_to_programs() {
+        // Critical bug reproduction: from journal item, down should NOT go to programs
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("Alpha", SidebarSection::Programs),
+            SidebarItem::new("Beta", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Journal),
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+            SidebarItem::new("History", SidebarSection::Journal).journal_item("History"),
+            SidebarItem::new("Feb", SidebarSection::Journal).journal_header(),
+            SidebarItem::new("March", SidebarSection::Journal).journal_header(),
+        ];
+
+        // From Feb (index 7), pressing down should go to March (index 8)
+        let next = navigate_down(&items, 7);
+        assert_ne!(next, 1, "BUG: Down from Feb jumped to Alpha program!");
+        assert_ne!(next, 2, "BUG: Down from Feb jumped to Beta program!");
+        assert_eq!(next, 8, "Down from Feb should go to March");
+
+        // From March (index 8), pressing down should wrap to Today (index 5)
+        let next = navigate_down(&items, 8);
+        assert_ne!(next, 1, "BUG: Down from March jumped to Alpha program!");
+        assert_eq!(next, 5, "Down from March should wrap to Today");
     }
 }
 

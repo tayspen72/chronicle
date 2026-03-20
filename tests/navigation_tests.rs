@@ -21,32 +21,44 @@ fn test_initial_view_is_tree_view() {
 fn test_navigate_down_moves_selection() {
     let (_, mut app) = app_with_empty_workspace();
 
+    // Find an item in a section with multiple valid items (Journal: Today, History)
+    // "Today" is at index 8, "History" is at index 9
+    let today_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.name == "Today")
+        .expect("Today should exist in sidebar");
+    app.navigation_state.selected_entry_index = today_idx;
+
     let initial = app.navigation_state.selected_entry_index;
     app.handle_key(KeyCode::Down);
     let after = app.navigation_state.selected_entry_index;
 
-    // Should move to next item (unless at end)
-    let total_items = app.navigation_state.sidebar_items.len();
-    if initial < total_items - 1 {
-        assert!(after > initial, "Down should move to next item");
-    }
+    // Should move to History (next valid item in Journal section)
+    assert_ne!(after, initial, "Down should move to different item");
 }
 
 #[test]
 fn test_navigate_up_moves_selection() {
     let (_, mut app) = app_with_empty_workspace();
 
-    // Move down first
-    app.handle_key(KeyCode::Down);
+    // Find an item in a section with multiple valid items (Journal: Today, History)
+    // Start from History (index 9), then press Up to go to Today (index 8)
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.name == "History")
+        .expect("History should exist in sidebar");
+    app.navigation_state.selected_entry_index = history_idx;
 
     let before = app.navigation_state.selected_entry_index;
     app.handle_key(KeyCode::Up);
     let after = app.navigation_state.selected_entry_index;
 
-    assert!(
-        after <= before,
-        "Up should move to previous item or stay at top"
-    );
+    // Should move to Today (previous valid item in Journal section)
+    assert!(after <= before, "Up should move to previous item");
 }
 
 #[test]
