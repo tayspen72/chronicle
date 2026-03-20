@@ -132,8 +132,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
-                // Build vertical pipes for ancestor levels
-                let pipes: String = (0..item.indent)
+                // Build vertical pipes for ancestor levels (skip level 0 for indent=1 items)
+                // Items at indent 1 have parent at indent 0, which has no pipe
+                let pipe_start = if item.indent > 1 { 0 } else { 1 };
+                let pipes: String = (pipe_start..item.indent)
                     .map(|d| {
                         let has_pipe = continuation_levels
                             .get(i)
