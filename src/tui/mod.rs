@@ -828,41 +828,38 @@ impl App {
             if item.is_journal_header {
                 if let Some(ref jpath) = journal_path {
                     // Collapse current level
-                    let path_clone = jpath.clone();
-                    self.collapse_journal_item(&path_clone);
-                    // Select parent (before reload so the correct item is selected for the new tree)
-                    if jpath.len() > 1 {
+                    self.collapse_journal_item(jpath);
+
+                    // Determine what to select after collapse
+                    let target_path = if jpath.len() > 1 {
                         let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
-                        // Check if parent exists as a sidebar item (in single-year case,
+                        // Check if parent exists as sidebar item (in single-year case,
                         // year header doesn't exist, so we go to History instead)
-                        let parent_exists = self
+                        if self
                             .navigation_state
                             .sidebar_items
                             .iter()
-                            .any(|item| item.journal_path.as_ref() == Some(&parent_path));
-                        if parent_exists {
-                            self.select_journal_item_by_path(&parent_path);
+                            .any(|item| item.journal_path.as_ref() == Some(&parent_path))
+                        {
+                            Some(parent_path)
                         } else {
-                            // Parent doesn't exist (e.g., in single-year case),
-                            // collapse History level and go to History
+                            // Parent doesn't exist - collapse History level
                             self.collapse_journal_item(&[]);
-                            self.navigation_state.selected_entry_index = self
-                                .navigation_state
-                                .sidebar_items
-                                .iter()
-                                .position(|i| i.name == "History" && i.is_journal_item.is_some())
-                                .unwrap_or(idx);
+                            None
                         }
                     } else {
-                        // Back to History item
-                        self.navigation_state.selected_entry_index = self
-                            .navigation_state
-                            .sidebar_items
-                            .iter()
-                            .position(|i| i.name == "History" && i.is_journal_item.is_some())
-                            .unwrap_or(idx);
-                    }
+                        None
+                    };
+
+                    // Rebuild sidebar first, then select the correct item
                     self.load_tree_view_data();
+
+                    // Select the target after sidebar is rebuilt
+                    if let Some(path) = target_path {
+                        self.select_journal_item_by_path(&path);
+                    } else {
+                        self.select_history();
+                    }
                     return;
                 }
                 // At History level, don't collapse further
@@ -878,18 +875,14 @@ impl App {
                     let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
                     // Collapse the parent path so children (including this entry) are hidden
                     self.collapse_journal_item(&parent_path);
+                    // Rebuild sidebar first, then select
                     self.load_tree_view_data();
                     // Select the parent header
                     self.select_journal_item_by_path(&parent_path);
                 } else {
                     // Edge case: single-level entry, collapse and go to History
                     self.load_tree_view_data();
-                    self.navigation_state.selected_entry_index = self
-                        .navigation_state
-                        .sidebar_items
-                        .iter()
-                        .position(|i| i.name == "History" && i.is_journal_item.is_some())
-                        .unwrap_or(idx);
+                    self.select_history();
                 }
                 return;
             }
@@ -1014,6 +1007,15 @@ impl App {
         {
             self.navigation_state.selected_entry_index = idx;
         }
+    }
+
+    fn select_history(&mut self) {
+        self.navigation_state.selected_entry_index = self
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "History" && i.is_journal_item.is_some())
+            .unwrap_or(0);
     }
 
     fn return_from_view(&mut self) {
@@ -1639,7 +1641,7 @@ impl App {
                     );
 
                     if self.journal_tree_state.is_expanded(&month_path) {
-                        self.add_journal_entries_for_month(year, month);
+                        self.add_journal_entries_with_indent(year, month, 2);
                     }
                 }
             } else if let Some(month) = months.first() {
@@ -1653,7 +1655,7 @@ impl App {
                 );
 
                 if self.journal_tree_state.is_expanded(&month_path) {
-                    self.add_journal_entries_for_month(year, month);
+                    self.add_journal_entries_with_indent(year, month, 2);
                 }
             }
         }

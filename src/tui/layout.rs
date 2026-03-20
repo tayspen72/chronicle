@@ -81,14 +81,36 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let idx = app.navigation_state.selected_entry_index;
     let in_selection_mode = app.mode == Mode::TaskSelection;
 
-    let items: Vec<ListItem> = app
-        .navigation_state
-        .sidebar_items
+    let items = &app.navigation_state.sidebar_items;
+    let item_count = items.len();
+
+    // Pre-compute which items need vertical continuation pipes at each indent level.
+    // For each indent level d < max_indent, track whether there are remaining items
+    // below that have indent >= d (meaning the pipe continues).
+    let mut continuation_levels: Vec<Vec<bool>> = vec![vec![]; item_count];
+    let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
+
+    for d in 0..=max_indent {
+        let mut pipe_continues = false;
+        for i in 0..item_count {
+            if items[i].indent == d {
+                pipe_continues = false;
+            } else if items[i].indent > d {
+                pipe_continues = true;
+            }
+            if continuation_levels[i].len() <= d {
+                continuation_levels[i].push(pipe_continues);
+            } else {
+                continuation_levels[i][d] = pipe_continues;
+            }
+        }
+    }
+
+    let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
             let is_selected = i == idx;
-            let indent_str = "    ".repeat(item.indent);
 
             // Determine checkbox prefix for TaskSelection mode
             let checkbox_prefix =
@@ -100,32 +122,39 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 });
 
             let prefix = if item.is_header || item.indent == 0 {
-                item.name.clone()
+                String::new()
             } else {
-                let is_last = app
-                    .navigation_state
-                    .sidebar_items
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|p| p.indent == item.indent)
-                    .next()
-                    .is_none();
-                if is_last {
-                    format!("└── {}", item.name)
-                } else {
-                    format!("├── {}", item.name)
-                }
+                // Build vertical pipes for ancestor levels
+                let pipes: String = (0..item.indent)
+                    .map(|d| {
+                        let has_pipe = continuation_levels
+                            .get(i)
+                            .and_then(|l| l.get(d))
+                            .copied()
+                            .unwrap_or(false);
+                        if has_pipe { "│   " } else { "    " }
+                    })
+                    .collect();
+
+                // Check if there are more siblings at the same indent
+                let is_last = items[i + 1..].iter().all(|p| p.indent != item.indent);
+
+                let tree_prefix = if is_last { "└── " } else { "├── " };
+                format!("{}{}{}", pipes, tree_prefix, item.name)
             };
 
             let full_label = if let Some(cb) = checkbox_prefix {
                 format!(
                     "{}{}{}",
-                    indent_str,
+                    "    ".repeat(item.indent),
                     cb,
-                    prefix.trim_start_matches("└── ").trim_start_matches("├── ")
+                    prefix
+                        .trim_start_matches("│   ")
+                        .trim_start_matches("└── ")
+                        .trim_start_matches("├── ")
                 )
             } else {
-                format!("{}{}", indent_str, prefix)
+                format!("{}{}", "    ".repeat(item.indent), prefix)
             };
 
             let style = if item.is_header {
@@ -154,7 +183,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let list = List::new(items)
+    let list = List::new(list_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
