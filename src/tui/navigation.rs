@@ -7,6 +7,10 @@
 //! TODO: Wire up these types to replace inline navigation handling in App.
 
 use crate::storage::DirectoryEntry;
+use crate::tui::cache::{
+    extract_year_from_path, extract_year_month_from_path, month_abbrev_to_name,
+    month_name_to_abbrev,
+};
 use crate::tui::tree::TreeModel;
 
 /// State for navigation (tree selection, sidebar, current scope).
@@ -498,23 +502,6 @@ pub struct JournalTreeState {
     entries: Vec<crate::storage::JournalEntry>,
 }
 
-/// Month names in order (1-indexed)
-const MONTH_NAMES: &[&str] = &[
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-/// Extracts the entry label from a journal path (handles both 2 and 3 element paths)
 pub fn journal_entry_label(jpath: &[String]) -> Option<&str> {
     let label = if jpath.len() == 3 {
         jpath.get(2)
@@ -574,8 +561,8 @@ impl JournalTreeState {
     pub fn years(&self) -> Vec<String> {
         let mut years: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &self.entries {
-            if let Some(year) = entry.filename.split('-').next() {
-                years.insert(year.to_string());
+            if let Some(year) = extract_year_from_path(&entry.path) {
+                years.insert(year);
             }
         }
         years.into_iter().rev().collect()
@@ -584,30 +571,25 @@ impl JournalTreeState {
     pub fn months_for_year(&self, year: &str) -> Vec<String> {
         let mut months: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &self.entries {
-            let parts: Vec<&str> = entry.filename.split('-').collect();
-            if parts.len() >= 2
-                && parts[0] == year
-                && let Ok(num) = parts[1].parse::<usize>()
-                && (1..=12).contains(&num)
+            if let Some((entry_year, month_abbrev)) = extract_year_month_from_path(&entry.path)
+                && entry_year == year
+                && let Some(month_name) = month_abbrev_to_name(&month_abbrev)
             {
-                months.insert(MONTH_NAMES[num - 1].to_string());
+                months.insert(month_name.to_string());
             }
         }
         months.into_iter().collect()
     }
 
     pub fn entries_for_month(&self, year: &str, month: &str) -> Vec<&crate::storage::JournalEntry> {
-        let month_num = MONTH_NAMES.iter().position(|&m| m == month).map(|p| p + 1);
+        let target_abbrev = month_name_to_abbrev(month).unwrap_or("");
 
         self.entries
             .iter()
             .filter(|entry| {
-                let parts: Vec<&str> = entry.filename.split('-').collect();
-                if parts.len() >= 2
-                    && parts[0] == year
-                    && let (Ok(month_int), Some(target)) = (parts[1].parse::<usize>(), month_num)
+                if let Some((entry_year, month_abbrev)) = extract_year_month_from_path(&entry.path)
                 {
-                    return month_int == target;
+                    return entry_year == year && month_abbrev.to_lowercase() == target_abbrev;
                 }
                 false
             })

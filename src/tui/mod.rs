@@ -21,9 +21,9 @@ use crate::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend};
 use std::io::{self, Write};
 
 use crate::config::Config;
@@ -34,7 +34,7 @@ use crate::storage::planning::{
     load_planning_session, save_planning_session,
 };
 use crate::storage::{
-    validate_element_name, DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage,
+    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
 use cache::{TaskMetadata, TreeData};
 use chrono::Local;
@@ -441,7 +441,7 @@ impl App {
 
         // Handle TaskDetailWizard mode specially
         if self.mode == Mode::TaskDetailWizard {
-            const TASK_WIZARD_FIELD_COUNT: usize = 6; // task name, status, assigned_to, start_date, due_date, priority
+            const TASK_WIZARD_FIELD_COUNT: usize = 7; // task name, status, assigned_to, start_date, due_date, priority, description
             if let Some(ref mut wizard) = self.task_wizard {
                 match code {
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -2806,6 +2806,12 @@ impl App {
 
         // Go back to hierarchical picker to add more tasks
         self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        // Sync selected_tasks from planning_session so previously added tasks show as checked
+        for task in &self.planning_session.tasks {
+            self.hierarchical_picker
+                .selected_tasks
+                .insert(task.path.to_string_lossy().to_string());
+        }
         self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
         self.mode = Mode::HierarchicalSelection;
         self.current_view = ViewType::HierarchicalTaskPicker;

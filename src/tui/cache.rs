@@ -1,21 +1,80 @@
+//! Cache module for TUI.
+//!
+//! Provides tree building and data structures for the sidebar.
+
 use crate::model::SelectedTask;
 use crate::storage::{DirectoryEntry, JournalEntry};
 use std::path::PathBuf;
 
-pub const MONTH_NAMES: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+/// 3-letter month abbreviations (lowercase) mapped to full names
+pub const MONTH_ABBREVS: &[(&str, &str)] = &[
+    ("jan", "January"),
+    ("feb", "February"),
+    ("mar", "March"),
+    ("apr", "April"),
+    ("may", "May"),
+    ("jun", "June"),
+    ("jul", "July"),
+    ("aug", "August"),
+    ("sep", "September"),
+    ("oct", "October"),
+    ("nov", "November"),
+    ("dec", "December"),
 ];
+
+pub fn month_abbrev_to_name(abbrev: &str) -> Option<&'static str> {
+    MONTH_ABBREVS
+        .iter()
+        .find(|(a, _)| *a == abbrev.to_lowercase())
+        .map(|(_, name)| *name)
+}
+
+pub fn month_name_to_abbrev(name: &str) -> Option<&'static str> {
+    MONTH_ABBREVS
+        .iter()
+        .find(|(_, full_name)| *full_name == name)
+        .map(|(abbrev, _)| *abbrev)
+}
+
+pub fn extract_year_from_path(path: &std::path::Path) -> Option<String> {
+    let components: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(String::from),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(pos) = components.iter().position(|s| s == "history")
+        && let Some(year) = components.get(pos + 1)
+        && year.len() == 4
+        && year.chars().all(|c| c.is_ascii_digit())
+    {
+        return Some(year.clone());
+    }
+    None
+}
+
+pub fn extract_year_month_from_path(path: &std::path::Path) -> Option<(String, String)> {
+    let components: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(String::from),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(pos) = components.iter().position(|s| s == "history")
+        && components.len() >= pos + 3
+    {
+        let year = components.get(pos + 1)?.clone();
+        let month = components.get(pos + 2)?.clone();
+        if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
+            return Some((year, month));
+        }
+    }
+    None
+}
 
 /// Tree item for journal archive: (depth, label, is_header)
 pub type TreeItem = (usize, String, bool);
@@ -28,26 +87,14 @@ pub fn build_journal_tree(entries: &[JournalEntry]) -> Vec<TreeItem> {
     > = std::collections::BTreeMap::new();
 
     for (idx, entry) in entries.iter().enumerate() {
-        let date_part = entry.filename.trim_end_matches(".md");
-        let parts: Vec<&str> = date_part.split('-').collect();
-        if parts.len() >= 2 {
-            let year = parts[0].to_string();
-            let month_num: usize = parts[1].parse().unwrap_or(1);
-            let month_name = MONTH_NAMES
-                .get(month_num.saturating_sub(1))
-                .unwrap_or(&"Unknown")
+        if let Some((year, month_abbrev)) = extract_year_month_from_path(&entry.path) {
+            let month_name = month_abbrev_to_name(&month_abbrev)
+                .unwrap_or("Unknown")
                 .to_string();
             by_year
                 .entry(year)
                 .or_default()
                 .entry(month_name)
-                .or_default()
-                .push(idx);
-        } else {
-            by_year
-                .entry("Unknown".to_string())
-                .or_default()
-                .entry("Unknown".to_string())
                 .or_default()
                 .push(idx);
         }

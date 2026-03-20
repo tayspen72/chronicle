@@ -117,27 +117,27 @@ The main agent handles all git operations. Branch names are auto-generated from 
 
 ### Branch Naming
 
-```
-<type>/<slug>
-```
-
-| Type | When |
-|------|------|
-| `feature/` | New functionality |
-| `fix/` | Bug fixes |
-| `refactor/` | Code restructuring without behavior change |
-| `docs/` | Documentation only |
+Branch names are simply descriptive slugs derived from the issue or feature.
 
 Examples:
-- "implement planning wizard" → `feature/planning-wizard`
-- "fix navigation scope bug" → `fix/navigation-scope`
+- "implement planning wizard" → `planning-wizard`
+- "fix navigation scope bug" → `navigation-scope`
+- "add tasks to plan bug" → `add-tasks-to-plan`
+
+### Pre-flight Check (required before any work)
+
+Before starting any task:
+1. Run `git status` to check current branch state
+2. If work is needed and not already on a feature branch:
+   - Create branch from `develop` with name: `<issue-or-feature-slug>` (e.g., `add-tasks-to-plan`, `journal-folder-structure`)
+3. If changes exist on `develop` or `main` — stop and ask user to handle
 
 ### Workflow Steps
 
-1. **Start**: Create branch from `develop` with generated name
+1. **Start**: Create/verify on correct branch (see Pre-flight Check)
 2. **Work**: Implement changes (may call subagents)
 3. **Simplify**: Run `@code-simplifier`
-4. **Commit**: Commit with auto-generated conventional commit message
+4. **Commit**: Commit with conventional commit message
 5. **Verify**: Run `@verify-app`
 6. **Merge**: Merge branch to `develop`
 
@@ -187,3 +187,5 @@ _Append a rule here whenever an agent makes a mistake. One line, specific, actio
 - In normal mode, the main window is a preview/report/viewer of the current selection in the navigator. When the selected entry in the navigator changes, the main window must also update — it is simply a viewport into whatever is selected.
 
 - When the user reports a bug, verify understanding of the expected vs actual behavior, then pass the issue to `@oncall-guide` for root-cause analysis and fix. Do not implement the fix directly unless the bug is trivial (one-liner) or the user explicitly asks for a direct fix.
+
+- Always run `git status` BEFORE implementing any feature or fix. Create a branch from `develop` if one doesn't exist. Document this as "Pre-flight Check" in AGENTS.md.

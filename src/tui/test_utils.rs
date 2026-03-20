@@ -41,19 +41,20 @@ pub fn app_with_journal_entries() -> (TempDir, App) {
     let temp = TempDir::new().unwrap();
     let workspace = temp.path();
 
-    fs::create_dir_all(workspace.join("journal")).unwrap();
+    fs::create_dir_all(workspace.join("journal/history/2026/feb")).unwrap();
+    fs::create_dir_all(workspace.join("journal/history/2026/mar")).unwrap();
     fs::write(
-        workspace.join("journal/2026-03-15.md"),
+        workspace.join("journal/history/2026/mar/2026-03-15.md"),
         "# Journal 2026-03-15\n",
     )
     .unwrap();
     fs::write(
-        workspace.join("journal/2026-03-14.md"),
+        workspace.join("journal/history/2026/mar/2026-03-14.md"),
         "# Journal 2026-03-14\n",
     )
     .unwrap();
     fs::write(
-        workspace.join("journal/2026-02-28.md"),
+        workspace.join("journal/history/2026/feb/2026-02-28.md"),
         "# Journal 2026-02-28\n",
     )
     .unwrap();

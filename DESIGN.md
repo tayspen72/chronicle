@@ -64,6 +64,10 @@ src/
 1. **Tree vertical pipes**: Tree view lacks visual `│` connecting sibling elements
 2. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
 3. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
+4. **Journal folder structure**:
+   - `journal/current/YYYY-MM-DD.md` — today's journal entry
+   - `journal/history/YYYY/MMM/YYYY-MM-DD.md` — history entries grouped by year and 3-letter month (e.g., `journal/history/2026/mar/2026-03-18.md`)
+5. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
 
 ### Journal History Navigation Bugs (TODO)
 
@@ -71,6 +75,7 @@ src/
    - L-arrow jumps to top program instead of collapsing the current level
    - Selection does not stay in the journal tree hierarchy
    - R-arrow twice expands month then entries; L-arrow once jumps to month but does NOT collapse entries; L-arrow again jumps to top program and collapses entries (should collapse one level per L-arrow press)
+2. **Entry indentation is wrong**: When expanding a month to show individual date entries, the entries are indented one level too far in the tree view
 
 ### Planning Session Bug (TODO)
 

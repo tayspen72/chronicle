@@ -138,6 +138,28 @@ pub fn validate_element_name(name: &str) -> Result<()> {
     }
 }
 
+fn collect_journal_entries_recursive(dir: &Path, entries: &mut Vec<JournalEntry>) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_journal_entries_recursive(&path, entries)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            entries.push(JournalEntry { filename, path });
+        }
+    }
+    Ok(())
+}
+
 fn validate_target_path(workspace_root: &Path, target_path: &Path) -> Result<()> {
     let absolute_target = if target_path.is_absolute() {
         target_path.to_path_buf()
@@ -279,7 +301,9 @@ impl JournalStorage for PathBuf {
 
     fn today_journal_path(&self) -> PathBuf {
         let today = Local::now().format("%Y-%m-%d");
-        self.journal_dir().join(format!("{}.md", today))
+        self.journal_dir()
+            .join("current")
+            .join(format!("{}.md", today))
     }
 
     fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)> {
@@ -294,31 +318,22 @@ impl JournalStorage for PathBuf {
             }
             let template = include_str!("../../templates/journal.md");
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let content = template.replace("YYYY-MM-DD", &today);
+            let content = template.replace("{{TODAY}}", &today);
+            let content = content.replace("{{UUID}}", &uuid::Uuid::new_v4().to_string());
             fs::write(&path, &content)?;
             Ok((path, content))
         }
     }
 
     fn list_journal_entries(&self) -> Result<Vec<JournalEntry>> {
-        let journal_dir = self.journal_dir();
+        let history_dir = self.journal_dir().join("history");
 
-        if !journal_dir.exists() {
+        if !history_dir.exists() {
             return Ok(vec![]);
         }
 
-        let mut entries: Vec<JournalEntry> = fs::read_dir(&journal_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension()?.to_str()? == "md" {
-                    let filename = path.file_name()?.to_str()?.to_string();
-                    Some(JournalEntry { filename, path })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut entries: Vec<JournalEntry> = Vec::new();
+        collect_journal_entries_recursive(&history_dir, &mut entries)?;
 
         entries.sort_by(|a, b| b.filename.cmp(&a.filename));
 
