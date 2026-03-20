@@ -57,25 +57,23 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn calculate_sidebar_width(app: &App) -> u16 {
-    let mut max_len = 0usize;
+    let max_len = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .map(|item| {
+            let prefix_len = if item.is_header || item.indent == 0 {
+                0
+            } else {
+                4
+            };
+            item.name.len() + (item.indent * 4) + prefix_len
+        })
+        .max()
+        .unwrap_or(0)
+        .max("Navigator".len());
 
-    max_len = max_len.max("Navigator".len());
-
-    for item in &app.navigation_state.sidebar_items {
-        // Account for: indent spaces (4 per level) + tree prefix (4 chars for "├── "/"└── ") + name
-        // Tree prefix only applies to non-header items at indent > 0
-        // Programs (indent=0) don't get tree prefixes, only their children do
-        let tree_prefix_len = if item.is_header || item.indent == 0 {
-            0
-        } else {
-            4 // "├── " or "└── "
-        };
-        let len = item.name.len() + (item.indent * 4) + tree_prefix_len;
-        max_len = max_len.max(len);
-    }
-
-    // +6 for borders (2) and internal padding (4)
-    (max_len + 6).clamp(15, 60) as u16
+    ((max_len + 6) as u16).clamp(15, 60)
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
@@ -83,32 +81,25 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let in_selection_mode = app.mode == Mode::TaskSelection;
 
     let items = &app.navigation_state.sidebar_items;
-    let item_count = items.len();
 
     // Pre-compute which items need vertical continuation pipes at each indent level.
     // Pipe at level d means: "there are items at depth d after this item"
-    let mut continuation_levels: Vec<Vec<bool>> = vec![vec![]; item_count];
     let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
-
-    for d in 0..=max_indent {
-        let mut pipe_continues;
-        for i in 0..item_count {
-            if items[i].indent > d {
-                // Deeper item: pipe continues from ancestors
-                pipe_continues = true;
-            } else {
-                // Current item is at depth d or shallower
-                // Pipe continues if there are more items at this depth after us
-                pipe_continues = items[i + 1..].iter().any(|x| x.indent == d);
-            }
-
-            if continuation_levels[i].len() <= d {
-                continuation_levels[i].push(pipe_continues);
-            } else {
-                continuation_levels[i][d] = pipe_continues;
-            }
-        }
-    }
+    let continuation_levels: Vec<Vec<bool>> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            (0..=max_indent)
+                .map(|d| {
+                    if item.indent > d {
+                        true
+                    } else {
+                        items[i + 1..].iter().any(|x| x.indent == d)
+                    }
+                })
+                .collect()
+        })
+        .collect();
 
     let list_items: Vec<ListItem> = items
         .iter()
@@ -158,14 +149,13 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let full_label = if let Some(cb) = checkbox_prefix {
+                // Prefix includes tree chars; strip them and prepend checkbox column
+                let tree_chars_len = if prefix.starts_with("│   ") { 12 } else { 4 };
                 format!(
                     "{}{}{}",
                     "    ".repeat(item.indent),
                     cb,
-                    prefix
-                        .trim_start_matches("│   ")
-                        .trim_start_matches("└── ")
-                        .trim_start_matches("├── ")
+                    &prefix[tree_chars_len.min(prefix.len())..]
                 )
             } else {
                 prefix.clone()
