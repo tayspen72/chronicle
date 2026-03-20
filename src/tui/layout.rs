@@ -85,19 +85,51 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let item_count = items.len();
 
     // Pre-compute which items need vertical continuation pipes at each indent level.
-    // For each indent level d < max_indent, track whether there are remaining items
-    // below that have indent >= d (meaning the pipe continues).
+    // For each item, track whether there are remaining items below that are
+    // descendants of the current item (meaning the pipe continues above them).
     let mut continuation_levels: Vec<Vec<bool>> = vec![vec![]; item_count];
     let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
+
+    // Use tree_path for programs, journal_path for journals to determine descendants
+    fn get_path_prefix(
+        item: &crate::tui::navigation::SidebarItem,
+        depth: usize,
+    ) -> Option<Vec<String>> {
+        if let Some(ref tree_path) = item.tree_path {
+            if depth < tree_path.len() {
+                return Some(tree_path[..depth].to_vec());
+            }
+        } else if let Some(ref journal_path) = item.journal_path {
+            if depth < journal_path.len() {
+                return Some(journal_path[..depth].to_vec());
+            }
+        }
+        None
+    }
 
     for d in 0..=max_indent {
         let mut pipe_continues = false;
         for i in 0..item_count {
-            if items[i].indent == d {
-                pipe_continues = false;
-            } else if items[i].indent > d {
+            let current_prefix = get_path_prefix(&items[i], d);
+
+            // Check if there's an item below that is a descendant of the current item
+            let has_descendant_below = items[i + 1..].iter().any(|later| {
+                if let Some(ref curr) = current_prefix {
+                    if let Some(ref later_prefix) = get_path_prefix(later, d) {
+                        return *later_prefix == *curr && later.indent > d;
+                    }
+                }
+                false
+            });
+
+            // Pipe continues if: we have descendants below, OR there's content
+            // at this depth level below us (meaning our ancestors' pipe continues)
+            if has_descendant_below || items[i + 1..].iter().any(|x| x.indent == d) {
                 pipe_continues = true;
+            } else if items[i].indent == d {
+                pipe_continues = false;
             }
+
             if continuation_levels[i].len() <= d {
                 continuation_levels[i].push(pipe_continues);
             } else {
