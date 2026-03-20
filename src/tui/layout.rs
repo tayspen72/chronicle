@@ -63,8 +63,9 @@ fn calculate_sidebar_width(app: &App) -> u16 {
 
     for item in &app.navigation_state.sidebar_items {
         // Account for: indent spaces (4 per level) + tree prefix (4 chars for "├── "/"└── ") + name
-        // Tree prefix only applies to non-header items (indent=0 items get their own prefix without leading pipes)
-        let tree_prefix_len = if item.is_header {
+        // Tree prefix only applies to non-header items at indent > 0
+        // Programs (indent=0) don't get tree prefixes, only their children do
+        let tree_prefix_len = if item.is_header || item.indent == 0 {
             0
         } else {
             4 // "├── " or "└── "
@@ -128,7 +129,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     }
                 });
 
-            let prefix = if item.is_header {
+            let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
                 // Build vertical pipes for ancestor levels
