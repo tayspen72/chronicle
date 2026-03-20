@@ -189,3 +189,5 @@ _Append a rule here whenever an agent makes a mistake. One line, specific, actio
 - When the user reports a bug, verify understanding of the expected vs actual behavior, then pass the issue to `@oncall-guide` for root-cause analysis and fix. Do not implement the fix directly unless the bug is trivial (one-liner) or the user explicitly asks for a direct fix.
 
 - Always run `git status` BEFORE implementing any feature or fix. Create a branch from `develop` if one doesn't exist. Document this as "Pre-flight Check" in AGENTS.md.
+
+- NEVER merge to develop without first asking the user to manually verify the changes. After `@verify-app` passes, inform the user that the branch is ready for manual testing and ask before merging.
