@@ -1078,12 +1078,13 @@ impl App {
                 if prev_section == SidebarSection::Programs && new_section != prev_section {
                     self.collapse_all_programs();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the NEW section
+                    // After rebuild, select the LAST selectable item in the NEW section
+                    // (for upward navigation, we want to land at the end of the section)
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| {
+                        .rposition(|i| {
                             !i.is_header && !i.name.is_empty() && i.section == new_section
                         })
                         .unwrap_or(0);
@@ -1092,12 +1093,13 @@ impl App {
                 else if prev_section == SidebarSection::Journal && new_section != prev_section {
                     self.navigation_state.sidebar_tree.clear_expanded();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the NEW section
+                    // After rebuild, select the LAST selectable item in the NEW section
+                    // (for upward navigation, we want to land at the end of the section)
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| {
+                        .rposition(|i| {
                             !i.is_header && !i.name.is_empty() && i.section == new_section
                         })
                         .unwrap_or(0);

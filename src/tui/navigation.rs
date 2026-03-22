@@ -555,6 +555,76 @@ mod tests {
         assert!(items[1].is_create_action);
         assert_eq!(items[1].indent, 1);
     }
+
+    #[test]
+    fn test_first_and_last_selectable_in_section() {
+        // Create a sidebar structure similar to build_sidebar_items:
+        // - Programs header (index 0)
+        // - Program1 (index 1)
+        // - Program2 (index 2)
+        // - Spacer (index 3)
+        // - Planning header (index 4)
+        // - Current Plan (index 5)
+        // - Backlog (index 6)
+        // - Spacer (index 7)
+        // - Journal header (index 8)
+        // - Today (index 9)
+        // - History (index 10)
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("Program1", SidebarSection::Programs),
+            SidebarItem::new("Program2", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Planning), // spacer
+            SidebarItem::new("Planning", SidebarSection::Planning).header(),
+            SidebarItem::new("Current Plan", SidebarSection::Planning)
+                .planning_item("WeeklyPlanning"),
+            SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"),
+            SidebarItem::new("", SidebarSection::Journal), // spacer
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+            SidebarItem::new("History", SidebarSection::Journal).journal_item("History"),
+        ];
+
+        // Test finding first selectable in Journal section
+        let first_journal = items
+            .iter()
+            .position(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Journal
+            })
+            .unwrap();
+        assert_eq!(items[first_journal].name, "Today");
+        assert_eq!(first_journal, 9);
+
+        // Test finding last selectable in Journal section (for upward navigation)
+        let last_journal = items
+            .iter()
+            .rposition(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Journal
+            })
+            .unwrap();
+        assert_eq!(items[last_journal].name, "History");
+        assert_eq!(last_journal, 10);
+
+        // Test finding first selectable in Planning section
+        let first_planning = items
+            .iter()
+            .position(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Planning
+            })
+            .unwrap();
+        assert_eq!(items[first_planning].name, "Current Plan");
+        assert_eq!(first_planning, 5);
+
+        // Test finding last selectable in Planning section (for upward navigation)
+        let last_planning = items
+            .iter()
+            .rposition(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Planning
+            })
+            .unwrap();
+        assert_eq!(items[last_planning].name, "Backlog");
+        assert_eq!(last_planning, 6);
+    }
 }
 
 /// Tracks expansion state for the journal history tree
