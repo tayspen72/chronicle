@@ -47,6 +47,183 @@ src/
 
 ---
 
+## Tree Navigation Model
+
+This section defines the canonical behavior for ALL tree-based navigation in the TUI sidebar (Programs, Journal History, Planning).
+
+The intended behavior is that the navigator panel is what the user is controlling and moving around, and the main window is a view port of what is contained in the navigator panel.
+
+### Terminology
+
+- **Expansion**: Making an element's children visible in the sidebar.
+- **Collapse**: Hiding an element's children from the sidebar.
+- **Selection**: The currently highlighted sidebar item (cursor).
+- **Leaf**: An element with no children (or a deeply nested element the user stops expanding at).
+- **Section**: Level 1 elements are categorized into logical groups, called sections.
+
+### Rules
+
+1. **Default state**: All elements start collapsed.
+2. **Right / `l` — Expand**: Expand the selected element, reveal its children, and move selection to the first child.
+   - If the element is already expanded or has no children, the key does nothing.
+3. **Left / `h` — Collapse**: Collapse the selected element (hide its children) and move selection to its parent.
+   - If the element is at the root level (e.g., "History", "Programs"), the key does nothing.
+4. **Expand goes one level deep per press**: Right on a parent shows its immediate children only. It does NOT auto-expand grandchildren.
+5. **Collapse hides all descendants**: Left on a collapsed item collapses that entire subtree. Left on a month hides all entries; Left on a year hides all months and entries.
+6. **Tree rendering**: `├──` for non-last children, `└──` for the last child, `│` for continuation lines of expanded siblings above, `  ` for no-continuation lines. Never show `│` at the root level of a tree section.
+7. **Section Name**: Section names are not interact-able. The user cannot select them and thus should not display anything or expand/contract.
+
+### Example States
+
+In the example states below:
+**_Section<x>_**: A section name, used to categorize level 1 elements
+**Alpha<x>**: Level 1 element, unique designator <x>
+**Beta<x>**: Level 2 element, unique designator <x>
+**Gamma<x>**: Level 3 element, unique designator <x>
+**Delta<x>**: Level 4 element, unique designator <x>
+
+**State 1 — All collapsed (initial)**
+```
+Alpha
+```
+
+**State 2 — Level 1 Element Expanded, Single Child**
+```
+Alpha
+   └── Beta
+```
+Pressing Right-Arrow on Aplha will expand to show Beta
+  * A single entry child, display: `└──`
+
+**State 3 — Level 1 Element Expanded, Single Child, Collapsed Level 1 Element**
+```
+Alpha1
+   └── Beta
+Alpha2
+```
+Note the first level entries are not linked with a vertical pipe
+  
+**State 4 — Level 2 Expanded**
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   └── Gamma3
+   └── Beta2
+```
+Pressing Right-Arrow on a level 1 entry will expand to show child elements. Note the vertical connection between Beta1 and Beta2
+
+**State 5 — Level 3 Expanded**
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   │   ├── Delta1
+   │   │   ├── Delta2
+   │   │   └── Delta3
+   │   └── Gamma3
+   └── Beta2
+```
+Expansion can continue to the right in this manner so long as the data type has child nodes available
+
+**State 6 — Level 4 Collapse**
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   │   ├── Delta1
+   │   │   ├── Delta2
+   │   │   └── Delta3
+   │   └── Gamma3
+   └── Beta2
+```
+Assume this tree view and selection is on Delta1, and the user presses left-arrow
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   └── Gamma3
+   └── Beta2
+```
+Pressing left-arrow will collapse the all sibling elements under the parent node, and the selection will move to the parent node
+Gamma2 is now selected
+
+**State 7 — Tree view persistent when not collapsed**
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   │   ├── Delta1
+   │   │   ├── Delta2
+   │   │   └── Delta3
+   │   └── Gamma3
+   └── Beta2
+```
+Assume the user is currently on Delta3 and presses down arrow.
+
+The child nodes under Gamma2 do *not* collapse, but persist until navigation returns to a sibling node under Gamma2 and the user pressed left arrow
+
+If the user then has Gamma3 selected and pressed right arrow:
+```
+Alpha
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   │   ├── Delta1
+   │   │   ├── Delta2
+   │   │   └── Delta3
+   │   └── Gamma3
+   │       ├── Delta4
+   │       ├── Delta5
+   │       └── Delta6
+   └── Beta2
+```
+The tree under Gamma2 has not been collapsed (with left arrow) and the user expands Gamma3 (with right arrow)
+
+**State 8 — Collapse All Elements In Section With Cross-Section Navigation**
+```
+_Section1_
+Alpha1
+   ├── Beta1
+   │   ├── Gamma1
+   │   ├── Gamma2
+   │   │   ├── Delta1
+   │   │   ├── Delta2
+   │   │   └── Delta3
+   │   └── Gamma3
+   │       ├── Delta4
+   │       ├── Delta5
+   │       └── Delta6
+   └── Beta2
+Alpha2
+Alpha3
+
+_Section2_
+Alpha4
+Alpha5
+```
+Assume the user has Alpha3 selected (by navigation with up/down arrow) and has not collapsed any levels
+
+Pressing down arrow on Alpha 3, thus changing from elements in Section1 to Section2, will collapse all elements in Section1
+```
+_Section1_
+Alpha1
+Alpha2
+Alpha3
+
+_Section2_
+Alpha4
+Alpha5
+```
+Selection is not on Alpha4 (Section headers are not select-able)
+
+---
+
 ## Current Implementation Status
 
 ### Working Features
@@ -61,26 +238,12 @@ src/
 
 ### Open Issues
 
-1. **Tree vertical pipes (Programs)**: When a parent element is expanded, sibling elements below should still show vertical pipes (`│`) connecting them. Example: if Program 1 is expanded to show projects, there should still be a `│` connecting Program 1 and Program 2 in the tree view.
-2. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
-3. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
-4. **Journal folder structure**:
+1. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
+2. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
+3. **Journal folder structure**:
    - `journal/current/YYYY-MM-DD.md` — today's journal entry
    - `journal/history/YYYY/MMM/YYYY-MM-DD.md` — history entries grouped by year and 3-letter month (e.g., `journal/history/2026/mar/2026-03-18.md`)
-5. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
-
-### Journal History Navigation Bugs (TODO)
-
-1. **Cannot select second month in list**: When expanding to month view, only the first month is selectable; cannot navigate to or select subsequent months.
-2. **L-arrow collapse jumps to programs**: After expanding History → year → month → entries:
-   - L-arrow does not collapse the current level properly
-   - Selection jumps to the last program in the list instead of staying in the journal tree
-   - Should collapse one level per L-arrow press, staying within journal hierarchy
-3. **Entry indentation is wrong**: When expanding a month to show individual date entries, the entries are indented one level too far in the tree view.
-
-### Planning Session Bug (TODO)
-
-1. **CONFIRM does not check task checkbox**: Selecting CONFIRM and adding a task to the plan does not mark the checkbox as selected. (FIXED)
+4. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
 
 ### Creation Wizard
 
@@ -118,17 +281,17 @@ Start Planning Session
 
 ### Journal History Navigation
 
+Uses the universal **Tree Navigation Model** defined above.
+
 ```
 Journal sidebar:
-  ├─ Today  →  opens today's journal in viewer
   └─ History
-       ├─ Right  →  expands years
-       │    ├─ Right on year  →  expands months
-       │    │    └─ Right on month  →  shows entries
-       │    │         └─ Enter on entry  →  opens in viewer
-       │    └─ Left  →  collapses to parent level
-       └─ Left on History  →  collapses entire history tree
+       └─ Year (depth 1)
+            └─ Month (depth 2)
+                 └─ Entry (depth 3)  →  Enter opens in viewer
 ```
+
+Each depth follows the same expand/collapse/selection rules from the Tree Navigation Model.
 
 ---
 
@@ -154,6 +317,9 @@ Journal sidebar:
 
 | Date | Event |
 |------|-------|
+| 2026-03-21 | Spec: Added Tree Navigation Model section with 8 example states |
+| 2026-03-21 | Bug fix: Journal history tree connector chars and indentation |
+| 2026-03-21 | Bug fix: Journal history collapse cascades correctly |
 | 2026-03-19 | Bug fix: Today journal opens in external editor (Enter key) |
 | 2026-03-19 | Bug fix: Programs remain visible when History is expanded or collapsed |
 | 2026-03-19 | Bug fix: Esc dismisses Current Plan view and returns to TreeView |
@@ -185,6 +351,10 @@ Journal sidebar:
 ---
 
 ## Future Features
+
+### Tree Navigation Unit Tests
+
+Build comprehensive unit tests for tree navigation that apply equally to Programs and Journal History, covering all states from the Tree Navigation Model. Tests should exercise the same expand/collapse/selection logic for both navigation paths.
 
 ### Creation Wizard UX
 

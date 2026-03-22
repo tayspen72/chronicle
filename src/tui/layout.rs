@@ -84,12 +84,14 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
     // Pre-compute which items need vertical continuation pipes at each indent level.
     // Pipe at level d means: "there are items at depth d after this item"
+    // Note: Level 0 (root) is excluded - it's handled by the root's tree connector,
+    // not by continuation pipes for its children.
     let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
     let continuation_levels: Vec<Vec<bool>> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            (0..=max_indent)
+            (1..=max_indent) // Start from level 1, exclude level 0
                 .map(|d| {
                     if item.indent > d {
                         true
@@ -119,9 +121,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
-                // Build vertical pipes for ancestor levels (skip level 0 for indent=1 items)
-                // Items at indent 1 have parent at indent 0, which has no pipe
-                let pipe_start = if item.indent > 1 { 0 } else { 1 };
+                // Build vertical pipes for ancestor levels.
+                // Level 0 (root) has no pipe, so pipes start from level 1.
+                // Indent 1 items have no pipes (direct children of root).
+                // Indent 2 items have 1 pipe (to level 1).
+                // Indent 3 items have 2 pipes (to levels 1 and 2).
+                let pipe_start = 1;
                 let pipes: String = (pipe_start..item.indent)
                     .map(|d| {
                         let has_pipe = continuation_levels

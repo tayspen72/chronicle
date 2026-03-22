@@ -851,12 +851,22 @@ impl App {
                         None
                     };
 
-                    // Rebuild sidebar first, then select the correct item
+                    // Rebuild sidebar
+                    // IMPORTANT: Update BOTH tree_model AND journal_tree_state BEFORE rebuild
+                    // so that sync_selection_with_tree_path uses the correct path
+                    if let Some(ref path) = target_path {
+                        self.navigation_state
+                            .tree_model
+                            .set_selected_path(path.clone());
+                        // Also update journal_tree_state - this is critical because
+                        // sync_selection_with_tree_path reads from journal_tree_state.selected_path()
+                        self.journal_tree_state.set_selected_path(path.clone());
+                    }
                     self.load_tree_view_data();
 
                     // Select the target after sidebar is rebuilt
-                    if let Some(path) = target_path {
-                        self.select_journal_item_by_path(&path);
+                    if let Some(ref path) = target_path {
+                        self.select_journal_item_by_path(path);
                     } else {
                         self.select_history();
                     }
@@ -875,12 +885,19 @@ impl App {
                     let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
                     // Collapse the parent path so children (including this entry) are hidden
                     self.collapse_journal_item(&parent_path);
+
+                    // IMPORTANT: Update journal_tree_state BEFORE rebuild
+                    // so that sync_selection_with_tree_path uses the correct path
+                    self.journal_tree_state
+                        .set_selected_path(parent_path.clone());
+
                     // Rebuild sidebar first, then select
                     self.load_tree_view_data();
-                    // Select the parent header
+                    // Select the parent header (this overrides sync_selection result)
                     self.select_journal_item_by_path(&parent_path);
                 } else {
                     // Edge case: single-level entry, collapse and go to History
+                    self.journal_tree_state.set_selected_path(vec![]);
                     self.load_tree_view_data();
                     self.select_history();
                 }
@@ -916,25 +933,20 @@ impl App {
     fn add_journal_months_and_entries(&mut self, year: &str) {
         let months = self.journal_tree_state.months_for_year(year);
 
-        // Simplification: Only create month level if multiple months exist
-        if months.len() > 1 {
-            for month in &months {
-                let month_path = vec![year.to_string(), month.clone()];
-                self.navigation_state.sidebar_items.push(
-                    SidebarItem::new(month, SidebarSection::Journal)
-                        .journal_path(month_path.clone())
-                        .journal_header()
-                        .indent(2),
-                );
+        // Always create month headers (tier is always shown when expanded)
+        for month in &months {
+            let month_path = vec![year.to_string(), month.clone()];
+            self.navigation_state.sidebar_items.push(
+                SidebarItem::new(month, SidebarSection::Journal)
+                    .journal_path(month_path.clone())
+                    .journal_header()
+                    .indent(2),
+            );
 
-                // If month is expanded, add entries
-                if self.journal_tree_state.is_expanded(&month_path) {
-                    self.add_journal_entries_for_month(year, month);
-                }
+            // If this specific month is expanded, add its entries
+            if self.journal_tree_state.is_expanded(&month_path) {
+                self.add_journal_entries_for_month(year, month);
             }
-        } else if let Some(month) = months.first() {
-            // Single month - show entries directly under year
-            self.add_journal_entries_with_indent(year, month, 2);
         }
     }
 
@@ -1504,25 +1516,59 @@ impl App {
         }
 
         // Check if current selection is already on a journal item.
-        // If so, preserve the journal selection instead of falling back to a program.
+        // For journal items without tree_path, we need to verify the journal_path
+        // is compatible with the expected tree path (e.g., after collapsing).
         let current_idx = self.navigation_state.selected_entry_index;
         if let Some(item) = self.navigation_state.sidebar_items.get(current_idx)
             && item.section == SidebarSection::Journal
-            && (item.is_journal_item.is_some()
-                || item.is_journal_header
-                || item.journal_path.is_some())
         {
-            tracing::debug!(
-                selected_name = ?item.name,
-                "preserving journal selection (no tree path match)"
-            );
-            return;
+            // Use journal_tree_state.selected_path() for journal items
+            let tree_path = self.journal_tree_state.selected_path().to_vec();
+            // Check if journal_path is compatible with tree_path:
+            // - If tree_path is empty, any journal item is fine
+            // - If tree_path is not empty, journal_path should be a prefix of tree_path
+            //   (meaning we're at or above the expected level)
+            let is_compatible = if tree_path.is_empty() {
+                true
+            } else if let Some(ref jp) = item.journal_path {
+                // journal_path is compatible if it's a prefix of tree_path
+                // e.g., ["2026"] is compatible with tree_path ["2026", "March"]
+                jp.len() <= tree_path.len() && jp == &tree_path[..jp.len()]
+            } else {
+                // No journal_path, can't verify compatibility
+                false
+            };
+
+            // Preserve selection if it's a simple journal action (Today, History)
+            // or if the journal_path is compatible with tree_path
+            if item.is_journal_item.is_some() || is_compatible {
+                return;
+            }
+            // Otherwise, fall through to find the correct journal item
         }
 
         tracing::warn!(
             path = ?self.navigation_state.tree_model.selected_path(),
-            "selection sync fallback to first selectable item"
+            "selection sync: finding compatible journal item or falling back"
         );
+        // Try to find a journal item with compatible journal_path
+        let tree_path = self.journal_tree_state.selected_path().to_vec();
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+            if item.section != SidebarSection::Journal {
+                return false;
+            }
+            if let Some(ref jp) = item.journal_path {
+                // Match if journal_path is a prefix of tree_path
+                jp.len() <= tree_path.len() && jp == &tree_path[..jp.len()]
+            } else {
+                false
+            }
+        }) {
+            self.navigation_state.selected_entry_index = idx;
+            return;
+        }
+
+        // Fall back to first selectable
         self.navigation_state.selected_entry_index = self.first_selectable_sidebar_index();
         if !self.navigation_state.tree_model.selected_path().is_empty() {
             if let Some(path) = self
@@ -1610,53 +1656,19 @@ impl App {
     fn add_journal_tree_items(&mut self) {
         let years = self.journal_tree_state.years();
 
-        // Simplification: Only create year level if there are multiple years
-        if years.len() > 1 {
-            for year in &years {
-                let year_path = vec![year.clone()];
-                self.navigation_state.sidebar_items.push(
-                    SidebarItem::new(year, SidebarSection::Journal)
-                        .journal_path(year_path.clone())
-                        .journal_header()
-                        .indent(1),
-                );
+        // Always create year headers (tier is always shown when expanded)
+        for year in &years {
+            let year_path = vec![year.clone()];
+            self.navigation_state.sidebar_items.push(
+                SidebarItem::new(year, SidebarSection::Journal)
+                    .journal_path(year_path.clone())
+                    .journal_header()
+                    .indent(1),
+            );
 
-                if self.journal_tree_state.is_expanded(&year_path) {
-                    self.add_journal_months_and_entries(year);
-                }
-            }
-        } else if let Some(year) = years.first() {
-            // Single year - add months/entries directly under History
-            let months = self.journal_tree_state.months_for_year(year);
-
-            if months.len() > 1 {
-                // Multiple months - create month level
-                for month in &months {
-                    let month_path = vec![year.to_string(), month.clone()];
-                    self.navigation_state.sidebar_items.push(
-                        SidebarItem::new(month, SidebarSection::Journal)
-                            .journal_path(month_path.clone())
-                            .journal_header()
-                            .indent(1),
-                    );
-
-                    if self.journal_tree_state.is_expanded(&month_path) {
-                        self.add_journal_entries_with_indent(year, month, 2);
-                    }
-                }
-            } else if let Some(month) = months.first() {
-                // Single month - show month header with entries
-                let month_path = vec![year.to_string(), month.clone()];
-                self.navigation_state.sidebar_items.push(
-                    SidebarItem::new(month, SidebarSection::Journal)
-                        .journal_path(month_path.clone())
-                        .journal_header()
-                        .indent(1),
-                );
-
-                if self.journal_tree_state.is_expanded(&month_path) {
-                    self.add_journal_entries_with_indent(year, month, 2);
-                }
+            // Only add months and entries if the year is expanded
+            if self.journal_tree_state.is_expanded(&year_path) {
+                self.add_journal_months_and_entries(year);
             }
         }
     }

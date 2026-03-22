@@ -98,21 +98,9 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                         if app.journal_entries.is_empty() {
                             content_to_show = "No journal entries found.\n\nUse /journal to create today's entry.".to_string();
                         } else {
-                            // Show years as the top-level view
+                            // Always show years list (tier is always visible)
                             let years = app.journal_tree_state.years();
-                            if years.len() == 1 {
-                                // Only one year - flatten to show entries directly
-                                let year = &years[0];
-                                let entries: Vec<_> = app
-                                    .journal_entries
-                                    .iter()
-                                    .filter(|e| e.filename.starts_with(year))
-                                    .map(|e| e.filename.trim_end_matches(".md").to_string())
-                                    .collect();
-                                content_to_show = entries.join("\n");
-                            } else {
-                                content_to_show = years.join("\n");
-                            }
+                            content_to_show = years.join("\n");
                         }
                     }
                     _ => {}

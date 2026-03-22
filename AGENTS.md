@@ -178,7 +178,9 @@ Before any PR is opened:
 
 ---
 
-## Learned rules
+## Tree Navigation
+
+Any work touching sidebar tree navigation (expand/collapse behavior, tree rendering, section handling, selection movement) must start by reading the **Tree Navigation Model** section in `DESIGN.md` and fully understand the requirements before implementing changes. Changes that violate the documented model must be rejected or fixed.
 
 _Append a rule here whenever an agent makes a mistake. One line, specific, actionable._
 
