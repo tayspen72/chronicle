@@ -1,10 +1,10 @@
 use super::views;
 use crate::tui::{App, Mode, ViewType};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 
 #[derive(Debug, Clone)]
@@ -52,11 +52,7 @@ pub fn tree_prefix_for_item(
                 .and_then(|l| l.get(d))
                 .copied()
                 .unwrap_or(false);
-            if has_pipe {
-                "│   "
-            } else {
-                "    "
-            }
+            if has_pipe { "│   " } else { "    " }
         })
         .collect();
 
@@ -187,11 +183,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     let is_selected = item.path.as_ref().is_some_and(|p| {
                         app.planning_session.is_path_selected(&p.to_string_lossy())
                     });
-                    if is_selected {
-                        "[x] "
-                    } else {
-                        "[ ] "
-                    }
+                    if is_selected { "[x] " } else { "[ ] " }
                 });
 
             let prefix = if item.is_header || item.indent == 0 {
@@ -205,11 +197,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                             .and_then(|l| l.get(d))
                             .copied()
                             .unwrap_or(false);
-                        if has_pipe {
-                            "│   "
-                        } else {
-                            "    "
-                        }
+                        if has_pipe { "│   " } else { "    " }
                     })
                     .collect();
 

@@ -1073,30 +1073,33 @@ impl App {
         if let Some(prev_section) = prev_section {
             let new_idx = self.navigation_state.selected_entry_index;
             if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_section = new_item.section.clone();
                 // If leaving Programs section, collapse all expanded programs
-                if prev_section == SidebarSection::Programs && new_item.section != prev_section {
+                if prev_section == SidebarSection::Programs && new_section != prev_section {
                     self.collapse_all_programs();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the new section
+                    // After rebuild, select the first selectable item in the NEW section
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
                         .unwrap_or(0);
                 }
                 // If leaving Journal section, clear journal expansion
-                else if prev_section == SidebarSection::Journal
-                    && new_item.section != prev_section
-                {
+                else if prev_section == SidebarSection::Journal && new_section != prev_section {
                     self.navigation_state.sidebar_tree.clear_expanded();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the new section
+                    // After rebuild, select the first selectable item in the NEW section
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
                         .unwrap_or(0);
                 }
             }
@@ -1117,30 +1120,33 @@ impl App {
         if let Some(prev_section) = prev_section {
             let new_idx = self.navigation_state.selected_entry_index;
             if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_section = new_item.section.clone();
                 // If leaving Programs section, collapse all expanded programs
-                if prev_section == SidebarSection::Programs && new_item.section != prev_section {
+                if prev_section == SidebarSection::Programs && new_section != prev_section {
                     self.collapse_all_programs();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the new section
+                    // After rebuild, select the first selectable item in the NEW section
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
                         .unwrap_or(0);
                 }
                 // If leaving Journal section, clear journal expansion
-                else if prev_section == SidebarSection::Journal
-                    && new_item.section != prev_section
-                {
+                else if prev_section == SidebarSection::Journal && new_section != prev_section {
                     self.navigation_state.sidebar_tree.clear_expanded();
                     self.load_tree_view_data();
-                    // After rebuild, select the first selectable item in the new section
+                    // After rebuild, select the first selectable item in the NEW section
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
                         .iter()
-                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
                         .unwrap_or(0);
                 }
             }
@@ -1165,7 +1171,15 @@ impl App {
         if idx >= self.navigation_state.sidebar_items.len() {
             return;
         }
-        let Some(path) = self.navigation_state.sidebar_items[idx].tree_path.clone() else {
+        let item = &self.navigation_state.sidebar_items[idx];
+
+        // Don't sync scope for spacer items - they have no tree_path and shouldn't
+        // trigger fallback behavior that would override navigation
+        if item.name.is_empty() {
+            return;
+        }
+
+        let Some(path) = item.tree_path.clone() else {
             return;
         };
         if path != self.navigation_state.sidebar_tree.selected_path() {

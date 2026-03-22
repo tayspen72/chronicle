@@ -1,6 +1,7 @@
 //! Integration tests for sidebar/tree navigation.
 
 use chronicle::storage::JournalStorage;
+use chronicle::tui::navigation::SidebarSection;
 use chronicle::tui::test_utils::{app_with_empty_workspace, app_with_journal_entries};
 use chronicle::tui::{Mode, ViewType};
 use crossterm::event::KeyCode;
@@ -888,4 +889,118 @@ fn test_journal_tree_has_correct_indentation() {
             entry.name
         );
     }
+}
+
+#[test]
+fn test_navigate_down_from_last_program_to_planning() {
+    let (_, mut app) = app_with_empty_workspace();
+
+    // Find the last program item (before the Planning section)
+    let items_before_planning: Vec<_> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .take_while(|i| i.section != SidebarSection::Planning)
+        .enumerate()
+        .filter(|(_, item)| !item.is_header && !item.name.is_empty())
+        .collect();
+
+    // Should have at least one program
+    assert!(!items_before_planning.is_empty(), "Should have programs");
+
+    // Get last program
+    let (last_prog_idx, last_prog) = items_before_planning.last().unwrap();
+    println!(
+        "Last program: '{}' at index {}",
+        last_prog.name, last_prog_idx
+    );
+
+    // Select it
+    app.navigation_state.selected_entry_index = *last_prog_idx;
+
+    // Press Down
+    app.handle_key(KeyCode::Down);
+
+    let after_idx = app.navigation_state.selected_entry_index;
+    let after_item = &app.navigation_state.sidebar_items[after_idx];
+    println!("After Down: '{}' at index {}", after_item.name, after_idx);
+
+    // Should be in Planning section
+    assert_eq!(
+        after_item.section,
+        SidebarSection::Planning,
+        "Should navigate to Planning section, got {:?}",
+        after_item.section
+    );
+}
+
+#[test]
+fn test_navigate_up_from_first_planning_to_programs() {
+    let (_, mut app) = app_with_empty_workspace();
+
+    // Find first Planning item
+    let first_plan_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.section == SidebarSection::Planning && !i.is_header && !i.name.is_empty())
+        .expect("Should have planning items");
+
+    let first_plan_item = &app.navigation_state.sidebar_items[first_plan_idx];
+    println!(
+        "First planning item: '{}' at index {}",
+        first_plan_item.name, first_plan_idx
+    );
+
+    // Select it
+    app.navigation_state.selected_entry_index = first_plan_idx;
+
+    // Press Up
+    app.handle_key(KeyCode::Up);
+
+    let after_idx = app.navigation_state.selected_entry_index;
+    let after_item = &app.navigation_state.sidebar_items[after_idx];
+    println!("After Up: '{}' at index {}", after_item.name, after_idx);
+
+    // Should be in Programs section
+    assert_eq!(
+        after_item.section,
+        SidebarSection::Programs,
+        "Should navigate to Programs section, got {:?}",
+        after_item.section
+    );
+}
+
+#[test]
+fn test_navigate_up_wraps_to_journal() {
+    let (_, mut app) = app_with_empty_workspace();
+
+    // Find first item (should be Programs header)
+    let first_idx = 0;
+    let first_item = &app.navigation_state.sidebar_items[first_idx];
+    println!(
+        "First item: '{}' is_header={}",
+        first_item.name, first_item.is_header
+    );
+
+    // Select first item
+    app.navigation_state.selected_entry_index = first_idx;
+
+    // Press Up (should wrap to end)
+    app.handle_key(KeyCode::Up);
+
+    let after_idx = app.navigation_state.selected_entry_index;
+    let after_item = &app.navigation_state.sidebar_items[after_idx];
+    println!(
+        "After Up from first: '{}' at index {}",
+        after_item.name, after_idx
+    );
+
+    // Should be in Journal section (History)
+    assert_eq!(
+        after_item.section,
+        SidebarSection::Journal,
+        "Should wrap to Journal section, got {:?}",
+        after_item.section
+    );
 }
