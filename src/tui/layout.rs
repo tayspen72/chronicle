@@ -19,14 +19,12 @@ pub fn compute_continuation_levels(items: &[TreeItem]) -> Vec<Vec<bool>> {
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            (0..=max_indent)
+            (1..=max_indent)
                 .map(|d| {
-                    if item.indent > d {
+                    if item.indent > d + 1 {
                         true
-                    } else if item.indent == d {
-                        items[i + 1..].iter().any(|x| x.indent > d)
                     } else {
-                        false
+                        items[i + 1..].iter().any(|x| x.indent >= d)
                     }
                 })
                 .collect()
@@ -44,32 +42,23 @@ pub fn tree_prefix_for_item(
         return item.name.clone();
     }
 
-    // Pipes for levels 0 through indent-1 (ancestors)
-    let pipes: String = (0..item.indent)
+    // Pipes for levels 1 through indent-1 (level 0 is root, never has pipes)
+    let pipes: String = (1..item.indent)
         .map(|d| {
             let has_pipe = continuation_levels
                 .get(item_index)
-                .and_then(|l| l.get(d))
+                .and_then(|l| l.get(d - 1))
                 .copied()
                 .unwrap_or(false);
             if has_pipe { "│   " } else { "    " }
         })
         .collect();
 
-    let has_descendants = items[item_index + 1..]
-        .iter()
-        .any(|p| p.indent > item.indent);
     let is_last = items[item_index + 1..]
         .iter()
         .all(|p| p.indent != item.indent);
 
-    let prefix = if has_descendants {
-        "├── "
-    } else if is_last {
-        "└── "
-    } else {
-        "├── "
-    };
+    let prefix = if is_last { "└── " } else { "├── " };
 
     format!("{}{}{}", pipes, prefix, item.name)
 }
@@ -149,28 +138,6 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 
     let items = &app.navigation_state.sidebar_items;
 
-    // Pre-compute which items need vertical continuation pipes at each indent level.
-    // For item at indent n, pipes are at levels 0 through n-1 (ancestors).
-    // Continuation at level d means: "there are items AFTER this item that descend from level d's ancestor".
-    let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
-    let continuation_levels: Vec<Vec<bool>> = items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            (0..=max_indent)
-                .map(|d| {
-                    if item.indent > d {
-                        true
-                    } else if item.indent == d {
-                        items[i + 1..].iter().any(|x| x.indent > d)
-                    } else {
-                        false
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
     let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
@@ -189,33 +156,75 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
-                // Build vertical pipes for levels 0 through indent-1
-                let pipes: String = (0..item.indent)
-                    .map(|d| {
-                        let has_pipe = continuation_levels
-                            .get(i)
-                            .and_then(|l| l.get(d))
-                            .copied()
-                            .unwrap_or(false);
-                        if has_pipe { "│   " } else { "    " }
-                    })
-                    .collect();
+                let current_path = item.tree_path.as_ref().or(item.journal_path.as_ref());
+                if let Some(current_path) = current_path {
+                    let parent_path = &current_path[..current_path.len().saturating_sub(1)];
 
-                // Check if there are descendants at a deeper level
-                let has_descendants = items[i + 1..].iter().any(|p| p.indent > item.indent);
+                    // Pipes for levels 1..indent-1, constrained to the same section/tree.
+                    let pipes: String = (1..item.indent)
+                        .map(|depth| {
+                            let ancestor = &current_path[..depth];
+                            let ancestor_parent = &current_path[..depth.saturating_sub(1)];
+                            let has_pipe = items[i + 1..].iter().any(|candidate| {
+                                if candidate.section != item.section {
+                                    return false;
+                                }
+                                let candidate_path = candidate
+                                    .tree_path
+                                    .as_ref()
+                                    .or(candidate.journal_path.as_ref());
+                                let Some(candidate_path) = candidate_path else {
+                                    return false;
+                                };
+                                if candidate_path.len() < depth
+                                    || !candidate_path.starts_with(ancestor_parent)
+                                {
+                                    return false;
+                                }
+                                candidate_path[depth - 1] != ancestor[depth - 1]
+                            });
+                            if has_pipe { "│   " } else { "    " }
+                        })
+                        .collect();
 
-                // Tree prefix:
-                // - If item has descendants, always use ├── (tree continues)
-                // - If item has NO descendants (leaf), use └── only if it's the last sibling
-                let is_last = items[i + 1..].iter().all(|p| p.indent != item.indent);
-                let tree_prefix = if has_descendants {
-                    "├── "
-                } else if is_last {
-                    "└── "
+                    let has_next_sibling = items[i + 1..].iter().any(|candidate| {
+                        if candidate.section != item.section {
+                            return false;
+                        }
+                        let candidate_path = candidate
+                            .tree_path
+                            .as_ref()
+                            .or(candidate.journal_path.as_ref());
+                        let Some(candidate_path) = candidate_path else {
+                            return false;
+                        };
+                        candidate_path.len() == current_path.len()
+                            && candidate_path.starts_with(parent_path)
+                    });
+
+                    let tree_prefix = if has_next_sibling {
+                        "├── "
+                    } else {
+                        "└── "
+                    };
+                    format!("{}{}{}", pipes, tree_prefix, item.name)
                 } else {
-                    "├── "
-                };
-                format!("{}{}{}", pipes, tree_prefix, item.name)
+                    let is_last_in_section = items[i + 1..]
+                        .iter()
+                        .filter(|candidate| candidate.section == item.section)
+                        .all(|candidate| candidate.indent != item.indent);
+                    let tree_prefix = if is_last_in_section {
+                        "└── "
+                    } else {
+                        "├── "
+                    };
+                    format!(
+                        "{}{}{}",
+                        "    ".repeat(item.indent.saturating_sub(1)),
+                        tree_prefix,
+                        item.name
+                    )
+                }
             };
 
             let full_label = if let Some(cb) = checkbox_prefix {
@@ -472,20 +481,30 @@ mod tests {
 
         let continuation = compute_continuation_levels(&items);
 
-        // Check Beta1 (index 1) - should have pipe at level 1
-        // because Gamma3 comes after it
+        // Beta1 (index 1) is at indent 1 - it should NOT have a pipe at level 0
+        // because level 0 is the root level and root items never have pipes (Rule 6)
         let beta1_prefix = tree_prefix_for_item(&items, 1, &continuation);
         assert!(
-            beta1_prefix.starts_with("│"),
-            "Beta1 should have a pipe (│) because it has descendants. Got: {}",
+            !beta1_prefix.starts_with("│"),
+            "Beta1 should NOT have pipe at level 0 (root). Got: {}",
             beta1_prefix
+        );
+
+        // But Beta1 SHOULD have a pipe at level 1 (from its own indentation)
+        // because Gamma3 comes after it at deeper indent
+        // continuation starts at d=1, so level 1 is at index 0
+        let beta1_cont_at_1 = continuation.get(1).and_then(|c| c.get(0));
+        assert_eq!(
+            beta1_cont_at_1,
+            Some(&true),
+            "Beta1 should have pipe at level 1 because it has descendants"
         );
 
         // Check Gamma3 (index 4) - this is the last child of Beta1
         // It should also have a pipe because Beta1 has more children (Beta2, Beta3)
-        // The pipe at level 1 should be present
+        // The pipe at level 1 should be present (continuation now starts at d=1, so index 0 = level 1)
         assert_eq!(
-            continuation[4].get(1),
+            continuation[4].get(0),
             Some(&true),
             "Gamma3 should have pipe at level 1 (from Beta1)"
         );
@@ -527,21 +546,19 @@ mod tests {
         let continuation = compute_continuation_levels(&items);
         let beta_prefix = tree_prefix_for_item(&items, 1, &continuation);
 
-        // Beta is the last sibling (no items after it with indent 1)
-        // and it HAS descendants (Gamma1, Gamma2, Gamma3)
-        // So it should use ├── (tree continues), NOT └── (tree ends)
-        // The └── would be WRONG because Beta has children
+        // Beta is the last sibling (no items after it with indent 1),
+        // so it should use └── even if it has descendants.
         assert!(
-            beta_prefix.contains("├──"),
-            "Beta should use ├── because it has descendants. Got: {}",
+            beta_prefix.contains("└──"),
+            "Beta should use └── because it is the last sibling. Got: {}",
             beta_prefix
         );
     }
 
     #[test]
     fn test_single_child_is_last_and_has_descendants() {
-        // Edge case: single child that HAS descendants should use ├── not └──.
-        // └── is only for LEAF nodes (no children).
+        // Edge case: single child that has descendants still uses └──,
+        // because it is the last sibling.
         let items = vec![
             TreeItem {
                 name: "Parent".to_string(),
@@ -561,8 +578,8 @@ mod tests {
         let child_prefix = tree_prefix_for_item(&items, 1, &continuation);
 
         assert!(
-            child_prefix.contains("├──"),
-            "Child with grandchildren should use ├── not └──. Got: {}",
+            child_prefix.contains("└──"),
+            "Child with grandchildren should use └── as last sibling. Got: {}",
             child_prefix
         );
     }
@@ -629,20 +646,31 @@ mod tests {
 
         let continuation = compute_continuation_levels(&items);
 
-        // Level1 should have pipe because Level2b exists
+        // Level1 should NOT have pipe at level 0 (root level has no pipes per Rule 6)
         let level1_prefix = tree_prefix_for_item(&items, 1, &continuation);
         assert!(
-            level1_prefix.starts_with("│"),
-            "Level1 should have pipe. Got: {}",
+            !level1_prefix.starts_with("│"),
+            "Level1 should NOT have pipe at level 0 (root). Got: {}",
             level1_prefix
         );
 
-        // Level2b should have pipe because Level3 exists
-        let level2b_prefix = tree_prefix_for_item(&items, 3, &continuation);
-        assert!(
-            level2b_prefix.starts_with("│"),
-            "Level2b should have pipe. Got: {}",
-            level2b_prefix
+        // But Level1 SHOULD have pipe at level 1 (its own level)
+        // because Level2b exists
+        // continuation starts at d=1, so index 0 = d=1
+        let level1_cont_at_1 = continuation.get(1).and_then(|c| c.get(0));
+        assert_eq!(
+            level1_cont_at_1,
+            Some(&true),
+            "Level1 should have pipe at level 1 because Level2b exists"
+        );
+
+        // Level2b should have pipe at level 1 (its parent level) because Level3 exists
+        // continuation starts at d=1, so index 0 = d=1
+        let level2b_cont_at_1 = continuation.get(3).and_then(|c| c.get(0));
+        assert_eq!(
+            level2b_cont_at_1,
+            Some(&true),
+            "Level2b should have pipe at level 1 because Level3 exists"
         );
     }
 }

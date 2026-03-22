@@ -93,6 +93,15 @@ pub enum ViewType {
     InputTaskDetailField,
 }
 
+#[derive(Debug, Clone)]
+enum JournalNavNode {
+    Today,
+    History,
+    Header(Vec<String>),
+    Entry(Vec<String>),
+    OtherAction,
+}
+
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
@@ -127,6 +136,7 @@ impl App {
     const FOCUS_ASSIGNED_TO: usize = 100;
     const FOCUS_START_DATE: usize = 101;
     const FOCUS_DUE_DATE: usize = 102;
+    const JOURNAL_EXPANSION_ROOT: &'static str = "__journal__";
 
     pub fn new(config: Config) -> Self {
         let mut app = App {
@@ -751,32 +761,29 @@ impl App {
 
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
-            let idx = self.navigation_state.selected_entry_index;
-            if idx < self.navigation_state.sidebar_items.len() {
-                let item = &self.navigation_state.sidebar_items[idx];
-
-                let is_journal = item.section == SidebarSection::Journal;
-                let is_history = item.name == "History" && item.is_journal_item.is_some();
-                let is_journal_item = item.is_journal_item.is_some();
-                let journal_path = item.journal_path.clone();
-
-                if is_journal {
-                    // Handle journal history expansion
-                    if is_history {
-                        self.expand_history();
-                        return;
+            if let Some(journal_node) = self.selected_journal_node() {
+                match journal_node {
+                    JournalNavNode::History => {
+                        if !self.journal_is_expanded(&[]) {
+                            self.expand_history();
+                        }
                     }
-
-                    // Handle journal tree navigation (month/year headers)
-                    if let Some(ref jpath) = journal_path
-                        && !is_journal_item
-                    {
-                        // This is a journal header (year/month) - expand it
-                        self.expand_journal_item(jpath);
-                        return;
+                    JournalNavNode::Header(path) => {
+                        if !self.journal_is_expanded(&path) {
+                            self.expand_journal_item(&path);
+                        }
+                    }
+                    JournalNavNode::Today
+                    | JournalNavNode::Entry(_)
+                    | JournalNavNode::OtherAction => {
+                        // Right on journal leaves/actions with no children is a no-op.
                     }
                 }
+                return;
+            }
 
+            let idx = self.navigation_state.selected_entry_index;
+            if idx < self.navigation_state.sidebar_items.len() {
                 tracing::debug!(
                     selected_index = self.navigation_state.selected_entry_index,
                     path = ?self.navigation_state.sidebar_tree.selected_path(),
@@ -801,8 +808,7 @@ impl App {
                 .set_entries(self.journal_entries.clone());
         }
 
-        self.navigation_state.expand_path(&[]);
-        self.navigation_state.set_selected_path(vec![]);
+        self.journal_expand_path(&[]);
         self.load_tree_view_data();
         self.select_first_journal_child(&[]);
     }
@@ -818,81 +824,40 @@ impl App {
         }
 
         let item = &self.navigation_state.sidebar_items[idx];
-
-        let is_journal = item.section == SidebarSection::Journal;
-        let journal_path = item.journal_path.clone();
-
-        // Handle journal history navigation
-        if is_journal {
-            // Only collapse if this is a header (year/month) with visible children
-            if item.is_journal_header {
-                if let Some(ref jpath) = journal_path {
-                    // Collapse current level
-                    self.collapse_journal_item(jpath);
-
-                    // Determine what to select after collapse
-                    let target_path = if jpath.len() > 1 {
-                        let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
-                        // Check if parent exists as sidebar item (in single-year case,
-                        // year header doesn't exist, so we go to History instead)
-                        if self
-                            .navigation_state
-                            .sidebar_items
-                            .iter()
-                            .any(|item| item.journal_path.as_ref() == Some(&parent_path))
-                        {
-                            Some(parent_path)
-                        } else {
-                            // Parent doesn't exist - collapse History level
-                            self.collapse_journal_item(&[]);
-                            None
-                        }
+        if let Some(journal_node) = self.selected_journal_node() {
+            match journal_node {
+                JournalNavNode::History | JournalNavNode::Today | JournalNavNode::OtherAction => {
+                    // Root-level journal actions cannot be collapsed.
+                }
+                JournalNavNode::Header(path) => {
+                    let parent_path = path[..path.len().saturating_sub(1)].to_vec();
+                    if parent_path.is_empty() {
+                        // Year selected: collapse history level (all years/months/entries).
+                        self.collapse_journal_item(&[]);
                     } else {
-                        None
-                    };
-
-                    // Rebuild sidebar
-                    if let Some(ref path) = target_path {
-                        self.navigation_state
-                            .sidebar_tree
-                            .set_selected_path(path.clone());
+                        // Month selected: collapse year level (all months/entries for that year).
+                        self.collapse_journal_item(&parent_path);
                     }
                     self.load_tree_view_data();
 
-                    // Select the target after sidebar is rebuilt
-                    if let Some(ref path) = target_path {
-                        self.select_journal_item_by_path(path);
-                    } else {
+                    if parent_path.is_empty() {
                         self.select_history();
+                    } else {
+                        self.select_journal_item_by_path(&parent_path);
                     }
-                    return;
                 }
-                // At History level, don't collapse further
-                return;
-            }
-            // Journal entry (leaf) - collapse to parent month/year header
-            if let Some(ref jpath) = journal_path {
-                // Collapse current entry in journal tree state
-                self.collapse_journal_item(jpath);
-                // Select parent month/year header
-                if jpath.len() > 1 {
-                    // Parent is month/year header (first len-1 elements)
-                    let parent_path: Vec<String> = jpath[..jpath.len() - 1].to_vec();
-                    // Collapse the parent path so children (including this entry) are hidden
-                    self.collapse_journal_item(&parent_path);
-
-                    // Rebuild sidebar first, then select
-                    self.load_tree_view_data();
-                    // Select the parent header (this overrides sync_selection result)
-                    self.select_journal_item_by_path(&parent_path);
-                } else {
-                    // Edge case: single-level entry, collapse and go to History
-                    self.load_tree_view_data();
-                    self.select_history();
+                JournalNavNode::Entry(path) => {
+                    let parent_path = path[..path.len().saturating_sub(1)].to_vec();
+                    if parent_path.is_empty() {
+                        self.select_history();
+                    } else {
+                        self.collapse_journal_item(&path);
+                        self.collapse_journal_item(&parent_path);
+                        self.load_tree_view_data();
+                        self.select_journal_item_by_path(&parent_path);
+                    }
                 }
-                return;
             }
-            // Fallback for journal entries without path (e.g., History, Today) - do nothing
             return;
         }
 
@@ -911,10 +876,22 @@ impl App {
             return;
         }
 
-        self.collapse_path(&selected_path);
-        let mut parent = selected_path;
+        let mut parent = selected_path.clone();
         parent.pop();
-        self.collapse_path(&parent);
+
+        if parent.is_empty() {
+            if item.has_children {
+                self.collapse_path(&selected_path);
+                self.load_tree_view_data();
+            }
+            return;
+        }
+
+        if item.has_children && self.navigation_state.is_expanded(&selected_path) {
+            self.collapse_path(&selected_path);
+        } else {
+            self.collapse_path(&parent);
+        }
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
     }
@@ -934,7 +911,7 @@ impl App {
             item.indent = 2;
             self.navigation_state.sidebar_items.push(item);
 
-            if self.navigation_state.is_expanded(&month_path) {
+            if self.journal_is_expanded(&month_path) {
                 self.add_journal_entries_for_month(year, month);
             }
         }
@@ -967,14 +944,68 @@ impl App {
     }
 
     fn expand_journal_item(&mut self, path: &[String]) {
-        self.navigation_state.expand_path(path);
-        self.navigation_state.set_selected_path(path.to_vec());
+        self.journal_expand_path(path);
         self.load_tree_view_data();
         self.select_first_journal_child(path);
     }
 
     fn collapse_journal_item(&mut self, path: &[String]) {
-        self.navigation_state.collapse_path(path);
+        self.journal_collapse_path(path);
+    }
+
+    fn journal_model_path(path: &[String]) -> Vec<String> {
+        let mut model_path = Vec::with_capacity(path.len() + 1);
+        model_path.push(Self::JOURNAL_EXPANSION_ROOT.to_string());
+        model_path.extend(path.iter().cloned());
+        model_path
+    }
+
+    fn journal_is_expanded(&self, path: &[String]) -> bool {
+        self.navigation_state
+            .is_expanded(&Self::journal_model_path(path))
+    }
+
+    fn journal_expand_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .expand_path(&Self::journal_model_path(path));
+    }
+
+    fn journal_collapse_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .collapse_path(&Self::journal_model_path(path));
+    }
+
+    fn collapse_all_journal(&mut self) {
+        self.journal_collapse_path(&[]);
+    }
+
+    fn selected_journal_node(&self) -> Option<JournalNavNode> {
+        let item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)?;
+        if item.section != SidebarSection::Journal {
+            return None;
+        }
+
+        if let Some(action) = item.is_journal_item.as_deref() {
+            return Some(match action {
+                "Today" => JournalNavNode::Today,
+                "History" => JournalNavNode::History,
+                _ => JournalNavNode::OtherAction,
+            });
+        }
+
+        item.journal_path
+            .as_ref()
+            .map(|path| {
+                if item.is_journal_header {
+                    JournalNavNode::Header(path.clone())
+                } else {
+                    JournalNavNode::Entry(path.clone())
+                }
+            })
+            .or(Some(JournalNavNode::OtherAction))
     }
 
     fn select_first_journal_child(&mut self, parent_path: &[String]) {
@@ -1091,7 +1122,7 @@ impl App {
                 }
                 // If leaving Journal section, clear journal expansion
                 else if prev_section == SidebarSection::Journal && new_section != prev_section {
-                    self.navigation_state.sidebar_tree.clear_expanded();
+                    self.collapse_all_journal();
                     self.load_tree_view_data();
                     // After rebuild, select the LAST selectable item in the NEW section
                     // (for upward navigation, we want to land at the end of the section)
@@ -1139,7 +1170,7 @@ impl App {
                 }
                 // If leaving Journal section, clear journal expansion
                 else if prev_section == SidebarSection::Journal && new_section != prev_section {
-                    self.navigation_state.sidebar_tree.clear_expanded();
+                    self.collapse_all_journal();
                     self.load_tree_view_data();
                     // After rebuild, select the first selectable item in the NEW section
                     self.navigation_state.selected_entry_index = self
@@ -1253,6 +1284,9 @@ impl App {
         if let Some(ref jpath) = item.journal_path
             && !item.is_journal_header
         {
+            if !open_leaf_content {
+                return;
+            }
             // This is a journal entry - open it in viewer
             let label = navigation::journal_entry_label(jpath).unwrap_or(&item.name);
             if let Some(entry) = self
@@ -1293,16 +1327,17 @@ impl App {
                 has_children,
                 "open tree item"
             );
-            if has_children || self.navigation_state.sidebar_tree.selected_path() != node_path {
-                if has_children {
-                    self.navigation_state.sidebar_tree.expand_path(&node_path);
-                    self.set_selected_tree_path(node_path.clone());
-                    self.load_tree_view_data();
-                    self.select_first_child_for_path(&node_path);
-                } else {
-                    self.set_selected_tree_path(node_path.clone());
-                    self.load_tree_view_data();
+            if has_children {
+                if self.navigation_state.sidebar_tree.is_expanded(&node_path) {
+                    return;
                 }
+                self.navigation_state.sidebar_tree.expand_path(&node_path);
+                self.set_selected_tree_path(node_path.clone());
+                self.load_tree_view_data();
+                self.select_first_child_for_path(&node_path);
+            } else if self.navigation_state.sidebar_tree.selected_path() != node_path {
+                self.set_selected_tree_path(node_path.clone());
+                self.load_tree_view_data();
             } else if open_leaf_content {
                 self.set_selected_tree_path(node_path);
                 self.open_content(&entry);
@@ -1664,7 +1699,7 @@ impl App {
         );
 
         // If journal history is expanded, add the tree structure
-        if self.navigation_state.is_expanded(&[]) {
+        if self.journal_is_expanded(&[]) {
             self.add_journal_tree_items();
         }
     }
@@ -1681,7 +1716,7 @@ impl App {
             item.indent = 1;
             self.navigation_state.sidebar_items.push(item);
 
-            if self.navigation_state.is_expanded(&year_path) {
+            if self.journal_is_expanded(&year_path) {
                 self.add_journal_months_and_entries(year);
             }
         }

@@ -115,10 +115,13 @@ fn test_navigation_to_history_view() {
     // Press Right to expand history
     app.handle_key(KeyCode::Right);
 
-    // History should be expanded (tree state should be set)
+    // Expanding history should render year nodes
     assert!(
-        app.navigation_state.is_expanded(&[]),
-        "History should be expanded after Right key"
+        app.navigation_state
+            .sidebar_items
+            .iter()
+            .any(|item| item.journal_path.as_ref().is_some_and(|p| p.len() == 1)),
+        "Years should be visible after expanding History"
     );
 }
 
@@ -126,12 +129,6 @@ fn test_navigation_to_history_view() {
 fn test_years_not_visible_when_history_not_expanded() {
     // Create app with journal entries
     let (_temp, app) = app_with_journal_entries();
-
-    // Initially History is NOT expanded
-    assert!(
-        !app.navigation_state.is_expanded(&[]),
-        "History should not be expanded initially"
-    );
 
     // Years should NOT be in the sidebar
     let has_year = app
@@ -193,13 +190,14 @@ fn test_journal_tree_state_years_and_months() {
         .set_entries(app.journal_entries.clone());
 
     // Expand History
-    app.navigation_state.expand_path(&[]);
-
-    // Verify expansion state
-    assert!(
-        app.navigation_state.is_expanded(&[]),
-        "History should be expanded"
-    );
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .expect("History should exist in sidebar");
+    app.navigation_state.selected_entry_index = history_idx;
+    app.handle_key(KeyCode::Right);
 
     // Check years
     let years = app.journal_tree_state.years();
@@ -579,8 +577,7 @@ fn test_navigate_left_from_month_collapses_to_history() {
         "Selected item should be year header"
     );
 
-    // Months are still visible in the sidebar (for easier navigation between months)
-    // This is correct UX - users can j/k between months without going back up
+    // Months should be hidden after collapsing the month tier (via its parent year).
     let month_items: Vec<_> = app
         .navigation_state
         .sidebar_items
@@ -588,8 +585,8 @@ fn test_navigate_left_from_month_collapses_to_history() {
         .filter(|item| item.name == "March" || item.name == "February")
         .collect();
     assert!(
-        !month_items.is_empty(),
-        "Months should still be visible in sidebar for easier navigation. Found: {:?}",
+        month_items.is_empty(),
+        "Months should NOT be visible after collapsing month tier. Found: {:?}",
         month_items.iter().map(|i| &i.name).collect::<Vec<_>>()
     );
 }
@@ -667,6 +664,19 @@ fn test_collapse_year_hides_months_in_sidebar() {
             .map(|i| &i.name)
             .collect::<Vec<_>>()
     );
+
+    // Years should also be hidden after collapsing at year tier back to History.
+    let year_items_after: Vec<_> = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .filter(|item| item.journal_path.as_ref().is_some_and(|p| p.len() == 1))
+        .collect();
+    assert!(
+        year_items_after.is_empty(),
+        "Years should NOT be visible after collapsing year tier. Found: {:?}",
+        year_items_after.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -694,22 +704,6 @@ fn test_collapse_month_hides_entries_in_sidebar() {
 
     // Expand year (shows months)
     app.handle_key(KeyCode::Right);
-
-    // Check state after expanding year (before expanding any month)
-    let feb_expanded = app
-        .navigation_state
-        .is_expanded(&["2026".to_string(), "February".to_string()]);
-    let mar_expanded = app
-        .navigation_state
-        .is_expanded(&["2026".to_string(), "March".to_string()]);
-    assert!(
-        !feb_expanded,
-        "February should NOT be expanded after just expanding year"
-    );
-    assert!(
-        !mar_expanded,
-        "March should NOT be expanded after just expanding year"
-    );
 
     // Verify NO entries are visible after expanding year (before expanding any month)
     let entries_before_expand_month: Vec<_> = app
@@ -739,13 +733,15 @@ fn test_collapse_month_hides_entries_in_sidebar() {
     // Expand March (shows entries)
     app.handle_key(KeyCode::Right);
 
-    // Verify March is now expanded
-    let mar_expanded_after = app
-        .navigation_state
-        .is_expanded(&["2026".to_string(), "March".to_string()]);
+    // Selection should move into March's first entry after expansion
+    let selected_item =
+        &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
     assert!(
-        mar_expanded_after,
-        "March should be expanded after pressing Right on it"
+        selected_item
+            .journal_path
+            .as_ref()
+            .is_some_and(|p| p.len() == 3),
+        "Selection should move to the first March entry after expansion"
     );
 
     // Verify entries are visible after expanding March
@@ -1002,5 +998,196 @@ fn test_navigate_up_wraps_to_journal() {
         SidebarSection::Journal,
         "Should wrap to Journal section, got {:?}",
         after_item.section
+    );
+}
+
+#[test]
+fn test_right_on_journal_entry_is_noop() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .expect("History should exist");
+    app.navigation_state.selected_entry_index = history_idx;
+    app.handle_key(KeyCode::Right);
+    app.handle_key(KeyCode::Right);
+
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .expect("March should exist");
+    app.navigation_state.selected_entry_index = march_idx;
+    app.handle_key(KeyCode::Right);
+
+    let selected_before = app.navigation_state.selected_entry_index;
+    let entry_path_before = app.navigation_state.sidebar_items[selected_before]
+        .journal_path
+        .clone()
+        .expect("entry should have journal path");
+
+    app.handle_key(KeyCode::Right);
+
+    let selected_after = app.navigation_state.selected_entry_index;
+    assert_eq!(
+        selected_after, selected_before,
+        "Right on journal entry should not move selection"
+    );
+    assert_eq!(
+        app.navigation_state.sidebar_items[selected_after].journal_path,
+        Some(entry_path_before),
+        "Right on journal entry should keep selected entry"
+    );
+    assert_eq!(
+        app.current_view,
+        ViewType::TreeView,
+        "Right on journal entry should not open content"
+    );
+}
+
+#[test]
+fn test_right_on_expanded_journal_headers_is_noop() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .expect("History should exist");
+    app.navigation_state.selected_entry_index = history_idx;
+    app.handle_key(KeyCode::Right);
+
+    let year_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "2026")
+        .expect("Year should exist");
+    app.navigation_state.selected_entry_index = year_idx;
+    app.handle_key(KeyCode::Right);
+
+    let year_idx_again = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "2026")
+        .expect("Year should still exist");
+    app.navigation_state.selected_entry_index = year_idx_again;
+    app.handle_key(KeyCode::Right);
+    assert_eq!(
+        app.navigation_state.selected_entry_index, year_idx_again,
+        "Right on expanded year should be a no-op"
+    );
+
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .expect("March should exist");
+    app.navigation_state.selected_entry_index = march_idx;
+    app.handle_key(KeyCode::Right);
+
+    let march_idx_again = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .expect("March should still exist");
+    app.navigation_state.selected_entry_index = march_idx_again;
+    app.handle_key(KeyCode::Right);
+    assert_eq!(
+        app.navigation_state.selected_entry_index, march_idx_again,
+        "Right on expanded month should be a no-op"
+    );
+}
+
+#[test]
+fn test_repeated_left_on_journal_walks_up_tiers_consistently() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .expect("History should exist");
+    app.navigation_state.selected_entry_index = history_idx;
+    app.handle_key(KeyCode::Right);
+    app.handle_key(KeyCode::Right);
+
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .expect("March should exist");
+    app.navigation_state.selected_entry_index = march_idx;
+    app.handle_key(KeyCode::Right);
+
+    app.handle_key(KeyCode::Left);
+    let selected = &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
+    assert_eq!(selected.name, "March");
+    assert_eq!(
+        selected.journal_path.as_ref(),
+        Some(&vec!["2026".to_string(), "March".to_string()]),
+        "Left from entry should select the exact parent month node"
+    );
+
+    app.handle_key(KeyCode::Left);
+    let selected = &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
+    assert_eq!(selected.name, "2026");
+    assert_eq!(
+        selected.journal_path.as_ref(),
+        Some(&vec!["2026".to_string()]),
+        "Left from month should select the exact parent year node"
+    );
+
+    app.handle_key(KeyCode::Left);
+    let selected = &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
+    assert_eq!(selected.name, "History");
+
+    let history_idx_before = app.navigation_state.selected_entry_index;
+    app.handle_key(KeyCode::Left);
+    assert_eq!(
+        app.navigation_state.selected_entry_index, history_idx_before,
+        "Left on History should be a no-op"
+    );
+}
+
+#[test]
+fn test_enter_on_journal_entry_opens_viewer() {
+    let (_temp, mut app) = app_with_journal_entries();
+
+    let history_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "History")
+        .expect("History should exist");
+    app.navigation_state.selected_entry_index = history_idx;
+    app.handle_key(KeyCode::Right);
+    app.handle_key(KeyCode::Right);
+
+    let march_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|item| item.name == "March")
+        .expect("March should exist");
+    app.navigation_state.selected_entry_index = march_idx;
+    app.handle_key(KeyCode::Right);
+
+    app.handle_key(KeyCode::Enter);
+
+    assert_eq!(app.current_view, ViewType::ViewingContent);
+    assert!(
+        app.selected_content.is_some(),
+        "Enter on journal entry should open selected content"
     );
 }
