@@ -109,7 +109,7 @@ fn test_command_palette_input_tracking() {
     assert_eq!(app.mode, Mode::CommandPalette);
 
     // Verify the command palette is populated
-    assert!(app.command_palette.matches.len() > 0);
+    assert!(!app.command_palette.matches.is_empty());
 }
 
 #[test]

@@ -116,7 +116,7 @@ fn test_navigation_to_history_view() {
 
     // History should be expanded (tree state should be set)
     assert!(
-        app.journal_tree_state.is_expanded(&[]),
+        app.navigation_state.is_expanded(&[]),
         "History should be expanded after Right key"
     );
 }
@@ -128,7 +128,7 @@ fn test_years_not_visible_when_history_not_expanded() {
 
     // Initially History is NOT expanded
     assert!(
-        !app.journal_tree_state.is_expanded(&[]),
+        !app.navigation_state.is_expanded(&[]),
         "History should not be expanded initially"
     );
 
@@ -137,7 +137,7 @@ fn test_years_not_visible_when_history_not_expanded() {
         .navigation_state
         .sidebar_items
         .iter()
-        .any(|item| item.journal_path.as_ref().map_or(false, |p| p.len() == 1));
+        .any(|item| item.journal_path.as_ref().is_some_and(|p| p.len() == 1));
 
     assert!(
         !has_year,
@@ -192,11 +192,11 @@ fn test_journal_tree_state_years_and_months() {
         .set_entries(app.journal_entries.clone());
 
     // Expand History
-    app.journal_tree_state.expand(&[]);
+    app.navigation_state.expand_path(&[]);
 
     // Verify expansion state
     assert!(
-        app.journal_tree_state.is_expanded(&[]),
+        app.navigation_state.is_expanded(&[]),
         "History should be expanded"
     );
 
@@ -462,7 +462,7 @@ fn test_navigate_left_from_journal_entry_collapses_to_parent() {
         .navigation_state
         .sidebar_items
         .iter()
-        .any(|item| item.journal_path.as_ref().map_or(false, |p| p.len() == 3));
+        .any(|item| item.journal_path.as_ref().is_some_and(|p| p.len() == 3));
     assert!(
         has_entries,
         "Journal entries should be visible after expanding month"
@@ -473,7 +473,7 @@ fn test_navigate_left_from_journal_entry_collapses_to_parent() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.journal_path.as_ref().map_or(false, |p| p.len() == 3))
+        .position(|item| item.journal_path.as_ref().is_some_and(|p| p.len() == 3))
         .unwrap();
     app.navigation_state.selected_entry_index = entry_idx;
 
@@ -507,7 +507,7 @@ fn test_navigate_left_from_journal_entry_collapses_to_parent() {
         selected_item
             .journal_path
             .as_ref()
-            .map_or(false, |p| p.len() == 2),
+            .is_some_and(|p| p.len() == 2),
         "Selected item should have 2-element path (year, month)"
     );
 
@@ -696,10 +696,10 @@ fn test_collapse_month_hides_entries_in_sidebar() {
 
     // Check state after expanding year (before expanding any month)
     let feb_expanded = app
-        .journal_tree_state
+        .navigation_state
         .is_expanded(&["2026".to_string(), "February".to_string()]);
     let mar_expanded = app
-        .journal_tree_state
+        .navigation_state
         .is_expanded(&["2026".to_string(), "March".to_string()]);
     assert!(
         !feb_expanded,
@@ -740,7 +740,7 @@ fn test_collapse_month_hides_entries_in_sidebar() {
 
     // Verify March is now expanded
     let mar_expanded_after = app
-        .journal_tree_state
+        .navigation_state
         .is_expanded(&["2026".to_string(), "March".to_string()]);
     assert!(
         mar_expanded_after,
@@ -813,10 +813,10 @@ fn test_journal_tree_has_correct_indentation() {
 
     // Check state after expanding year (before expanding any month)
     let feb_expanded = app
-        .journal_tree_state
+        .navigation_state
         .is_expanded(&["2026".to_string(), "February".to_string()]);
     let mar_expanded = app
-        .journal_tree_state
+        .navigation_state
         .is_expanded(&["2026".to_string(), "March".to_string()]);
     assert!(
         !feb_expanded,

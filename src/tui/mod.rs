@@ -6,9 +6,9 @@ pub mod navigation;
 pub mod planning_session;
 pub mod planning_wizard;
 pub mod review;
+pub mod sidebar_tree;
 pub mod task_wizard;
 pub mod test_utils;
-pub mod tree;
 pub mod views;
 pub mod wizard;
 
@@ -40,7 +40,7 @@ use cache::{TaskMetadata, TreeData};
 use chrono::Local;
 use command::{CommandAction, CommandMatch, CommandPalette};
 use hierarchical_picker::HierarchicalPickerState;
-use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarSection};
+use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarNodeData, SidebarSection};
 use planning_session::PlanningSessionState;
 use planning_wizard::PlanningDateFocus;
 use review::ReviewState;
@@ -539,7 +539,12 @@ impl App {
                     // can sometimes incorrectly trigger ESC first (the escape sequence parsing
                     // issue causes the ESC byte of the escape sequence to be interpreted as a
                     // separate keypress). By doing nothing, we prevent double-navigation.
-                    if self.navigation_state.tree_model.selected_path().is_empty() {
+                    if self
+                        .navigation_state
+                        .sidebar_tree
+                        .selected_path()
+                        .is_empty()
+                    {
                         self.current_view = ViewType::Journal;
                     }
                 } else {
@@ -774,7 +779,7 @@ impl App {
 
                 tracing::debug!(
                     selected_index = self.navigation_state.selected_entry_index,
-                    path = ?self.navigation_state.tree_model.selected_path(),
+                    path = ?self.navigation_state.sidebar_tree.selected_path(),
                     "navigate right"
                 );
                 self.open_tree_item_with_leaf_open(false);
@@ -785,24 +790,19 @@ impl App {
     /// Expands the History item: loads journal entries if needed, expands the tree,
     /// reloads program data, rebuilds sidebar with programs + journal tree, and selects the first child.
     fn expand_history(&mut self) {
-        // Load journal entries if not already loaded
         if self.journal_entries.is_empty()
             && let Ok(entries) = self.config.workspace.list_journal_entries()
         {
             self.journal_entries = entries;
         }
 
-        // Always sync tree state with journal entries if we have entries
-        // This handles the case where journal_entries was already populated
-        // (e.g., from a previous "Today" operation)
         if !self.journal_entries.is_empty() {
             self.journal_tree_state
                 .set_entries(self.journal_entries.clone());
         }
 
-        // Expand history to show years/months/entries
-        self.journal_tree_state.expand(&[]);
-        // Reload program data and rebuild sidebar (includes journal tree items since expanded)
+        self.navigation_state.expand_path(&[]);
+        self.navigation_state.set_selected_path(vec![]);
         self.load_tree_view_data();
         self.select_first_journal_child(&[]);
     }
@@ -852,15 +852,10 @@ impl App {
                     };
 
                     // Rebuild sidebar
-                    // IMPORTANT: Update BOTH tree_model AND journal_tree_state BEFORE rebuild
-                    // so that sync_selection_with_tree_path uses the correct path
                     if let Some(ref path) = target_path {
                         self.navigation_state
-                            .tree_model
+                            .sidebar_tree
                             .set_selected_path(path.clone());
-                        // Also update journal_tree_state - this is critical because
-                        // sync_selection_with_tree_path reads from journal_tree_state.selected_path()
-                        self.journal_tree_state.set_selected_path(path.clone());
                     }
                     self.load_tree_view_data();
 
@@ -886,18 +881,12 @@ impl App {
                     // Collapse the parent path so children (including this entry) are hidden
                     self.collapse_journal_item(&parent_path);
 
-                    // IMPORTANT: Update journal_tree_state BEFORE rebuild
-                    // so that sync_selection_with_tree_path uses the correct path
-                    self.journal_tree_state
-                        .set_selected_path(parent_path.clone());
-
                     // Rebuild sidebar first, then select
                     self.load_tree_view_data();
                     // Select the parent header (this overrides sync_selection result)
                     self.select_journal_item_by_path(&parent_path);
                 } else {
                     // Edge case: single-level entry, collapse and go to History
-                    self.journal_tree_state.set_selected_path(vec![]);
                     self.load_tree_view_data();
                     self.select_history();
                 }
@@ -931,20 +920,21 @@ impl App {
     }
 
     fn add_journal_months_and_entries(&mut self, year: &str) {
+        use crate::tui::cache::JournalNode;
+
         let months = self.journal_tree_state.months_for_year(year);
 
-        // Always create month headers (tier is always shown when expanded)
         for month in &months {
             let month_path = vec![year.to_string(), month.clone()];
-            self.navigation_state.sidebar_items.push(
-                SidebarItem::new(month, SidebarSection::Journal)
-                    .journal_path(month_path.clone())
-                    .journal_header()
-                    .indent(2),
-            );
+            let node = JournalNode::Month {
+                year: year.to_string(),
+                month: month.clone(),
+            };
+            let mut item = SidebarItem::journal(node, month_path.clone());
+            item.indent = 2;
+            self.navigation_state.sidebar_items.push(item);
 
-            // If this specific month is expanded, add its entries
-            if self.journal_tree_state.is_expanded(&month_path) {
+            if self.navigation_state.is_expanded(&month_path) {
                 self.add_journal_entries_for_month(year, month);
             }
         }
@@ -955,6 +945,8 @@ impl App {
     }
 
     fn add_journal_entries_with_indent(&mut self, year: &str, month: &str, indent_level: usize) {
+        use crate::tui::cache::JournalNode;
+
         let entries = self.journal_tree_state.entries_for_month(year, month);
         for entry in entries {
             let label = entry.filename.trim_end_matches(".md").to_string();
@@ -963,24 +955,26 @@ impl App {
             } else {
                 vec![year.to_string(), month.to_string(), label.clone()]
             };
-            self.navigation_state.sidebar_items.push(
-                SidebarItem::new(&label, SidebarSection::Journal)
-                    .journal_path(entry_path)
-                    .indent(indent_level),
-            );
+            let node = JournalNode::Entry {
+                year: year.to_string(),
+                month: month.to_string(),
+                entry: entry.clone(),
+            };
+            let mut item = SidebarItem::journal(node, entry_path);
+            item.indent = indent_level;
+            self.navigation_state.sidebar_items.push(item);
         }
     }
 
     fn expand_journal_item(&mut self, path: &[String]) {
-        self.journal_tree_state.expand(path);
-        self.journal_tree_state.set_selected_path(path.to_vec());
+        self.navigation_state.expand_path(path);
+        self.navigation_state.set_selected_path(path.to_vec());
         self.load_tree_view_data();
-        // Select first child
         self.select_first_journal_child(path);
     }
 
     fn collapse_journal_item(&mut self, path: &[String]) {
-        self.journal_tree_state.collapse(path);
+        self.navigation_state.collapse_path(path);
     }
 
     fn select_first_journal_child(&mut self, parent_path: &[String]) {
@@ -1041,8 +1035,13 @@ impl App {
                 self.current_content_text = None;
             }
             ViewType::TreeView => {
-                if !self.navigation_state.tree_model.selected_path().is_empty() {
-                    let mut parent = self.navigation_state.tree_model.selected_path_vec();
+                if !self
+                    .navigation_state
+                    .sidebar_tree
+                    .selected_path()
+                    .is_empty()
+                {
+                    let mut parent = self.navigation_state.sidebar_tree.selected_path_vec();
                     parent.pop();
                     self.set_selected_tree_path(parent);
                     self.load_tree_view_data();
@@ -1061,62 +1060,103 @@ impl App {
     }
 
     fn navigate_up(&mut self) {
-        let prev_item = self
+        let prev_section = self
             .navigation_state
             .sidebar_items
             .get(self.navigation_state.selected_entry_index)
-            .cloned();
+            .map(|i| i.section.clone());
 
         self.navigation_state.navigate_up();
         self.sync_scope_from_sidebar_selection();
 
-        // If leaving an expanded journal tier, collapse it
-        if let Some(prev) = prev_item
-            && prev.is_journal_header
-            && prev.section == SidebarSection::Journal
-            && let Some(ref prev_jpath) = prev.journal_path
-        {
+        // Cross-section navigation: collapse previous section
+        if let Some(prev_section) = prev_section {
             let new_idx = self.navigation_state.selected_entry_index;
             if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
-                let new_jpath = new_item.journal_path.as_ref();
-                // Collapse if moved to different tier or left journal section entirely
-                let still_in_tier = new_jpath
-                    .is_some_and(|p| p.starts_with(prev_jpath) && p.len() > prev_jpath.len());
-                if !still_in_tier || new_item.section != SidebarSection::Journal {
-                    self.collapse_journal_item(prev_jpath);
+                // If leaving Programs section, collapse all expanded programs
+                if prev_section == SidebarSection::Programs && new_item.section != prev_section {
+                    self.collapse_all_programs();
                     self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the new section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .unwrap_or(0);
+                }
+                // If leaving Journal section, clear journal expansion
+                else if prev_section == SidebarSection::Journal
+                    && new_item.section != prev_section
+                {
+                    self.navigation_state.sidebar_tree.clear_expanded();
+                    self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the new section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .unwrap_or(0);
                 }
             }
         }
     }
 
     fn navigate_down(&mut self) {
-        let prev_item = self
+        let prev_section = self
             .navigation_state
             .sidebar_items
             .get(self.navigation_state.selected_entry_index)
-            .cloned();
+            .map(|i| i.section.clone());
 
         self.navigation_state.navigate_down();
         self.sync_scope_from_sidebar_selection();
 
-        // If leaving an expanded journal tier, collapse it
-        if let Some(prev) = prev_item
-            && prev.is_journal_header
-            && prev.section == SidebarSection::Journal
-            && let Some(ref prev_jpath) = prev.journal_path
-        {
+        // Cross-section navigation: collapse previous section
+        if let Some(prev_section) = prev_section {
             let new_idx = self.navigation_state.selected_entry_index;
             if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
-                let new_jpath = new_item.journal_path.as_ref();
-                // Collapse if moved to different tier or left journal section entirely
-                let still_in_tier = new_jpath
-                    .is_some_and(|p| p.starts_with(prev_jpath) && p.len() > prev_jpath.len());
-                if !still_in_tier || new_item.section != SidebarSection::Journal {
-                    self.collapse_journal_item(prev_jpath);
+                // If leaving Programs section, collapse all expanded programs
+                if prev_section == SidebarSection::Programs && new_item.section != prev_section {
+                    self.collapse_all_programs();
                     self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the new section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .unwrap_or(0);
+                }
+                // If leaving Journal section, clear journal expansion
+                else if prev_section == SidebarSection::Journal
+                    && new_item.section != prev_section
+                {
+                    self.navigation_state.sidebar_tree.clear_expanded();
+                    self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the new section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| !i.is_header && !i.name.is_empty())
+                        .unwrap_or(0);
                 }
             }
+        }
+    }
+
+    fn collapse_all_programs(&mut self) {
+        let paths_to_remove: Vec<Vec<String>> = self
+            .navigation_state
+            .sidebar_tree
+            .expanded_paths()
+            .iter()
+            .cloned()
+            .collect();
+        for path in paths_to_remove {
+            self.navigation_state.sidebar_tree.collapse_path(&path);
         }
     }
 
@@ -1128,7 +1168,7 @@ impl App {
         let Some(path) = self.navigation_state.sidebar_items[idx].tree_path.clone() else {
             return;
         };
-        if path != self.navigation_state.tree_model.selected_path() {
+        if path != self.navigation_state.sidebar_tree.selected_path() {
             self.set_selected_tree_path(path.clone());
         }
         // Also update current_* fields so wizard scope is accurate
@@ -1233,13 +1273,13 @@ impl App {
                 indent = item.indent,
                 selected_index = idx,
                 node_path = ?node_path,
-                current_path = ?self.navigation_state.tree_model.selected_path(),
+                current_path = ?self.navigation_state.sidebar_tree.selected_path(),
                 has_children,
                 "open tree item"
             );
-            if has_children || self.navigation_state.tree_model.selected_path() != node_path {
+            if has_children || self.navigation_state.sidebar_tree.selected_path() != node_path {
                 if has_children {
-                    self.navigation_state.tree_model.expand_path(&node_path);
+                    self.navigation_state.sidebar_tree.expand_path(&node_path);
                     self.set_selected_tree_path(node_path.clone());
                     self.load_tree_view_data();
                     self.select_first_child_for_path(&node_path);
@@ -1272,7 +1312,7 @@ impl App {
         self.tree_data.subtasks = self.load_tree_level_for_selected_depth(4);
 
         tracing::debug!(
-            path = ?self.navigation_state.tree_model.selected_path(),
+            path = ?self.navigation_state.sidebar_tree.selected_path(),
             programs = self.tree_data.programs.len(),
             projects = self.tree_data.projects.len(),
             milestones = self.tree_data.milestones.len(),
@@ -1285,7 +1325,7 @@ impl App {
     }
 
     fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {
-        let mut node_path = self.navigation_state.tree_model.selected_path_vec();
+        let mut node_path = self.navigation_state.sidebar_tree.selected_path_vec();
         let truncate_to = item.indent.min(node_path.len());
         node_path.truncate(truncate_to);
         node_path.push(item.name.clone());
@@ -1294,20 +1334,20 @@ impl App {
 
     fn set_selected_tree_path(&mut self, path: Vec<String>) {
         self.navigation_state
-            .tree_model
+            .sidebar_tree
             .set_selected_path(path.clone());
-        self.navigation_state.tree_model.expand_ancestors(&path);
+        self.navigation_state.sidebar_tree.expand_ancestors(&path);
     }
 
     fn collapse_path(&mut self, path: &[String]) {
-        self.navigation_state.tree_model.collapse_path(path);
+        self.navigation_state.sidebar_tree.collapse_path(path);
     }
 
     fn load_tree_level_for_selected_depth(&self, depth: usize) -> Vec<DirectoryEntry> {
-        if self.navigation_state.tree_model.selected_depth() < depth {
+        if self.navigation_state.sidebar_tree.selected_depth() < depth {
             return Vec::new();
         }
-        self.load_tree_level(&self.navigation_state.tree_model.selected_path()[..depth])
+        self.load_tree_level(&self.navigation_state.sidebar_tree.selected_path()[..depth])
     }
 
     fn load_tree_level(&self, path: &[String]) -> Vec<DirectoryEntry> {
@@ -1493,7 +1533,7 @@ impl App {
     }
 
     fn sync_selection_with_tree_path(&mut self) {
-        let mut candidate = self.navigation_state.tree_model.selected_path_vec();
+        let mut candidate = self.navigation_state.sidebar_tree.selected_path_vec();
         while !candidate.is_empty() {
             if let Some(idx) = self
                 .navigation_state
@@ -1502,12 +1542,12 @@ impl App {
                 .position(|item| item.tree_path.as_ref() == Some(&candidate))
             {
                 self.navigation_state.selected_entry_index = idx;
-                if candidate != self.navigation_state.tree_model.selected_path() {
+                if candidate != self.navigation_state.sidebar_tree.selected_path() {
                     self.set_selected_tree_path(candidate.clone());
                 }
                 tracing::debug!(
                     selected_index = idx,
-                    selected_name = ?self.navigation_state.tree_model.selected_path().last(),
+                    selected_name = ?self.navigation_state.sidebar_tree.selected_path().last(),
                     "selection synced to tree path"
                 );
                 return;
@@ -1515,62 +1555,14 @@ impl App {
             candidate.pop();
         }
 
-        // Check if current selection is already on a journal item.
-        // For journal items without tree_path, we need to verify the journal_path
-        // is compatible with the expected tree path (e.g., after collapsing).
-        let current_idx = self.navigation_state.selected_entry_index;
-        if let Some(item) = self.navigation_state.sidebar_items.get(current_idx)
-            && item.section == SidebarSection::Journal
-        {
-            // Use journal_tree_state.selected_path() for journal items
-            let tree_path = self.journal_tree_state.selected_path().to_vec();
-            // Check if journal_path is compatible with tree_path:
-            // - If tree_path is empty, any journal item is fine
-            // - If tree_path is not empty, journal_path should be a prefix of tree_path
-            //   (meaning we're at or above the expected level)
-            let is_compatible = if tree_path.is_empty() {
-                true
-            } else if let Some(ref jp) = item.journal_path {
-                // journal_path is compatible if it's a prefix of tree_path
-                // e.g., ["2026"] is compatible with tree_path ["2026", "March"]
-                jp.len() <= tree_path.len() && jp == &tree_path[..jp.len()]
-            } else {
-                // No journal_path, can't verify compatibility
-                false
-            };
-
-            // Preserve selection if it's a simple journal action (Today, History)
-            // or if the journal_path is compatible with tree_path
-            if item.is_journal_item.is_some() || is_compatible {
-                return;
-            }
-            // Otherwise, fall through to find the correct journal item
-        }
-
-        tracing::warn!(
-            path = ?self.navigation_state.tree_model.selected_path(),
-            "selection sync: finding compatible journal item or falling back"
-        );
-        // Try to find a journal item with compatible journal_path
-        let tree_path = self.journal_tree_state.selected_path().to_vec();
-        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
-            if item.section != SidebarSection::Journal {
-                return false;
-            }
-            if let Some(ref jp) = item.journal_path {
-                // Match if journal_path is a prefix of tree_path
-                jp.len() <= tree_path.len() && jp == &tree_path[..jp.len()]
-            } else {
-                false
-            }
-        }) {
-            self.navigation_state.selected_entry_index = idx;
-            return;
-        }
-
         // Fall back to first selectable
         self.navigation_state.selected_entry_index = self.first_selectable_sidebar_index();
-        if !self.navigation_state.tree_model.selected_path().is_empty() {
+        if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
             if let Some(path) = self
                 .navigation_state
                 .sidebar_items
@@ -1580,7 +1572,7 @@ impl App {
                 self.set_selected_tree_path(path);
             } else {
                 self.navigation_state
-                    .tree_model
+                    .sidebar_tree
                     .set_selected_path(Vec::new());
             }
         }
@@ -1614,7 +1606,8 @@ impl App {
             self.navigation_state.sidebar_items.push(
                 SidebarItem::new("+ Create Program...", SidebarSection::Programs)
                     .indent(1)
-                    .create_action(),
+                    .create_action()
+                    .node_data(SidebarNodeData::Action),
             );
         } else {
             self.push_tree_level_items(&[], 0);
@@ -1628,11 +1621,14 @@ impl App {
             .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
         self.navigation_state.sidebar_items.push(
             SidebarItem::new("Current Plan", SidebarSection::Planning)
-                .planning_item("WeeklyPlanning"),
+                .planning_item("WeeklyPlanning")
+                .node_data(SidebarNodeData::Planning),
         );
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Backlog", SidebarSection::Planning)
+                .planning_item("Backlog")
+                .node_data(SidebarNodeData::Planning),
+        );
 
         self.navigation_state
             .sidebar_items
@@ -1640,34 +1636,36 @@ impl App {
         self.navigation_state
             .sidebar_items
             .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
-        self.navigation_state
-            .sidebar_items
-            .push(SidebarItem::new("History", SidebarSection::Journal).journal_item("History"));
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Today", SidebarSection::Journal)
+                .journal_item("Today")
+                .node_data(SidebarNodeData::JournalAction),
+        );
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("History", SidebarSection::Journal)
+                .journal_item("History")
+                .node_data(SidebarNodeData::JournalAction),
+        );
 
         // If journal history is expanded, add the tree structure
-        if self.journal_tree_state.is_expanded(&[]) {
+        if self.navigation_state.is_expanded(&[]) {
             self.add_journal_tree_items();
         }
     }
 
     fn add_journal_tree_items(&mut self) {
+        use crate::tui::cache::JournalNode;
+
         let years = self.journal_tree_state.years();
 
-        // Always create year headers (tier is always shown when expanded)
         for year in &years {
             let year_path = vec![year.clone()];
-            self.navigation_state.sidebar_items.push(
-                SidebarItem::new(year, SidebarSection::Journal)
-                    .journal_path(year_path.clone())
-                    .journal_header()
-                    .indent(1),
-            );
+            let node = JournalNode::Year { year: year.clone() };
+            let mut item = SidebarItem::journal(node, year_path.clone());
+            item.indent = 1;
+            self.navigation_state.sidebar_items.push(item);
 
-            // Only add months and entries if the year is expanded
-            if self.journal_tree_state.is_expanded(&year_path) {
+            if self.navigation_state.is_expanded(&year_path) {
                 self.add_journal_months_and_entries(year);
             }
         }
@@ -1696,9 +1694,10 @@ impl App {
                 is_create_action: false,
                 journal_path: None,
                 is_journal_header: false,
+                node_data: SidebarNodeData::Program(entry),
             });
 
-            if self.navigation_state.tree_model.is_expanded(&node_path) {
+            if self.navigation_state.sidebar_tree.is_expanded(&node_path) {
                 self.push_tree_level_items(&node_path, depth + 1);
             }
         }
@@ -2053,7 +2052,12 @@ impl App {
     }
 
     fn show_projects_list(&mut self) {
-        if !self.navigation_state.tree_model.selected_path().is_empty() {
+        if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -2064,7 +2068,7 @@ impl App {
     }
 
     fn show_milestones_list(&mut self) {
-        if self.navigation_state.tree_model.selected_depth() >= 2 {
+        if self.navigation_state.sidebar_tree.selected_depth() >= 2 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -2075,7 +2079,7 @@ impl App {
     }
 
     fn show_tasks_list(&mut self) {
-        if self.navigation_state.tree_model.selected_depth() >= 3 {
+        if self.navigation_state.sidebar_tree.selected_depth() >= 3 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -2863,7 +2867,7 @@ impl App {
     }
 
     fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
-        if self.navigation_state.tree_model.selected_depth() >= target_depth {
+        if self.navigation_state.sidebar_tree.selected_depth() >= target_depth {
             return;
         }
 
@@ -2879,7 +2883,7 @@ impl App {
         };
 
         if selected_path.len() < target_depth {
-            let parent = self.navigation_state.tree_model.selected_path_vec();
+            let parent = self.navigation_state.sidebar_tree.selected_path_vec();
             self.select_first_child_for_path(&parent);
             selected_path = match self
                 .navigation_state
@@ -3217,12 +3221,12 @@ impl App {
                             .position(|item| !item.is_header && item.name == *element_name)
                         {
                             self.navigation_state.selected_entry_index = pos;
-                            // Also update tree_model.selected_path to sync the breadcrumb
+                            // Also update sidebar_tree.selected_path to sync the breadcrumb
                             if let Some(ref tree_path) =
                                 self.navigation_state.sidebar_items[pos].tree_path
                             {
                                 self.navigation_state
-                                    .tree_model
+                                    .sidebar_tree
                                     .set_selected_path(tree_path.clone());
                             }
                         }
@@ -3773,7 +3777,7 @@ Test description
             "Programs should be loaded"
         );
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             0,
             "Should be at root level"
         );
@@ -3784,7 +3788,7 @@ Test description
 
         // Verify we're now inside the program
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             1,
             "Should be inside program"
         );
@@ -3822,7 +3826,7 @@ Test description
         // NEW BEHAVIOR: Stay at parent level (don't auto-navigate into new element)
         // The user can manually navigate into it with arrow key
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             1,
             "Should stay at parent level (program) after creation"
         );
@@ -4413,7 +4417,7 @@ title: TestMilestone
 
         // Single right from project now expands and moves selection into milestone.
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             3,
             "Should be inside milestone after second navigation"
         );
@@ -4424,7 +4428,7 @@ title: TestMilestone
         // BUG: This should go to project level (path = ["TestProgram", "TestProject"])
         // but it jumps to program level (path = ["TestProgram"])
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             2,
             "Should go back to project level (depth 2), not program level (depth 1)"
         );
@@ -4484,7 +4488,7 @@ title: TestMilestone
         // Right now expands and moves selection to the first project in one step.
         app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
-        assert_eq!(app.navigation_state.tree_model.selected_depth(), 2);
+        assert_eq!(app.navigation_state.sidebar_tree.selected_depth(), 2);
 
         // Navigate into Project
         let project_idx = app
@@ -4495,7 +4499,7 @@ title: TestMilestone
             .expect("TestProject should be in sidebar");
         app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
-        assert_eq!(app.navigation_state.tree_model.selected_depth(), 3);
+        assert_eq!(app.navigation_state.sidebar_tree.selected_depth(), 3);
 
         // Now navigate LEFT - this should collapse back to project level
         app.navigate_left();
@@ -4503,7 +4507,7 @@ title: TestMilestone
         // After collapsing, we should be at project level (depth 2)
         // path should be ["TestProgram", "TestProject"], not ["TestProgram"]
         assert_eq!(
-            app.navigation_state.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             2,
             "After collapsing milestone, should be at project level (depth 2), not program level (depth 1)"
         );
@@ -4575,7 +4579,7 @@ title: TestMilestone
         app.open_tree_item();
 
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "AlphaProject".to_string()]
         );
         assert!(
@@ -4631,7 +4635,7 @@ title: TestMilestone
         app.open_tree_item_with_leaf_open(false);
 
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec![
                 "TestProgram".to_string(),
                 "TestProject".to_string(),
@@ -4642,7 +4646,7 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "TestProject".to_string()]
         );
         assert!(
@@ -4735,13 +4739,13 @@ title: TestMilestone
         app.navigation_state.selected_entry_index = task_idx;
         app.open_tree_item_with_leaf_open(false);
 
-        let selected_before = app.navigation_state.tree_model.selected_path().to_vec();
+        let selected_before = app.navigation_state.sidebar_tree.selected_path().to_vec();
         app.navigate_right();
         app.navigate_right();
 
         assert_eq!(app.current_view, ViewType::TreeView);
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             selected_before
         );
         assert!(
@@ -4860,7 +4864,7 @@ title: TestMilestone
 
         // Single right from project expands and moves to milestone.
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject", "M1"]
         );
 
@@ -4868,7 +4872,7 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject"]
         );
         assert!(
@@ -4909,13 +4913,13 @@ title: TestMilestone
         app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "DirectTask"]
         );
 
         app.navigate_left();
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram"]
         );
         assert!(
@@ -4976,7 +4980,7 @@ title: TestMilestone
         app.open_tree_item();
 
         assert_eq!(
-            app.navigation_state.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "Common", "M1"]
         );
         assert!(

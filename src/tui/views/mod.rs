@@ -59,21 +59,17 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                                 .join("\n");
                         }
                     }
-                } else {
-                    // Entry level - show the entry content
+                } else if let Some(entry) = app.journal_entries.iter().find(|e| {
                     let label = navigation::journal_entry_label(jpath).unwrap_or(&item.name);
-                    if let Some(entry) = app
-                        .journal_entries
-                        .iter()
-                        .find(|e| *e.filename.trim_end_matches(".md") == *label)
-                    {
-                        title = entry.filename.trim_end_matches(".md").to_string();
-                        content_to_show = app
-                            .config
-                            .workspace
-                            .read_journal_entry(&entry.path)
-                            .unwrap_or_else(|_| "Failed to load entry".to_string());
-                    }
+                    *e.filename.trim_end_matches(".md") == *label
+                }) {
+                    // Entry level - show the entry content
+                    title = entry.filename.trim_end_matches(".md").to_string();
+                    content_to_show = app
+                        .config
+                        .workspace
+                        .read_journal_entry(&entry.path)
+                        .unwrap_or_else(|_| "Failed to load entry".to_string());
                 }
             } else if let Some(journal_action) = &item.is_journal_item {
                 // Handle journal action items (Today, History)
@@ -391,6 +387,15 @@ fn build_planning_rows(
     rolled_over: &[String],
     app: &App,
 ) -> (Vec<Row<'static>>, usize, usize) {
+    let empty_cells = || {
+        std::iter::once(Cell::from(""))
+            .chain(std::iter::repeat_n(
+                Cell::from(""),
+                3 + workflow_columns.len(),
+            ))
+            .collect::<Vec<_>>()
+    };
+
     if app.planning_session.active && app.planning_session.has_tasks() {
         let total = app.planning_session.task_count();
         let completed = app
@@ -399,7 +404,7 @@ fn build_planning_rows(
             .iter()
             .filter(|t| t.status == "done" || t.status == "complete")
             .count();
-        let rows: Vec<Row> = app
+        let rows = app
             .planning_session
             .tasks
             .iter()
@@ -419,19 +424,10 @@ fn build_planning_rows(
             .collect();
         (rows, completed, total)
     } else if app.planning_session.active {
-        // Active session but no tasks selected
-        let mut cells = vec![
-            Cell::from("No tasks selected"),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
-        ];
-        for _ in workflow_columns {
-            cells.push(Cell::from(""));
-        }
+        let mut cells = vec![Cell::from("No tasks selected")];
+        cells.extend(empty_cells().into_iter().skip(1));
         (vec![Row::new(cells).height(1)], 0, 0)
     } else {
-        // No active session - show all tasks with hint
         let mut rows = Vec::new();
         if let Ok(programs) = app.config.workspace.list_programs() {
             for program in programs {
@@ -477,15 +473,8 @@ fn build_planning_rows(
             }
         }
         if rows.is_empty() {
-            let mut cells = vec![
-                Cell::from("No tasks found"),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-            ];
-            for _ in workflow_columns {
-                cells.push(Cell::from(""));
-            }
+            let mut cells = vec![Cell::from("No tasks found")];
+            cells.extend(empty_cells().into_iter().skip(1));
             rows.push(Row::new(cells).height(1));
         }
         (rows, 0, 0)

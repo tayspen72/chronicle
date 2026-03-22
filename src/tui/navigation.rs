@@ -1,22 +1,27 @@
-//! Navigation module.
-//!
-//! Handles sidebar navigation state and tree traversal.
-//!
-//! NOTE: This module contains extracted types and logic for navigation.
-//! The App struct in mod.rs still has inline implementations that duplicate this logic.
-//! TODO: Wire up these types to replace inline navigation handling in App.
+//! Navigation module - sidebar state and tree traversal.
 
 use crate::storage::DirectoryEntry;
 use crate::tui::cache::{
-    extract_year_from_path, extract_year_month_from_path, month_abbrev_to_name,
+    JournalNode, extract_year_from_path, extract_year_month_from_path, month_abbrev_to_name,
     month_name_to_abbrev,
 };
-use crate::tui::tree::TreeModel;
+use crate::tui::sidebar_tree::SidebarTreeModel;
+
+#[derive(Debug, Clone, Default)]
+pub enum SidebarNodeData {
+    Program(DirectoryEntry),
+    Journal(JournalNode),
+    Planning,
+    JournalAction,
+    Action,
+    #[default]
+    Empty,
+}
 
 /// State for navigation (tree selection, sidebar, current scope).
 #[derive(Debug, Clone, Default)]
 pub struct NavigationState {
-    pub tree_model: TreeModel,
+    pub sidebar_tree: SidebarTreeModel<()>,
     pub selected_entry_index: usize,
     pub sidebar_items: Vec<SidebarItem>,
     pub current_program: Option<String>,
@@ -31,11 +36,27 @@ impl NavigationState {
     }
 
     pub fn selected_path(&self) -> &[String] {
-        self.tree_model.selected_path()
+        self.sidebar_tree.selected_path()
     }
 
     pub fn selected_depth(&self) -> usize {
-        self.tree_model.selected_depth()
+        self.sidebar_tree.selected_depth()
+    }
+
+    pub fn set_selected_path(&mut self, path: Vec<String>) {
+        self.sidebar_tree.set_selected_path(path);
+    }
+
+    pub fn expand_path(&mut self, path: &[String]) {
+        self.sidebar_tree.expand_path(path);
+    }
+
+    pub fn collapse_path(&mut self, path: &[String]) {
+        self.sidebar_tree.collapse_path(path);
+    }
+
+    pub fn is_expanded(&self, path: &[String]) -> bool {
+        self.sidebar_tree.is_expanded(path)
     }
 
     /// Updates current_* scope fields from a path vector.
@@ -48,7 +69,7 @@ impl NavigationState {
 
     /// Updates current_* scope fields from the tree model's selected path.
     pub fn update_scope_from_tree(&mut self) {
-        let path = self.tree_model.selected_path().to_vec();
+        let path = self.sidebar_tree.selected_path().to_vec();
         self.set_scope_from_path(&path);
     }
 
@@ -88,16 +109,13 @@ pub struct SidebarItem {
     pub path: Option<std::path::PathBuf>,
     pub tree_path: Option<Vec<String>>,
     pub has_children: bool,
-    /// If true, this item triggers an action (e.g., "Create Program") rather than navigation
     pub is_create_action: bool,
-    /// For journal items: path components like ["2024", "December", "2024-12-15"]
     pub journal_path: Option<Vec<String>>,
-    /// Whether this is a journal section item (year/month)
     pub is_journal_header: bool,
+    pub node_data: SidebarNodeData,
 }
 
 impl SidebarItem {
-    /// Creates a new sidebar item.
     #[must_use]
     #[allow(dead_code)]
     pub fn new(name: impl Into<String>, section: SidebarSection) -> Self {
@@ -114,6 +132,7 @@ impl SidebarItem {
             is_create_action: false,
             journal_path: None,
             is_journal_header: false,
+            node_data: SidebarNodeData::Empty,
         }
     }
 
@@ -177,6 +196,50 @@ impl SidebarItem {
     pub fn journal_header(mut self) -> Self {
         self.is_journal_header = true;
         self
+    }
+
+    #[must_use]
+    pub fn node_data(mut self, data: SidebarNodeData) -> Self {
+        self.node_data = data;
+        self
+    }
+
+    pub fn program(entry: DirectoryEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            section: SidebarSection::Programs,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: Some(entry.path.clone()),
+            tree_path: Some(vec![entry.name.clone()]),
+            has_children: false,
+            is_create_action: false,
+            journal_path: None,
+            is_journal_header: false,
+            node_data: SidebarNodeData::Program(entry),
+        }
+    }
+
+    pub fn journal(node: JournalNode, path: Vec<String>) -> Self {
+        let label = node.label().to_string();
+        let is_header = node.is_header();
+        Self {
+            name: label,
+            section: SidebarSection::Journal,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: path.len(),
+            path: None,
+            tree_path: Some(path.clone()),
+            has_children: is_header,
+            is_create_action: false,
+            journal_path: Some(path.clone()),
+            is_journal_header: is_header,
+            node_data: SidebarNodeData::Journal(node),
+        }
     }
 }
 
@@ -497,18 +560,13 @@ mod tests {
 /// Tracks expansion state for the journal history tree
 #[derive(Debug, Clone, Default)]
 pub struct JournalTreeState {
-    selected_path: Vec<String>,
-    expanded_paths: std::collections::BTreeSet<Vec<String>>,
     entries: Vec<crate::storage::JournalEntry>,
 }
 
 pub fn journal_entry_label(jpath: &[String]) -> Option<&str> {
-    let label = if jpath.len() == 3 {
-        jpath.get(2)
-    } else {
-        jpath.get(1)
-    }?;
-    Some(label)
+    jpath
+        .get(if jpath.len() == 3 { 2 } else { 1 })
+        .map(|s| s.as_str())
 }
 
 impl JournalTreeState {
@@ -520,42 +578,12 @@ impl JournalTreeState {
         self.entries.is_empty()
     }
 
-    pub fn is_expanded(&self, path: &[String]) -> bool {
-        self.expanded_paths.contains(path)
-    }
-
-    pub fn expand(&mut self, path: &[String]) {
-        self.expanded_paths.insert(path.to_vec());
-    }
-
-    pub fn collapse(&mut self, path: &[String]) {
-        self.expanded_paths
-            .retain(|expanded| !is_same_or_descendant(expanded, path));
-    }
-
-    pub fn selected_path(&self) -> &[String] {
-        &self.selected_path
-    }
-
-    pub fn set_selected_path(&mut self, path: Vec<String>) {
-        self.selected_path = path;
-    }
-
-    pub fn depth(&self) -> usize {
-        self.selected_path.len()
-    }
-
     pub fn set_entries(&mut self, entries: Vec<crate::storage::JournalEntry>) {
         self.entries = entries;
     }
 
     pub fn entries(&self) -> &[crate::storage::JournalEntry] {
         &self.entries
-    }
-
-    pub fn reset(&mut self) {
-        self.selected_path.clear();
-        self.expanded_paths.clear();
     }
 
     pub fn years(&self) -> Vec<String> {
@@ -595,11 +623,4 @@ impl JournalTreeState {
             })
             .collect()
     }
-}
-
-fn is_same_or_descendant(path: &[String], target: &[String]) -> bool {
-    if target.len() > path.len() {
-        return false;
-    }
-    path.starts_with(target)
 }

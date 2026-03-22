@@ -76,6 +76,65 @@ pub fn extract_year_month_from_path(path: &std::path::Path) -> Option<(String, S
     None
 }
 
+/// Represents a node in the journal history tree.
+#[derive(Debug, Clone)]
+pub enum JournalNode {
+    History,
+    Year {
+        year: String,
+    },
+    Month {
+        year: String,
+        month: String,
+    },
+    Entry {
+        year: String,
+        month: String,
+        entry: JournalEntry,
+    },
+}
+
+impl JournalNode {
+    pub fn path_components(&self) -> Vec<String> {
+        match self {
+            JournalNode::History => vec![],
+            JournalNode::Year { year } => vec![year.clone()],
+            JournalNode::Month { year, month } => vec![year.clone(), month.clone()],
+            JournalNode::Entry { year, month, entry } => vec![
+                year.clone(),
+                month.clone(),
+                entry.filename.trim_end_matches(".md").to_string(),
+            ],
+        }
+    }
+
+    pub fn is_header(&self) -> bool {
+        matches!(
+            self,
+            JournalNode::History | JournalNode::Year { .. } | JournalNode::Month { .. }
+        )
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            JournalNode::History => "History",
+            JournalNode::Year { year } => year,
+            JournalNode::Month { month, .. } => month,
+            JournalNode::Entry { entry, .. } => entry.filename.trim_end_matches(".md"),
+        }
+    }
+
+    pub fn from_entry(entry: &JournalEntry) -> Option<Self> {
+        let (year, month_abbrev) = extract_year_month_from_path(&entry.path)?;
+        let month_name = month_abbrev_to_name(&month_abbrev)?.to_string();
+        Some(JournalNode::Entry {
+            year,
+            month: month_name,
+            entry: entry.clone(),
+        })
+    }
+}
+
 /// Tree item for journal archive: (depth, label, is_header)
 pub type TreeItem = (usize, String, bool);
 
@@ -188,5 +247,78 @@ impl From<TaskMetadata> for SelectedTask {
             priority: None,
             description: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_journal_node_history() {
+        let node = JournalNode::History;
+        assert!(node.path_components().is_empty());
+        assert!(node.is_header());
+        assert_eq!(node.label(), "History");
+    }
+
+    #[test]
+    fn test_journal_node_year() {
+        let node = JournalNode::Year {
+            year: "2026".to_string(),
+        };
+        assert_eq!(node.path_components(), vec!["2026"]);
+        assert!(node.is_header());
+        assert_eq!(node.label(), "2026");
+    }
+
+    #[test]
+    fn test_journal_node_month() {
+        let node = JournalNode::Month {
+            year: "2026".to_string(),
+            month: "March".to_string(),
+        };
+        assert_eq!(node.path_components(), vec!["2026", "March"]);
+        assert!(node.is_header());
+        assert_eq!(node.label(), "March");
+    }
+
+    #[test]
+    fn test_journal_node_entry() {
+        let entry = JournalEntry {
+            filename: "2026-03-15.md".to_string(),
+            path: std::path::PathBuf::from("journal/history/2026/mar/2026-03-15.md"),
+        };
+        let node = JournalNode::Entry {
+            year: "2026".to_string(),
+            month: "March".to_string(),
+            entry,
+        };
+        assert_eq!(node.path_components(), vec!["2026", "March", "2026-03-15"]);
+        assert!(!node.is_header());
+        assert_eq!(node.label(), "2026-03-15");
+    }
+
+    #[test]
+    fn test_journal_node_from_entry() {
+        let entry = JournalEntry {
+            filename: "2026-03-15.md".to_string(),
+            path: std::path::PathBuf::from("journal/history/2026/mar/2026-03-15.md"),
+        };
+        let node = JournalNode::from_entry(&entry);
+        assert!(node.is_some());
+        let node = node.unwrap();
+        assert_eq!(node.label(), "2026-03-15");
+        assert!(!node.is_header());
+    }
+
+    #[test]
+    fn test_journal_node_from_entry_invalid_path() {
+        let entry = JournalEntry {
+            filename: "2026-03-15.md".to_string(),
+            path: std::path::PathBuf::from("invalid/path.md"),
+        };
+        let node = JournalNode::from_entry(&entry);
+        assert!(node.is_none());
     }
 }
