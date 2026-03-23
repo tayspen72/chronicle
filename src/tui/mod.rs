@@ -1277,6 +1277,10 @@ impl App {
         if let Some(plan_type) = &item.is_planning_item {
             match plan_type.as_str() {
                 "WeeklyPlanning" => {
+                    if !self.planning_session.active {
+                        self.start_planning_session();
+                        return;
+                    }
                     self.current_view = ViewType::TreeView;
                     if self.planning_session.has_tasks() {
                         if self.review_state.selection_index >= self.planning_session.tasks.len() {

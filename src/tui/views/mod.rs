@@ -256,6 +256,22 @@ pub fn render_backlog(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 /// Renders the Current Plan view showing tasks organized by hierarchy with workflow columns.
 pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if !app.planning_session.active {
+        let empty_state = Paragraph::new(
+            "No current planning session found.\n\nPress 'Enter' or '/Start Planning Session' to create a new plan.",
+        )
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Current Plan"),
+        );
+        f.render_widget(empty_state, area);
+        return;
+    }
+
     let mut workflow_columns = app.config.workflow.clone();
     if workflow_columns.is_empty() {
         workflow_columns.push("Status".to_string());
@@ -287,11 +303,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
         .height(1);
 
     let mut rows: Vec<Row<'static>> = Vec::new();
-    if !app.planning_session.active {
-        let mut cells = vec![Cell::from("No active planning session")];
-        cells.extend(std::iter::repeat_n(Cell::from("-"), workflow_columns.len()));
-        rows.push(Row::new(cells));
-    } else if matrix_rows.is_empty() {
+    if matrix_rows.is_empty() {
         let mut cells = vec![Cell::from("No tasks in current plan")];
         cells.extend(std::iter::repeat_n(Cell::from("-"), workflow_columns.len()));
         rows.push(Row::new(cells));
