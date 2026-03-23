@@ -407,6 +407,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::PlanningPreview => ("PREVIEW", Color::LightBlue),
         Mode::TaskDetailWizard => ("EDIT TASK", Color::LightYellow),
         Mode::InputTaskDetailField => ("INPUT", Color::Cyan),
+        Mode::CurrentPlanNavigation => ("PLAN NAV", Color::LightCyan),
     };
 
     // Split the status bar into left (breadcrumb) and right (mode) sections

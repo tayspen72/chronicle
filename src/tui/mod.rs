@@ -68,6 +68,8 @@ pub enum Mode {
     TaskDetailWizard,
     /// User is inputting text for a task detail field
     InputTaskDetailField,
+    /// User is navigating the Current Plan report by tasks
+    CurrentPlanNavigation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -404,6 +406,33 @@ impl App {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.navigate_review(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle CurrentPlanNavigation mode specially
+        if self.mode == Mode::CurrentPlanNavigation {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.navigate_review(-1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.navigate_review(1);
+                }
+                KeyCode::Char('s') => {
+                    self.cycle_task_status();
+                }
+                KeyCode::Char('x') => {
+                    self.remove_task_from_session();
+                }
+                KeyCode::Enter => {
+                    self.open_current_plan_task_in_editor();
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.mode = Mode::Normal;
+                    self.current_view = ViewType::TreeView;
                 }
                 _ => {}
             }
@@ -1248,10 +1277,19 @@ impl App {
         if let Some(plan_type) = &item.is_planning_item {
             match plan_type.as_str() {
                 "WeeklyPlanning" => {
-                    self.current_view = ViewType::WeeklyPlanning;
+                    self.current_view = ViewType::TreeView;
+                    if self.planning_session.has_tasks() {
+                        if self.review_state.selection_index >= self.planning_session.tasks.len() {
+                            self.review_state.selection_index = 0;
+                        }
+                        self.mode = Mode::CurrentPlanNavigation;
+                    } else {
+                        self.mode = Mode::Normal;
+                    }
                 }
                 "Backlog" => {
                     self.current_view = ViewType::Backlog;
+                    self.mode = Mode::Normal;
                 }
                 _ => {}
             }
@@ -2708,6 +2746,18 @@ impl App {
             (self.review_state.selection_index + 1).min(self.planning_session.tasks.len() - 1)
         };
         self.review_state.selection_index = new_idx;
+    }
+
+    fn open_current_plan_task_in_editor(&mut self) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get(self.review_state.selection_index)
+            .cloned()
+        else {
+            return;
+        };
+        self.launch_editor(&task.path);
     }
 
     fn cycle_task_status(&mut self) {

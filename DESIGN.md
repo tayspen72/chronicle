@@ -230,6 +230,7 @@ Selection is not on Alpha4 (Section headers are not select-able)
 
 - Command palette (`/` opens, typing filters, Up/Down navigates, Enter executes)
 - Tree navigation: arrow keys, expand/collapse, 4-level hierarchy
+- Navigator panel unified behavior: Programs and Journal History now follow the same Tree Navigation Model semantics for expand/collapse/selection and tree rendering
 - Element creation: template-based wizard for Programs/Projects/Milestones/Tasks
 - Journal: today's journal, history browser with year/month tree expansion
 - External editor: launches configured editor, restores TUI
@@ -238,12 +239,11 @@ Selection is not on Alpha4 (Section headers are not select-able)
 
 ### Open Issues
 
-1. **Navigation edge cases**: Selection may jump unexpectedly during expand/collapse + element creation
-2. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
-3. **Journal folder structure**:
+1. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
+2. **Journal folder structure**:
    - `journal/current/YYYY-MM-DD.md` — today's journal entry
    - `journal/history/YYYY/MMM/YYYY-MM-DD.md` — history entries grouped by year and 3-letter month (e.g., `journal/history/2026/mar/2026-03-18.md`)
-4. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
+3. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
 
 ### Creation Wizard
 
@@ -317,6 +317,7 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 | Date | Event |
 |------|-------|
+| 2026-03-22 | Navigator panel and unified tree structure completed: Programs and Journal History now share consistent tree semantics (expand/collapse/selection/rendering) |
 | 2026-03-21 | Spec: Added Tree Navigation Model section with 8 example states |
 | 2026-03-21 | Bug fix: Journal history tree connector chars and indentation |
 | 2026-03-21 | Bug fix: Journal history collapse cascades correctly |
@@ -352,9 +353,15 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 ## Future Features
 
-### Tree Navigation Unit Tests
+### Next Recommended Feature: Current Plan Report
 
-Build comprehensive unit tests for tree navigation that apply equally to Programs and Journal History, covering all states from the Tree Navigation Model. Tests should exercise the same expand/collapse/selection logic for both navigation paths.
+Replace the current "Current Plan" behavior with a dedicated, useful report in the main window:
+- Group tasks by Program → Project → Milestone
+- Show task status, assignee, priority, start/due dates
+- Support quick filtering (e.g., by status, assignee)
+- Keep sidebar behavior unchanged (main window remains a viewport of selection)
+
+This resolves an active open issue and gives immediate user-facing value.
 
 ### Creation Wizard UX
 
@@ -387,11 +394,3 @@ Reports appear in the main window when the element is selected in the sidebar (m
 ### Theming
 
 Support theme files (e.g., from Helix editor's `themes/` directory or Alacritty). Users should be able to select from a list of themes to customize the TUI color scheme. The `ayu_evolve` theme from Helix can be used as a reference or directly ported.
-
-### Unified Navigation Tree
-
-Consolidate program elements and journal history to use a generic `TreeModel<N>` abstraction. Currently, programs use `TreeModel` + `tree_path` while journals use `JournalTreeState` + `journal_path`. Extract a depth-agnostic tree model that works for both use cases:
-- Programs: 4-level depth (Program → Project → Milestone → Task)
-- Journal: 3-level depth (History → Year → Month → Entry)
-
-This eliminates duplicate navigation code and enables future features like cross-references between elements.

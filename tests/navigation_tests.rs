@@ -1,10 +1,35 @@
 //! Integration tests for sidebar/tree navigation.
 
+use chronicle::model::SelectedTask;
 use chronicle::storage::JournalStorage;
 use chronicle::tui::navigation::SidebarSection;
 use chronicle::tui::test_utils::{app_with_empty_workspace, app_with_journal_entries};
 use chronicle::tui::{Mode, ViewType};
 use crossterm::event::KeyCode;
+use std::path::PathBuf;
+
+fn planned_task(
+    name: &str,
+    status: &str,
+    program: &str,
+    project: &str,
+    milestone: &str,
+) -> SelectedTask {
+    SelectedTask {
+        uuid: format!("uuid-{}", name),
+        path: PathBuf::from(format!("/tmp/{name}.md")),
+        program: program.to_string(),
+        project: project.to_string(),
+        milestone: milestone.to_string(),
+        task_name: name.to_string(),
+        status: status.to_string(),
+        assigned_to: None,
+        start_date: None,
+        due_date: None,
+        priority: None,
+        description: None,
+    }
+}
 
 #[test]
 fn test_initial_mode_is_normal() {
@@ -1190,4 +1215,51 @@ fn test_enter_on_journal_entry_opens_viewer() {
         app.selected_content.is_some(),
         "Enter on journal entry should open selected content"
     );
+}
+
+#[test]
+fn test_current_plan_selected_renders_in_treeview_and_enter_starts_task_navigation_mode() {
+    let (_, mut app) = app_with_empty_workspace();
+    app.planning_session.active = true;
+    app.planning_session.tasks = vec![
+        planned_task("task1", "New", "Program1", "Project1", "Milestone1"),
+        planned_task("task2", "Active", "Program1", "Project1", "Milestone1"),
+    ];
+
+    let current_plan_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.name == "Current Plan")
+        .expect("Current Plan should exist in sidebar");
+    app.navigation_state.selected_entry_index = current_plan_idx;
+    app.current_view = ViewType::TreeView;
+
+    app.handle_key(KeyCode::Enter);
+
+    assert_eq!(app.mode, Mode::CurrentPlanNavigation);
+    assert_eq!(app.current_view, ViewType::TreeView);
+}
+
+#[test]
+fn test_current_plan_navigation_uses_task_selection_only() {
+    let (_, mut app) = app_with_empty_workspace();
+    app.planning_session.active = true;
+    app.planning_session.tasks = vec![
+        planned_task("task1", "New", "Program1", "Project1", "Milestone1"),
+        planned_task("task2", "Active", "Program1", "Project1", "Milestone1"),
+    ];
+    app.mode = Mode::CurrentPlanNavigation;
+    app.review_state.selection_index = 0;
+
+    let before_sidebar_index = app.navigation_state.selected_entry_index;
+    app.handle_key(KeyCode::Down);
+    assert_eq!(app.review_state.selection_index, 1);
+    assert_eq!(
+        app.navigation_state.selected_entry_index, before_sidebar_index,
+        "Task navigation mode should not move sidebar selection"
+    );
+
+    app.handle_key(KeyCode::Up);
+    assert_eq!(app.review_state.selection_index, 0);
 }

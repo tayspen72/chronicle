@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
 };
+use std::collections::BTreeMap;
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let idx = app.navigation_state.selected_entry_index;
@@ -104,23 +105,8 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             } else if let Some(plan_type) = &item.is_planning_item {
                 match plan_type.as_str() {
                     "WeeklyPlanning" => {
-                        title = "Current Plan".to_string();
-                        if app.planning_session.active {
-                            let (start, end) = app.planning_session.date_range();
-                            let count = app.planning_session.task_count();
-                            content_to_show = format!(
-                                "# Current Plan\n\n\
-                                Period: {} to {}\n\
-                                Tasks: {}\n\n\
-                                Press / to access planning commands (Review Session, Close Planning Session, etc.)",
-                                start, end, count
-                            );
-                        } else {
-                            content_to_show = "# Current Plan\n\n\
-                                No active planning session.\n\n\
-                                Press / and type 'Start Planning Session' to begin planning."
-                                .to_string();
-                        }
+                        render_weekly_planning(f, app, area);
+                        return;
                     }
                     "Backlog" => {
                         title = "Backlog".to_string();
@@ -270,46 +256,103 @@ pub fn render_backlog(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 /// Renders the Current Plan view showing tasks organized by hierarchy with workflow columns.
 pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let workflow_columns = &app.config.workflow;
+    let mut workflow_columns = app.config.workflow.clone();
+    if workflow_columns.is_empty() {
+        workflow_columns.push("Status".to_string());
+    }
 
-    // Build header row
-    let mut header_cells = vec![
-        Cell::from("Program"),
-        Cell::from("Project"),
-        Cell::from("Milestone"),
-        Cell::from("Task"),
-    ];
-    header_cells.extend(workflow_columns.iter().map(|s| Cell::from(s.as_str())));
+    let matrix_rows = build_plan_matrix_rows(app);
+    let total_count = app.planning_session.task_count();
+    let selected_idx = app.review_state.selection_index;
+    let is_interactive = app.mode == Mode::CurrentPlanNavigation;
+
+    let mut status_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for task in &app.planning_session.tasks {
+        *status_counts
+            .entry(task.status.to_lowercase())
+            .or_insert(0usize) += 1;
+    }
+
+    let mut header_cells = vec![Cell::from("Hierarchy")];
+    header_cells.extend(workflow_columns.iter().map(|status| {
+        let count = status_counts
+            .get(&status.to_lowercase())
+            .copied()
+            .unwrap_or_default();
+        Cell::from(format!("{} ({})", status, count))
+    }));
 
     let header = Row::new(header_cells)
         .style(Style::default().fg(Color::White).bg(Color::DarkGray))
         .height(1);
 
-    // Collect tasks and build rows
-    let is_review = app.mode == Mode::ReviewSession;
-    let selected_idx = app.review_state.selection_index;
-    let rolled_over = &app.planning_session.rolled_over_tasks;
-    let (rows, completed_count, total_count) =
-        build_planning_rows(workflow_columns, is_review, selected_idx, rolled_over, app);
+    let mut rows: Vec<Row<'static>> = Vec::new();
+    if !app.planning_session.active {
+        let mut cells = vec![Cell::from("No active planning session")];
+        cells.extend(std::iter::repeat_n(Cell::from("-"), workflow_columns.len()));
+        rows.push(Row::new(cells));
+    } else if matrix_rows.is_empty() {
+        let mut cells = vec![Cell::from("No tasks in current plan")];
+        cells.extend(std::iter::repeat_n(Cell::from("-"), workflow_columns.len()));
+        rows.push(Row::new(cells));
+    } else {
+        for row_data in matrix_rows {
+            let is_selected = is_interactive
+                && row_data
+                    .task_index
+                    .is_some_and(|task_idx| task_idx == selected_idx);
+            let base_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::LightYellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
 
-    // Calculate column widths
-    let base_width = 80 / 4;
-    let workflow_width = 20 / workflow_columns.len().max(1) as u16;
-    let mut constraints = vec![
-        Constraint::Percentage(base_width),
-        Constraint::Percentage(base_width),
-        Constraint::Percentage(base_width),
-        Constraint::Percentage(base_width),
-    ];
+            let hierarchy_style = match row_data.kind {
+                MatrixRowKind::Program => base_style.add_modifier(ratatui::style::Modifier::BOLD),
+                MatrixRowKind::Project => base_style.add_modifier(ratatui::style::Modifier::ITALIC),
+                MatrixRowKind::Milestone => base_style.fg(Color::LightCyan),
+                MatrixRowKind::Task => base_style,
+            };
+
+            let mut cells = vec![Cell::from(row_data.hierarchy).style(hierarchy_style)];
+            match row_data.kind {
+                MatrixRowKind::Task => {
+                    let status = row_data.status.unwrap_or_default();
+                    let task_name = row_data.task_name.unwrap_or_else(|| "-".to_string());
+                    for workflow_status in &workflow_columns {
+                        if workflow_status.eq_ignore_ascii_case(&status) {
+                            cells.push(Cell::from(task_name.clone()).style(base_style));
+                        } else {
+                            cells.push(Cell::from("-").style(Style::default().fg(Color::DarkGray)));
+                        }
+                    }
+                }
+                MatrixRowKind::Program | MatrixRowKind::Project | MatrixRowKind::Milestone => {
+                    cells.extend(std::iter::repeat_n(
+                        Cell::from("-").style(Style::default().fg(Color::DarkGray)),
+                        workflow_columns.len(),
+                    ));
+                }
+            }
+            rows.push(Row::new(cells).height(1));
+        }
+    }
+
+    let hierarchy_width = if workflow_columns.len() > 5 { 30 } else { 36 };
+    let status_width =
+        ((100 - hierarchy_width as u16) / workflow_columns.len().max(1) as u16).max(8);
+    let mut constraints = vec![Constraint::Percentage(hierarchy_width as u16)];
     constraints.extend(std::iter::repeat_n(
-        Constraint::Percentage(workflow_width),
+        Constraint::Percentage(status_width),
         workflow_columns.len(),
     ));
 
-    let title = if app.mode == Mode::ReviewSession {
-        format!("Review Session [{}/{}]", completed_count, total_count)
-    } else if app.planning_session.active {
-        format!("Current Plan [{}/{}]", completed_count, total_count)
+    let title = if app.planning_session.active {
+        let (start, end) = app.planning_session.date_range();
+        format!(
+            "Current Plan [{} tasks | {} -> {}]",
+            total_count, start, end
+        )
     } else {
         "Current Plan".to_string()
     };
@@ -326,10 +369,9 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
 
     f.render_widget(table, area);
 
-    // Show action hints in review mode
-    if app.mode == Mode::ReviewSession {
+    if app.mode == Mode::CurrentPlanNavigation {
         let hints = Paragraph::new(
-            "s: status | r: roll | d: done | x: remove | a: assign | b: start | e: due | m: add | c: close | Enter: confirm | Esc: cancel",
+            "j/k: move tasks | Enter: open task | s: toggle status | x: remove from plan | Esc/q: back",
         )
         .style(Style::default().fg(Color::DarkGray));
         let hint_area =
@@ -338,158 +380,106 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
     }
 }
 
-/// Planning row data for rendering
-struct PlanningRowData {
-    program: String,
-    project: String,
-    milestone: String,
-    task: String,
-    status: String,
-    is_selected: bool,
-    is_rolled: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatrixRowKind {
+    Program,
+    Project,
+    Milestone,
+    Task,
 }
 
-impl PlanningRowData {
-    fn into_row(self, workflow_columns: &[String]) -> Row<'static> {
-        let style = if self.is_selected {
-            Style::default().fg(Color::Black).bg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let task_display = if self.is_rolled {
-            format!("{} [R]", self.task)
-        } else {
-            self.task
-        };
-        let mut cells = vec![
-            Cell::from(self.program).style(style),
-            Cell::from(self.project).style(style),
-            Cell::from(self.milestone).style(style),
-            Cell::from(task_display).style(style),
-        ];
-        for ws in workflow_columns {
-            let cell_style = if ws == &self.status {
-                Style::default().fg(Color::Black).bg(Color::LightGreen)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            cells.push(Cell::from(" ").style(cell_style));
-        }
-        Row::new(cells).height(1)
-    }
+#[derive(Debug, Clone)]
+struct MatrixRowData {
+    kind: MatrixRowKind,
+    hierarchy: String,
+    task_index: Option<usize>,
+    task_name: Option<String>,
+    status: Option<String>,
 }
 
-/// Builds rows for the planning table, returning (rows, completed_count, total_count).
-fn build_planning_rows(
-    workflow_columns: &[String],
-    is_review: bool,
-    selected_idx: usize,
-    rolled_over: &[String],
-    app: &App,
-) -> (Vec<Row<'static>>, usize, usize) {
-    let empty_cells = || {
-        std::iter::once(Cell::from(""))
-            .chain(std::iter::repeat_n(
-                Cell::from(""),
-                3 + workflow_columns.len(),
+fn build_plan_matrix_rows(app: &App) -> Vec<MatrixRowData> {
+    let mut indexed_tasks: Vec<(usize, &crate::model::SelectedTask)> =
+        app.planning_session.tasks.iter().enumerate().collect();
+    indexed_tasks.sort_by(|(_, a), (_, b)| {
+        (
+            a.program.to_lowercase(),
+            a.project.to_lowercase(),
+            a.milestone.to_lowercase(),
+            a.task_name.to_lowercase(),
+        )
+            .cmp(&(
+                b.program.to_lowercase(),
+                b.project.to_lowercase(),
+                b.milestone.to_lowercase(),
+                b.task_name.to_lowercase(),
             ))
-            .collect::<Vec<_>>()
-    };
+    });
 
-    if app.planning_session.active && app.planning_session.has_tasks() {
-        let total = app.planning_session.task_count();
-        let completed = app
-            .planning_session
-            .tasks
-            .iter()
-            .filter(|t| t.status == "done" || t.status == "complete")
-            .count();
-        let rows = app
-            .planning_session
-            .tasks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                PlanningRowData {
-                    program: t.program.clone(),
-                    project: t.project.clone(),
-                    milestone: t.milestone.clone(),
-                    task: t.task_name.clone(),
-                    status: t.status.clone(),
-                    is_selected: is_review && i == selected_idx,
-                    is_rolled: rolled_over.contains(&t.uuid),
-                }
-                .into_row(workflow_columns)
-            })
-            .collect();
-        (rows, completed, total)
-    } else if app.planning_session.active {
-        let mut cells = vec![Cell::from("No tasks selected")];
-        cells.extend(empty_cells().into_iter().skip(1));
-        (vec![Row::new(cells).height(1)], 0, 0)
-    } else {
-        let mut rows = Vec::new();
-        if let Ok(programs) = app.config.workspace.list_programs() {
-            for program in programs {
-                if let Ok(projects) = app.config.workspace.list_projects(&program.name) {
-                    for project in projects {
-                        if let Ok(milestones) = app
-                            .config
-                            .workspace
-                            .list_milestones(&program.name, &project.name)
-                        {
-                            for milestone in milestones {
-                                if let Ok(tasks) = app.config.workspace.list_tasks(
-                                    &program.name,
-                                    &project.name,
-                                    &milestone.name,
-                                ) {
-                                    for task in tasks {
-                                        let status = app
-                                            .config
-                                            .workspace
-                                            .read_md_file(&task.path)
-                                            .ok()
-                                            .map(|c| extract_status_from_content(&c))
-                                            .unwrap_or_else(|| "Unknown".into());
-                                        rows.push(
-                                            PlanningRowData {
-                                                program: program.name.clone(),
-                                                project: project.name.clone(),
-                                                milestone: milestone.name.clone(),
-                                                task: task.name.clone(),
-                                                status,
-                                                is_selected: false,
-                                                is_rolled: false,
-                                            }
-                                            .into_row(workflow_columns),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if rows.is_empty() {
-            let mut cells = vec![Cell::from("No tasks found")];
-            cells.extend(empty_cells().into_iter().skip(1));
-            rows.push(Row::new(cells).height(1));
-        }
-        (rows, 0, 0)
-    }
-}
+    let mut rows = Vec::new();
+    let mut last_program = String::new();
+    let mut last_project = String::new();
+    let mut last_milestone = String::new();
 
-/// Extract status from markdown content (simple frontmatter parsing)
-fn extract_status_from_content(content: &str) -> String {
-    // Look for "status: <value>" in the frontmatter
-    for line in content.lines() {
-        if line.starts_with("status:") {
-            return line.trim_start_matches("status:").trim().to_string();
+    for (task_index, task) in indexed_tasks {
+        let program = if task.program.trim().is_empty() {
+            "Unscoped Program".to_string()
+        } else {
+            task.program.clone()
+        };
+        let project = if task.project.trim().is_empty() {
+            "Unscoped Project".to_string()
+        } else {
+            task.project.clone()
+        };
+        let milestone = if task.milestone.trim().is_empty() {
+            "Unscoped Milestone".to_string()
+        } else {
+            task.milestone.clone()
+        };
+
+        if program != last_program {
+            rows.push(MatrixRowData {
+                kind: MatrixRowKind::Program,
+                hierarchy: program.clone(),
+                task_index: None,
+                task_name: None,
+                status: None,
+            });
+            last_program = program.clone();
+            last_project.clear();
+            last_milestone.clear();
         }
+        if project != last_project {
+            rows.push(MatrixRowData {
+                kind: MatrixRowKind::Project,
+                hierarchy: project.clone(),
+                task_index: None,
+                task_name: None,
+                status: None,
+            });
+            last_project = project.clone();
+            last_milestone.clear();
+        }
+        if milestone != last_milestone {
+            rows.push(MatrixRowData {
+                kind: MatrixRowKind::Milestone,
+                hierarchy: milestone.clone(),
+                task_index: None,
+                task_name: None,
+                status: None,
+            });
+            last_milestone = milestone;
+        }
+
+        rows.push(MatrixRowData {
+            kind: MatrixRowKind::Task,
+            hierarchy: "-".to_string(),
+            task_index: Some(task_index),
+            task_name: Some(task.task_name.clone()),
+            status: Some(task.status.clone()),
+        });
     }
-    "Unknown".to_string()
+    rows
 }
 
 pub fn render_content_viewer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
