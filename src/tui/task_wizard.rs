@@ -13,7 +13,7 @@ pub enum TaskWizardField {
     AssignedTo = 2,
     StartDate = 3,
     DueDate = 4,
-    Priority = 5,
+    Importance = 5,
     Description = 6,
     AddToPlanButton = 7,
     CancelButton = 8,
@@ -28,7 +28,7 @@ impl TaskWizardField {
             2 => Some(TaskWizardField::AssignedTo),
             3 => Some(TaskWizardField::StartDate),
             4 => Some(TaskWizardField::DueDate),
-            5 => Some(TaskWizardField::Priority),
+            5 => Some(TaskWizardField::Importance),
             6 => Some(TaskWizardField::Description),
             7 => Some(TaskWizardField::AddToPlanButton),
             8 => Some(TaskWizardField::CancelButton),
@@ -38,7 +38,7 @@ impl TaskWizardField {
 
     /// Get the total number of fields (excluding buttons).
     pub const fn editable_field_count() -> usize {
-        6 // task name, status, assigned_to, start_date, due_date, priority
+        6 // task name, status, assigned_to, start_date, due_date, importance
     }
 
     /// Check if this field accepts text input.
@@ -121,50 +121,50 @@ impl TaskWizardState {
     }
 }
 
-/// Cycle to the next field or cycle field values based on current field.
-///
-/// For text fields (assigned_to, start_date, due_date), this moves to the next field.
-/// For status, this cycles through workflow values.
-/// For priority, this cycles through priority levels.
-pub fn cycle_task_wizard_field_or_next(wizard: &mut TaskWizardState, workflow: &[String]) {
-    if let Some(ref task) = wizard.task {
-        match wizard.field_index {
-            0 => {
-                // Task name is not editable - move to next field
-                wizard.next_field();
+/// Move to the next task wizard field.
+pub fn cycle_task_wizard_field_or_next(wizard: &mut TaskWizardState, _workflow: &[String]) {
+    wizard.next_field();
+}
+
+/// Cycle list-backed task wizard choices.
+pub fn cycle_task_wizard_choice(
+    wizard: &mut TaskWizardState,
+    delta: isize,
+    workflow: &[String],
+    importance_values: &[String],
+) {
+    let Some(ref mut task) = wizard.task else {
+        return;
+    };
+    match wizard.field_index {
+        1 => {
+            if workflow.is_empty() {
+                return;
             }
-            1 => {
-                // Cycle status through workflow values
-                let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
-                let next_idx = (current_idx + 1) % workflow.len();
-                if let Some(ref mut t) = wizard.task {
-                    t.status = workflow[next_idx].clone();
-                }
-            }
-            2..=4 => {
-                // Text fields - move to next field
-                wizard.next_field();
-            }
-            5 => {
-                // Cycle priority, then move to next field
-                let priorities = ["low", "medium", "high"];
-                let current = task.priority.clone().unwrap_or_default();
-                let current_idx = priorities
-                    .iter()
-                    .position(|&p| p == current.as_str())
-                    .unwrap_or(0);
-                let next_idx = (current_idx + 1) % priorities.len();
-                if let Some(ref mut t) = wizard.task {
-                    t.priority = Some(priorities[next_idx].to_string());
-                }
-                wizard.next_field();
-            }
-            6 => {
-                // Description - move to ADD TO PLAN button
-                wizard.next_field();
-            }
-            _ => {}
+            let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0) as isize;
+            let next_idx = (current_idx + delta).rem_euclid(workflow.len() as isize) as usize;
+            task.status = workflow[next_idx].clone();
         }
+        5 => {
+            if importance_values.is_empty() {
+                return;
+            }
+            let current = task.importance.clone().unwrap_or_default();
+            let current_idx = importance_values
+                .iter()
+                .position(|value| value.eq_ignore_ascii_case(&current))
+                .unwrap_or(0) as isize;
+            let next_idx =
+                (current_idx + delta).rem_euclid(importance_values.len() as isize) as usize;
+            task.importance = Some(importance_values[next_idx].clone());
+        }
+        7 => {
+            wizard.field_index = 8;
+        }
+        8 => {
+            wizard.field_index = 7;
+        }
+        _ => {}
     }
 }
 
@@ -200,7 +200,7 @@ pub fn handle_task_wizard_char(wizard: &mut TaskWizardState, c: char) {
                 task.description = Some(value);
             }
             _ => {
-                // Other fields don't accept text input (task name, status, priority cycle instead)
+                // Other fields don't accept text input (task name, status, importance cycle instead)
             }
         }
     }
@@ -303,7 +303,7 @@ mod tests {
         assert!(TaskWizardField::AssignedTo.accepts_text_input());
         assert!(TaskWizardField::StartDate.accepts_text_input());
         assert!(TaskWizardField::DueDate.accepts_text_input());
-        assert!(!TaskWizardField::Priority.accepts_text_input());
+        assert!(!TaskWizardField::Importance.accepts_text_input());
         assert!(TaskWizardField::Description.accepts_text_input());
     }
 
@@ -350,7 +350,7 @@ mod tests {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
         let workflow = vec![
@@ -363,22 +363,54 @@ mod tests {
         cycle_task_wizard_field_or_next(&mut state, &workflow);
         assert_eq!(state.field_index, 1);
 
-        // Field 1 (Status) -> cycles status, stays on field 1
+        // Field 1 (Status) -> Enter advances
         cycle_task_wizard_field_or_next(&mut state, &workflow);
-        assert_eq!(state.task.as_ref().unwrap().status, "in_progress");
-        assert_eq!(state.field_index, 1);
+        assert_eq!(state.task.as_ref().unwrap().status, "todo");
+        assert_eq!(state.field_index, 2);
 
         // Field 2 (AssignedTo) -> moves to field 3
         state.field_index = 2;
         cycle_task_wizard_field_or_next(&mut state, &workflow);
         assert_eq!(state.field_index, 3);
 
-        // Field 5 (Priority) -> cycles priority
+        // Field 5 (Importance) -> Enter advances
         state.field_index = 5;
         cycle_task_wizard_field_or_next(&mut state, &workflow);
+        assert_eq!(state.field_index, 6);
+    }
+
+    #[test]
+    fn test_cycle_task_wizard_choice_cycles_status_and_importance() {
+        let mut state = TaskWizardState::with_task(SelectedTask {
+            uuid: "test".to_string(),
+            path: std::path::PathBuf::from("/test.md"),
+            program: "Test".to_string(),
+            project: "Test".to_string(),
+            milestone: "Test".to_string(),
+            task_name: "Test Task".to_string(),
+            status: "todo".to_string(),
+            assigned_to: None,
+            start_date: None,
+            due_date: None,
+            importance: Some("low".to_string()),
+            description: None,
+        });
+        let workflow = vec![
+            "todo".to_string(),
+            "in_progress".to_string(),
+            "done".to_string(),
+        ];
+        let importance = vec!["low".to_string(), "medium".to_string(), "high".to_string()];
+
+        state.field_index = 1;
+        cycle_task_wizard_choice(&mut state, 1, &workflow, &importance);
+        assert_eq!(state.task.as_ref().unwrap().status, "in_progress");
+
+        state.field_index = 5;
+        cycle_task_wizard_choice(&mut state, 1, &workflow, &importance);
         assert_eq!(
-            state.task.as_ref().unwrap().priority,
-            Some("medium".to_string())
+            state.task.as_ref().unwrap().importance.as_deref(),
+            Some("medium")
         );
     }
 
@@ -395,7 +427,7 @@ mod tests {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
 
@@ -435,7 +467,7 @@ mod tests {
             assigned_to: Some("John".to_string()),
             start_date: Some("2024-01-15".to_string()),
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
 
@@ -466,7 +498,7 @@ mod tests {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
 
@@ -488,7 +520,7 @@ mod tests {
             assigned_to: Some("John".to_string()),
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
 
@@ -511,7 +543,7 @@ mod tests {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         });
 

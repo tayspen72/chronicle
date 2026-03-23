@@ -292,7 +292,7 @@ pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()
 }
 
 /// Update multiple fields in a task file's YAML frontmatter.
-/// Fields are: status, assigned_to, start_date, due_date, priority
+/// Fields are: status, assigned_to, start_date, due_date, importance
 pub fn update_task_fields(
     path: &std::path::Path,
     updates: std::collections::HashMap<&str, Option<String>>,
@@ -316,8 +316,8 @@ pub fn update_task_fields(
     if let Some(due_date) = updates.get("due_date") {
         task.due_date = due_date.clone();
     }
-    if let Some(priority) = updates.get("priority") {
-        task.priority = priority.clone();
+    if let Some(importance) = updates.get("importance") {
+        task.importance = importance.clone();
     }
 
     let new_content = element_to_markdown(&Element::Task(task));

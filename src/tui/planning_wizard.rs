@@ -49,6 +49,10 @@ pub struct PlanningWizardState {
 
     /// Input buffer for editing date fields
     pub input_buffer: String,
+    /// Whether each value was explicitly edited by user
+    pub start_date_edited: bool,
+    pub end_date_edited: bool,
+    pub duration_edited: bool,
 }
 
 /// Focus states for the planning date wizard.
@@ -133,6 +137,9 @@ impl PlanningWizardState {
             task_index: 0,
             tasks: Vec::new(),
             input_buffer: today,
+            start_date_edited: false,
+            end_date_edited: false,
+            duration_edited: false,
         }
     }
 
@@ -215,6 +222,9 @@ impl PlanningWizardState {
         self.task_index = 0;
         self.tasks.clear();
         self.input_buffer = today;
+        self.start_date_edited = false;
+        self.end_date_edited = false;
+        self.duration_edited = false;
     }
 
     /// Sync input buffer to the currently focused date field.

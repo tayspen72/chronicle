@@ -247,7 +247,74 @@ Selection is not on Alpha4 (Section headers are not select-able)
 
 ### Creation Wizard
 
-Fields should come from a mix of what the software is creating and dynamic parsed fields from the template files. Field names should be bold, field values should be white. Three field value types: auto-filled (eg uuid, creation date), suggested (eg start date in new planning session) and empty (eg title). auto-filled are non adjustable, suggested will start with a value but the user can select that field and edit the value, and empty should read "empty" until the user adjusts it. When stored in the resulting object file after creation, empty should not be transferred. Field name should be bold, field value should be white if fixed or adjusted, gray if suggested or empty until edited.
+The creation UX must be consistent across:
+- Element creation wizard (program/project/milestone/task)
+- Planning session date wizard
+- Add task to plan flow (tree picker + add-to-plan task editor)
+
+#### Field source and ordering
+
+- Wizard rows come from YAML frontmatter fields in the template file.
+- Rows are displayed in the same order as fields appear in the template file.
+- Row labels are generated from YAML keys and converted to title case.
+- All template YAML fields are shown in the wizard.
+- The old "Creating in:" row is removed.
+- The wizard top line shows the target breadcrumb path (example: `Program -> Project -> Milestone -> new task`) instead of a generic prompt like "Fill in fields for ...".
+
+#### Field visual states
+
+- Field names are bold.
+- Non-editable rows are not focusable.
+- Gray value text means the current value is system-generated or suggested and has not been user-edited yet.
+- White value text means the value was edited by the user.
+- Empty editable fields show gray `empty` until edited.
+
+#### Field value categories
+
+- Auto-filled: system-generated, non-editable, gray until written.
+- Suggested: editable; starts gray, turns white after user edit.
+- Empty: editable; shows gray `empty`, turns white after user edit.
+- Fixed: from template literal values, non-editable.
+- Choice: list-backed editable values.
+
+#### Choice field behavior
+
+- `status` options come from workflow values in config.
+- `importance` options come from config (new list).
+- Left/Right changes the option only when focus is on a choice field.
+- Enter always moves to the next row (does not cycle choices).
+- A right-side suggestion/options list is shown only when a choice field is focused.
+
+#### Description handling
+
+- `# Description` remains in markdown body (outside YAML).
+- `{{DESCRIPTION}}` is replaced by wizard input and may be empty.
+- Description content is rendered as markdown body content, not moved into YAML.
+
+#### Navigation contract for creation wizards
+
+- Up/Down moves between focusable rows.
+- Enter moves to the next row.
+- Enter on the last focusable row moves focus to `CONFIRM`.
+- Escape once jumps focus to `CANCEL`.
+- Escape again cancels (same as Enter on `CANCEL`).
+- Left/Right is no-op on non-choice fields.
+- Bottom action rows:
+  - Standard: `CONFIRM` / `CANCEL`
+  - Preview: `ADD TASKS TO PLAN` / `CONFIRM` / `CANCEL`
+  - Left/Right cycles within the bottom action row.
+
+#### Add task to plan behavior
+
+- Keep tree navigation model for program/project/milestone/task traversal.
+- Remove the extra gray first-program line in the header area.
+- Remove the redundant "Programs (...)" line and ascii folder/file noise.
+- Space has no behavior in add-task picker.
+- Enter on a task opens the add-to-plan task editor wizard.
+- In add-to-plan editor, user can edit YAML-backed task fields before adding.
+- Confirm adds the task to the planning session and checks the task in picker state.
+- Edits are persisted to the task markdown file (single source of truth).
+- Planning session file stores only minimal references needed to build reports from source task files (no duplicate task metadata).
 
 ---
 
@@ -269,7 +336,7 @@ main.rs
 
 ```
 Start Planning Session
-  └─ Wizard (name, duration, dates)
+  └─ Wizard (duration, dates)
        └─ Task Picker (Programs → Projects → Milestones → Tasks)
             └─ Enter on task  →  Task Detail Wizard
                  └─ ADD TO PLAN  →  return to picker
@@ -306,7 +373,8 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 | `Enter` | Normal | Open item / confirm action |
 | `Esc` | Any | Cancel / go back |
 | `/` | Normal | Open command palette |
-| `Space` | Task picker | Open task detail wizard |
+| `Space` | Add task picker | No action |
+| `Enter` | Add task picker (task row) | Open add-to-plan task editor |
 | `f` | Task picker | Show preview screen |
 | Tab | Wizard | Next field |
 | `Shift+Tab` | Wizard | Previous field |
@@ -357,7 +425,7 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 Replace the current "Current Plan" behavior with a dedicated, useful report in the main window:
 - Group tasks by Program → Project → Milestone
-- Show task status, assignee, priority, start/due dates
+- Show task status, assignee, importance, start/due dates
 - Support quick filtering (e.g., by status, assignee)
 - Keep sidebar behavior unchanged (main window remains a viewport of selection)
 
@@ -366,9 +434,22 @@ This resolves an active open issue and gives immediate user-facing value.
 ### Creation Wizard UX
 
 Refactor all element creation wizards (Program, Project, Milestone, Task, Subtask) to use consistent field handling:
-- Field names bold, field values white (fixed/adjusted) or gray (suggested/empty)
-- Three field types: auto-filled (non-editable, gray), suggested (editable, gray until changed), empty (shows "empty", not stored)
-- This applies to all wizards: element creation, planning session, etc.
+- Field names bold, values gray until user-edited, white after user edit
+- Non-editable fields are visible but not focusable
+- Fields are parsed from template YAML in source order, with title-cased labels
+- Choice fields (`status`, `importance`) support left/right cycling with visible option list
+- Unified Enter/Escape navigation contract across creation-style wizards
+- This applies to all creation-style wizards: element creation, planning session, and add-to-plan task editor
+
+### Config Defaults
+
+Support partial or empty config files:
+- Missing config entries should fall back to documented defaults.
+- Users should only need to define keys they want to override.
+
+### Subtask Creation Wizard Parity
+
+Add subtask creation flow parity with the same creation wizard UX contract used by program/project/milestone/task.
 
 ### Program/Element Reports
 
@@ -383,7 +464,7 @@ Reports appear in the main window when the element is selected in the sidebar (m
 
 ### Planning Reports
 
-1. **Current Plan report**: When a planning session exists, Enter on "Current Plan" shows a structured report of tasks in the session. Tasks should be grouped and separated by Program → Project → Milestone, with task details (name, status, dates, priority) shown in a readable table format.
+1. **Current Plan report**: When a planning session exists, Enter on "Current Plan" shows a structured report of tasks in the session. Tasks should be grouped and separated by Program → Project → Milestone, with task details (name, status, dates, importance) shown in a readable table format.
 
 2. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
 

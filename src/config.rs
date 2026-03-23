@@ -39,6 +39,10 @@ fn default_workflow() -> Vec<String> {
     ]
 }
 
+fn default_importance() -> Vec<String> {
+    vec!["low".into(), "medium".into(), "high".into()]
+}
+
 fn default_navigator_width() -> u16 {
     60
 }
@@ -106,6 +110,9 @@ pub struct Config {
     /// Workflow status values
     #[serde(default = "default_workflow")]
     pub workflow: Vec<String>,
+    /// Task importance values for creation/edit workflows
+    #[serde(default = "default_importance")]
+    pub importance: Vec<String>,
     /// Width of the navigator panel in columns
     #[serde(default = "default_navigator_width")]
     pub navigator_width: u16,
@@ -131,6 +138,7 @@ impl Default for Config {
             editor: "hx".to_string(),
             owner: default_owner(),
             workflow: default_workflow(),
+            importance: default_importance(),
             navigator_width: 60,
             planning_duration: "weekly".to_string(),
             navigation_keys: NavigationKeys::default(),
@@ -245,6 +253,7 @@ impl Config {
             editor,
             owner,
             workflow: default_workflow(),
+            importance: default_importance(),
             navigator_width: 60,
             planning_duration: "weekly".to_string(),
             navigation_keys: NavigationKeys::default(),
@@ -267,6 +276,7 @@ navigator_width = 60
 planning_duration = "weekly"
 
 workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
+importance = ["low", "medium", "high"]
 
 [navigation_keys]
 left = "h"
@@ -292,6 +302,7 @@ down = "j"
                 "Cancelled"
             ]
         );
+        assert_eq!(config.importance, vec!["low", "medium", "high"]);
         assert_eq!(config.navigation_keys.left, 'h');
         assert_eq!(config.navigation_keys.right, 'l');
         assert_eq!(config.navigation_keys.up, 'k');
@@ -325,6 +336,7 @@ editor = "vim"
                 "Cancelled"
             ]
         );
+        assert_eq!(config.importance, vec!["low", "medium", "high"]);
         assert_eq!(config.navigation_keys.left, 'h');
         assert_eq!(config.navigation_keys.right, 'l');
         assert_eq!(config.navigation_keys.up, 'k');
@@ -373,6 +385,7 @@ editor = "vim"
             editor: "code".to_string(),
             owner: "Test User".to_string(),
             workflow: vec!["todo".to_string(), "done".to_string()],
+            importance: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
             navigator_width: 80,
             planning_duration: "weekly".to_string(),
             navigation_keys: NavigationKeys {

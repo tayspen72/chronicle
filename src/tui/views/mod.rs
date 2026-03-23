@@ -738,189 +738,109 @@ pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, promp
 }
 
 /// Renders the template field wizard with inline editing - field names and values on same line.
-pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect, prompt: &str) {
-    use crate::tui::WizardFocus;
+pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use crate::tui::{WizardFocus, wizard::FieldKind};
     use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
 
-    let state = match app.wizard_state.template.as_ref() {
-        Some(s) => s,
-        None => {
-            render_input(f, app, area, prompt);
-            return;
-        }
+    let Some(state) = app.wizard_state.template.as_ref() else {
+        render_input(f, app, area, "No template wizard state");
+        return;
     };
 
-    let fields = &state.fields;
-    let field_count = fields.len();
-
-    // Calculate available height for fields
-    let header_height = 3u16; // prompt + blank + instructions
-    let button_height = 2u16; // blank + buttons
-    let available_height = area.height.saturating_sub(header_height + button_height);
-
-    // Calculate how many fields can be visible
-    let visible_fields = available_height as usize;
-
-    // Calculate scroll offset based on focused field
-    let focused_field_idx = match state.focus {
-        WizardFocus::Field(idx) => idx,
-        WizardFocus::ConfirmButton | WizardFocus::CancelButton => field_count,
-    };
-    let scroll_offset = if focused_field_idx >= visible_fields {
-        focused_field_idx - visible_fields + 1
-    } else {
-        0
-    };
-
-    // Create vertical layout chunks
     let chunks = Layout::default()
-        .constraints(
-            [
-                Constraint::Length(header_height),
-                Constraint::Min(1),
-                Constraint::Length(button_height),
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(area);
 
-    // Render header (prompt and instructions) - prompt is bold
-    use ratatui::text::{Line, Span};
-    let prompt_line = Line::from(vec![Span::styled(
-        prompt,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(ratatui::style::Modifier::BOLD),
-    )]);
-    let instructions_line = Line::from(Span::styled(
-        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
-        Style::default().fg(Color::DarkGray),
-    ));
-    let header = Paragraph::new(vec![prompt_line, instructions_line]);
+    let header = Paragraph::new(vec![
+        Line::from(vec![Span::styled(
+            state.path_hint.as_str(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "↑/↓: Navigate | ←/→: Options | Enter: Confirm | Esc: Cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
     f.render_widget(header, chunks[0]);
 
-    // Render fields in a scrollable area
-    let mut field_lines: Vec<(String, String, bool, bool)> = Vec::new();
-
-    // Scroll indicator if needed
-    if field_count > visible_fields && scroll_offset > 0 {
-        field_lines.push((
-            format!("  ↑ {} more fields above...", scroll_offset),
-            String::new(),
-            false,
-            false,
-        ));
-    }
-
-    // Render visible fields in display_order
-    let mut sorted_fields: Vec<_> = fields.iter().enumerate().collect();
-    sorted_fields.sort_by_key(|(_, f)| f.display_order);
-
-    for (i, field) in sorted_fields.iter() {
-        let idx = *i;
-        if idx < scroll_offset || idx >= scroll_offset + visible_fields {
-            continue;
-        }
-
-        let is_focused = matches!(state.focus, WizardFocus::Field(fi) if fi == idx);
-
-        // Create horizontal layout for this field
-        // Use :: separator, "empty" for unfilled, "(auto-filled)" suffix
-        let label_text = field.label.clone();
-        let value_text = if field.value.is_empty() && field.is_editable {
-            "empty".to_string()
-        } else if field.is_editable {
-            field.value.clone()
-        } else {
-            format!("{} (auto-filled)", field.value)
-        };
-
-        field_lines.push((label_text, value_text, is_focused, field.is_editable));
-    }
-
-    // Scroll indicator if there are more fields below
-    if field_count > visible_fields && scroll_offset + visible_fields < field_count {
-        field_lines.push((
-            format!(
-                "  ↓ {} more fields below...",
-                field_count - scroll_offset - visible_fields
-            ),
-            String::new(),
-            false,
-            false,
-        ));
-    }
-
-    // Render all field lines with proper styling
+    let body_chunk = Layout::default()
+        .constraints([Constraint::Min(1)])
+        .split(chunks[1])[0];
 
     let mut lines_vec: Vec<Line> = Vec::new();
-
-    for (label, value, focused, editable) in &field_lines {
-        if value.is_empty() {
-            // Scroll indicator
-            lines_vec.push(Line::from(Span::styled(
-                format!("  {}", label),
-                Style::default().fg(Color::DarkGray),
-            )));
-        } else if *focused && *editable {
-            // Focused editable field - background highlight, no arrow
-            lines_vec.push(Line::from(vec![
-                Span::styled(
-                    format!("  {}: ", label),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::LightBlue)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-                Span::styled(
-                    value,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::LightBlue)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-            ]));
-        } else if *editable {
-            // Non-focused editable field - bold label
-            let is_empty = value == "empty";
-            lines_vec.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{}: ", label),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-                Span::styled(
-                    value,
-                    Style::default().fg(if is_empty {
-                        Color::DarkGray
-                    } else {
-                        Color::White
-                    }),
-                ),
-            ]));
+    for (idx, field) in state.fields.iter().enumerate() {
+        let is_focused = matches!(state.focus, WizardFocus::Field(fi) if fi == idx);
+        let display_value = if field.value.is_empty() && field.is_editable {
+            "empty".to_string()
         } else {
-            // Prepopulated/auto-filled field - bold label, white text with "(auto-filled)"
-            lines_vec.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{}: ", label),
+            field.value.clone()
+        };
+
+        let value_color = match field.kind {
+            FieldKind::Fixed => Color::White,
+            FieldKind::AutoFilled => Color::DarkGray,
+            _ => {
+                if field.was_edited {
+                    Color::White
+                } else {
+                    Color::DarkGray
+                }
+            }
+        };
+
+        let mut line_spans = Vec::new();
+        line_spans.push(Span::styled("  ", Style::default().fg(Color::White)));
+        let label_style = if is_focused && field.is_editable {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        };
+        line_spans.push(Span::styled(format!("{}: ", field.label), label_style));
+        let value_style = if is_focused && field.is_editable {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(value_color)
+        };
+        line_spans.push(Span::styled(display_value, value_style));
+
+        if is_focused && !field.choices.is_empty() {
+            line_spans.push(Span::raw("    "));
+            line_spans.push(Span::styled("[ ", Style::default().fg(Color::DarkGray)));
+            for option in &field.choices {
+                let is_selected = option.eq_ignore_ascii_case(&field.value);
+                let option_style = if is_selected {
                     Style::default()
-                        .fg(Color::White)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-                Span::styled(value, Style::default().fg(Color::White)),
-            ]));
+                        .fg(Color::Black)
+                        .bg(Color::LightBlue)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                line_spans.push(Span::styled(option.as_str(), option_style));
+                line_spans.push(Span::styled(" ", Style::default().fg(Color::DarkGray)));
+            }
+            line_spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
         }
+
+        lines_vec.push(Line::from(line_spans));
     }
 
-    let fields_widget = Paragraph::new(lines_vec);
-    f.render_widget(fields_widget, chunks[1]);
-
-    // Render buttons - no brackets, use background highlight for selection
-    const CONFIRM_TEXT: &str = "CONFIRM";
-    const CANCEL_TEXT: &str = "CANCEL";
+    f.render_widget(Paragraph::new(lines_vec), body_chunk);
 
     let confirm_style = if state.focus == WizardFocus::ConfirmButton {
         Style::default()
@@ -938,13 +858,14 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     } else {
         Style::default().fg(Color::White)
     };
-
-    let buttons = Paragraph::new(Line::from(vec![
-        Span::styled(CONFIRM_TEXT, confirm_style),
-        Span::styled("     ", Style::default().fg(Color::DarkGray)),
-        Span::styled(CANCEL_TEXT, cancel_style),
-    ]));
-    f.render_widget(buttons, chunks[2]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("CONFIRM", confirm_style),
+            Span::styled("     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("CANCEL", cancel_style),
+        ])),
+        chunks[2],
+    );
 }
 
 pub fn render_placeholder(f: &mut Frame, area: ratatui::layout::Rect, title: &str, message: &str) {
@@ -1211,108 +1132,92 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
 
     let chunks = Layout::default()
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(area);
 
-    let prompt_line = Line::from(vec![Span::styled(
-        "Start Planning Session",
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(ratatui::style::Modifier::BOLD),
-    )]);
-    let instructions_line = Line::from(Span::styled(
-        "↑/↓: Navigate | Enter: Next/Confirm | Esc: Cancel",
-        Style::default().fg(Color::DarkGray),
-    ));
-    let header = Paragraph::new(vec![prompt_line, instructions_line]);
+    let header = Paragraph::new(vec![
+        Line::from(vec![Span::styled(
+            "Start Planning Session",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "↑/↓: Navigate | ←/→: Duration | Enter: Confirm | Esc: Cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
     f.render_widget(header, chunks[0]);
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Start date field
-    let start_date_display_with_cursor = format!("{}_", start_date_display);
-    if focus == 0 {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Start date: ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                &start_date_display_with_cursor,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                "  Type to enter custom date (YYYY-MM-DD)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+    let start_label_style = if focus == 0 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(Color::White)),
-            Span::styled(
-                "Start date: ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(&start_date_display, Style::default().fg(Color::White)),
-        ]));
-    }
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    };
+    let start_value_style = if focus == 0 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else if wizard.start_date_edited {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Start date: ", start_label_style),
+        Span::styled(&start_date_display, start_value_style),
+    ]));
 
-    // Duration field
+    let duration_label_style = if focus == 1 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    };
+    let duration_value_style = if focus == 1 || wizard.duration_edited {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let mut duration_spans = vec![
+        Span::styled("  Duration: ", duration_label_style),
+        Span::styled(duration, duration_value_style),
+    ];
     if focus == 1 {
-        // Show all options with current selection in bold
-        const DURATIONS: &[&str] = &["weekly", "biweekly", "6weekly"];
-
-        let mut option_spans = Vec::new();
-        for (i, opt) in DURATIONS.iter().enumerate() {
-            if i > 0 {
-                option_spans.push(Span::styled("  ", Style::default().fg(Color::DarkGray)));
-            }
-            if *opt == duration {
-                // Current selection - bold
-                option_spans.push(Span::styled(
-                    *opt,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::LightBlue)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ));
-            } else {
-                // Other options - grey
-                option_spans.push(Span::styled(*opt, Style::default().fg(Color::DarkGray)));
-            }
-        }
-
-        lines.push(Line::from(vec![Span::styled(
-            "  Duration: ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        )]));
-        lines.push(Line::from(option_spans));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(Color::White)),
-            Span::styled(
-                "Duration: ",
+        let duration_choices = ["weekly", "biweekly", "6weekly"];
+        duration_spans.push(Span::raw("    "));
+        duration_spans.push(Span::styled("[ ", Style::default().fg(Color::DarkGray)));
+        for option in duration_choices {
+            let is_selected = option.eq_ignore_ascii_case(duration);
+            let style = if is_selected {
                 Style::default()
-                    .fg(Color::White)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(duration, Style::default().fg(Color::White)),
-        ]));
+                    .fg(Color::Black)
+                    .bg(Color::LightBlue)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            duration_spans.push(Span::styled(option, style));
+            duration_spans.push(Span::styled(" ", Style::default().fg(Color::DarkGray)));
+        }
+        duration_spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
     }
+    lines.push(Line::from(duration_spans));
 
     // End date field - editable, allows overriding auto-calculated date
     // When focused (editing), show input_buffer; otherwise show stored or auto-calculated value
@@ -1323,37 +1228,31 @@ pub fn render_planning_dates_wizard(f: &mut Frame, app: &App, area: ratatui::lay
     } else {
         wizard.end_date.clone()
     };
-    let end_date_display_with_cursor = format!("{}_", end_date_display);
 
-    if focus == 2 {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  End date: ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                &end_date_display_with_cursor,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-        ]));
+    let end_label_style = if focus == 2 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(Color::White)),
-            Span::styled(
-                "End date: ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(&end_date_display, Style::default().fg(Color::White)),
-        ]));
-    }
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    };
+    let end_value_style = if focus == 2 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else if wizard.end_date_edited {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  End date: ", end_label_style),
+        Span::styled(&end_date_display, end_value_style),
+    ]));
 
     if let Some(ref error) = wizard.date_error {
         lines.push(Line::from(Span::styled(
@@ -1506,7 +1405,6 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
     let picker = &app.hierarchical_picker;
     let chunks = Layout::default()
         .constraints([
-            Constraint::Length(3),
             Constraint::Length(2),
             Constraint::Min(1),
             Constraint::Length(2),
@@ -1519,11 +1417,7 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
             .fg(Color::White)
             .add_modifier(ratatui::style::Modifier::BOLD),
     )]);
-    let breadcrumb_line = Line::from(Span::styled(
-        picker.breadcrumb(),
-        Style::default().fg(Color::DarkGray),
-    ));
-    let header = Paragraph::new(vec![title_line, breadcrumb_line]);
+    let header = Paragraph::new(vec![title_line]);
     f.render_widget(header, chunks[0]);
 
     let items: Vec<ListItem> = picker
@@ -1558,20 +1452,13 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
         })
         .collect();
 
-    // Show element type with bold/styled formatting for clarity
-    let level_indicator = match picker.level {
-        PickerLevel::Programs => "📁 Programs",
-        PickerLevel::Projects => "📂 Projects",
-        PickerLevel::Milestones => "🎯 Milestones",
-        PickerLevel::Tasks => "✓ Tasks",
-    };
-    let level_title = format!("{} ({} items)", level_indicator, picker.items.len());
+    let level_title = format!("{} ({})", picker.level_title(), picker.items.len());
     let list = List::new(items).block(
         ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::NONE)
             .title(level_title),
     );
-    f.render_widget(list, chunks[2]);
+    f.render_widget(list, chunks[1]);
 
     let hint_text = match picker.level {
         PickerLevel::Programs => "↑/↓: Navigate | Enter: Select | ←/→: Back/Forward | Esc: Cancel",
@@ -1589,7 +1476,7 @@ pub fn render_hierarchical_task_picker(f: &mut Frame, app: &App, area: ratatui::
         count_text,
         Style::default().fg(Color::DarkGray),
     )));
-    f.render_widget(buttons, chunks[3]);
+    f.render_widget(buttons, chunks[2]);
 }
 
 pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -1623,7 +1510,11 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
         date_range,
         Style::default().fg(Color::DarkGray),
     ));
-    let header = Paragraph::new(vec![title, subtitle]);
+    let instructions = Line::from(Span::styled(
+        "↑/↓: Navigate | ←/→: Duration | Enter: Confirm | Esc: Cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let header = Paragraph::new(vec![title, subtitle, instructions]);
     f.render_widget(header, chunks[0]);
 
     let tasks = &app.planning_session.tasks;
@@ -1690,24 +1581,6 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     f.render_widget(buttons_para, chunks[2]);
 
     // Show confirmation message if session was just confirmed
-    if app.show_confirmation_message {
-        let confirm_msg = Line::from(vec![Span::styled(
-            " ✓ Session confirmed and saved! ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Green)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        )]);
-        let confirm_para = Paragraph::new(confirm_msg);
-        // Render below buttons
-        let confirm_area = ratatui::layout::Rect {
-            x: chunks[2].x,
-            y: chunks[2].y + 2,
-            width: chunks[2].width,
-            height: 1,
-        };
-        f.render_widget(confirm_para, confirm_area);
-    }
 }
 
 pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -1731,7 +1604,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
         ("Assigned to", task.assigned_to.clone().unwrap_or_default()),
         ("Start date", task.start_date.clone().unwrap_or_default()),
         ("Due date", task.due_date.clone().unwrap_or_default()),
-        ("Priority", task.priority.clone().unwrap_or_default()),
+        ("Importance", task.importance.clone().unwrap_or_default()),
         ("Description", task.description.clone().unwrap_or_default()),
     ];
 
@@ -1750,7 +1623,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
             .add_modifier(ratatui::style::Modifier::BOLD),
     )]);
     let hint = Line::from(Span::styled(
-        "↑/↓: Navigate | Enter: Next | Type: Edit | Esc: Cancel",
+        "↑/↓: Navigate | ←/→: Status/Importance | Enter: Confirm | Esc: Cancel",
         Style::default().fg(Color::DarkGray),
     ));
     let header = Paragraph::new(vec![title, hint]);
@@ -1761,11 +1634,25 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
         let is_focused = i == focused_field;
         let is_editable_field = matches!(i, 2..=4 | 6); // assigned_to, start_date, due_date, description
         let is_description = i == 6;
-        let style = if is_focused {
+        let focused_style = if is_focused {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightBlue)
                 .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let label_style = if is_focused {
+            focused_style
+        } else {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        };
+        let value_style = if is_focused {
+            focused_style
+        } else if value.is_empty() {
+            Style::default().fg(Color::DarkGray)
         } else {
             Style::default().fg(Color::White)
         };
@@ -1779,7 +1666,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
 
         if is_description {
             // Description field - wrap to multiple lines
-            let label_line = Line::from(vec![Span::styled(format!("  {}: ", label), style)]);
+            let label_line = Line::from(vec![Span::styled(format!("  {}: ", label), label_style)]);
             lines.push(label_line);
 
             if value.is_empty() && !display_value.ends_with('_') {
@@ -1806,21 +1693,50 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
                 for line_text in wrapped_text.lines() {
                     lines.push(Line::from(vec![Span::styled(
                         format!("    {}", line_text),
-                        style,
+                        value_style,
                     )]));
                 }
             }
         } else {
+            let mut spans = vec![
+                Span::styled(format!("  {}: ", label), label_style),
+                Span::styled(display_value.clone(), value_style),
+            ];
+            if i == focused_field && matches!(i, 1 | 5) {
+                spans.push(Span::raw("    "));
+                spans.push(Span::styled("[ ", Style::default().fg(Color::DarkGray)));
+                let choices = if i == 1 {
+                    app.config.workflow.iter()
+                } else {
+                    app.config.importance.iter()
+                };
+                for option in choices {
+                    let selected_value = if i == 1 {
+                        &task.status
+                    } else {
+                        task.importance.as_deref().unwrap_or_default()
+                    };
+                    let is_selected = option.eq_ignore_ascii_case(selected_value);
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::LightBlue)
+                            .add_modifier(ratatui::style::Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    spans.push(Span::styled(option.clone(), style));
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
+            }
             let line = if value.is_empty() && !display_value.ends_with('_') {
                 Line::from(vec![
-                    Span::styled(format!("  {}: ", label), style),
+                    Span::styled(format!("  {}: ", label), label_style),
                     Span::styled("empty", Style::default().fg(Color::DarkGray)),
                 ])
             } else {
-                Line::from(vec![
-                    Span::styled(format!("  {}: ", label), style),
-                    Span::styled(display_value, style),
-                ])
+                Line::from(spans)
             };
             lines.push(line);
         }

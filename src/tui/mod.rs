@@ -44,7 +44,7 @@ use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarNodeData
 use planning_session::PlanningSessionState;
 use planning_wizard::PlanningDateFocus;
 use review::ReviewState;
-use wizard::{FieldInfo, TemplateFieldState, WizardFocus, WizardState};
+use wizard::{FieldInfo, FieldKind, TemplateFieldState, WizardFocus, WizardState};
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +127,6 @@ pub struct App {
     // Task wizard state
     pub task_wizard: Option<task_wizard::TaskWizardState>,
     // Planning preview confirmed flag
-    pub show_confirmation_message: bool,
     // Archive list tree structure (maps tree index -> journal entry index)
     pub archive_tree_mapping: Vec<Option<usize>>,
     // Journal tree state for sidebar expansion
@@ -160,7 +159,6 @@ impl App {
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
             task_wizard: None,
-            show_confirmation_message: false,
             archive_tree_mapping: Vec::new(),
             journal_tree_state: JournalTreeState::new(),
         };
@@ -322,16 +320,7 @@ impl App {
                     }
                 }
                 KeyCode::Esc => {
-                    if !self.hierarchical_picker.go_back() {
-                        // At root level - only cancel if no tasks selected or in session
-                        let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
-                        let has_session_tasks = self.planning_session.has_tasks();
-                        if !has_picker_tasks && !has_session_tasks {
-                            self.cancel_planning_wizard();
-                        }
-                    } else {
-                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
-                    }
+                    self.cancel_planning_wizard();
                 }
                 KeyCode::Char('q') => {
                     self.cancel_planning_wizard();
@@ -463,15 +452,18 @@ impl App {
                                     Some(crate::storage::planning::generate_session_uuid());
                             }
                             self.save_current_planning_session();
-                            self.show_confirmation_message = true;
-                            self.return_from_view();
+                            self.show_current_plan_report();
                         }
                         2 => self.cancel_planning_wizard(),
                         _ => {}
                     }
                 }
                 KeyCode::Esc => {
-                    self.cancel_planning_wizard();
+                    if self.review_state.preview_focus == 2 {
+                        self.cancel_planning_wizard();
+                    } else {
+                        self.review_state.preview_focus = 2;
+                    }
                 }
                 _ => {}
             }
@@ -480,7 +472,7 @@ impl App {
 
         // Handle TaskDetailWizard mode specially
         if self.mode == Mode::TaskDetailWizard {
-            const TASK_WIZARD_FIELD_COUNT: usize = 7; // task name, status, assigned_to, start_date, due_date, priority, description
+            const TASK_WIZARD_FIELD_COUNT: usize = 7; // task name, status, assigned_to, start_date, due_date, importance, description
             if let Some(ref mut wizard) = self.task_wizard {
                 match code {
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -507,9 +499,33 @@ impl App {
                         }
                     }
                     KeyCode::Esc => {
-                        // Escape jumps to CANCEL button
                         if let Some(ref mut wizard) = self.task_wizard {
-                            wizard.field_index = 8; // CancelButton index
+                            if wizard.field_index == 8 {
+                                self.cancel_task_detail_wizard();
+                            } else {
+                                // Escape jumps to CANCEL button
+                                wizard.field_index = 8; // CancelButton index
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            task_wizard::cycle_task_wizard_choice(
+                                wizard,
+                                -1,
+                                &self.config.workflow,
+                                &self.config.importance,
+                            );
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            task_wizard::cycle_task_wizard_choice(
+                                wizard,
+                                1,
+                                &self.config.workflow,
+                                &self.config.importance,
+                            );
                         }
                     }
                     KeyCode::Char(c) => {
@@ -545,14 +561,24 @@ impl App {
                             && let Some(field) = state.fields.get_mut(idx)
                         {
                             field.value = self.input_buffer.clone();
+                            field.was_edited = true;
                         }
-                        state.focus = WizardFocus::CancelButton;
-                        self.input_buffer.clear();
+                        if state.focus == WizardFocus::CancelButton {
+                            self.wizard_state.template = None;
+                            self.current_view = ViewType::TreeView;
+                        } else {
+                            state.focus = WizardFocus::CancelButton;
+                            self.input_buffer.clear();
+                        }
                     }
                 } else if self.current_view == ViewType::InputPlanningSessionDates {
                     // ESC jumps to CancelButton instead of canceling
                     if let Some(ref mut wizard) = self.planning_wizard {
-                        wizard.focus = PlanningDateFocus::CancelButton;
+                        if wizard.focus == PlanningDateFocus::CancelButton {
+                            self.cancel_planning_wizard();
+                        } else {
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        }
                     }
                 } else if self.current_view == ViewType::PlanningTaskPicker {
                     // ESC cancels the planning wizard
@@ -591,7 +617,9 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if self.current_view == ViewType::InputPlanningSessionDates {
+                if self.current_view == ViewType::InputTemplateField {
+                    self.cycle_template_choice(1);
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
                     if let Some(ref mut wizard) = self.planning_wizard {
                         let focus_idx = wizard.focus.index();
                         if focus_idx == 1 {
@@ -614,7 +642,9 @@ impl App {
                 }
             }
             KeyCode::Left => {
-                if self.current_view == ViewType::InputPlanningSessionDates {
+                if self.current_view == ViewType::InputTemplateField {
+                    self.cycle_template_choice(-1);
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
                     if let Some(ref mut wizard) = self.planning_wizard {
                         let focus_idx = wizard.focus.index();
                         if focus_idx == 1 {
@@ -783,6 +813,38 @@ impl App {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn cycle_template_choice(&mut self, delta: isize) {
+        if let Some(ref mut state) = self.wizard_state.template {
+            match state.focus {
+                WizardFocus::Field(idx) => {
+                    let Some(field) = state.fields.get_mut(idx) else {
+                        return;
+                    };
+                    if field.choices.is_empty() || !field.is_editable {
+                        return;
+                    }
+
+                    let len = field.choices.len() as isize;
+                    let current_idx = field
+                        .choices
+                        .iter()
+                        .position(|choice| choice.eq_ignore_ascii_case(&field.value))
+                        .unwrap_or(0) as isize;
+                    let next_idx = (current_idx + delta).rem_euclid(len) as usize;
+                    field.value = field.choices[next_idx].clone();
+                    field.was_edited = true;
+                    self.input_buffer = field.value.clone();
+                }
+                WizardFocus::ConfirmButton => {
+                    state.focus = WizardFocus::CancelButton;
+                }
+                WizardFocus::CancelButton => {
+                    state.focus = WizardFocus::ConfirmButton;
                 }
             }
         }
@@ -1117,6 +1179,26 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn current_plan_sidebar_index(&self) -> Option<usize> {
+        self.navigation_state.sidebar_items.iter().position(|item| {
+            item.name == "Current Plan"
+                && item.is_planning_item.as_deref() == Some("WeeklyPlanning")
+        })
+    }
+
+    fn show_current_plan_report(&mut self) {
+        if let Some(idx) = self.current_plan_sidebar_index() {
+            self.navigation_state.selected_entry_index = idx;
+        }
+        self.current_view = ViewType::TreeView;
+        self.review_state.selection_index = 0;
+        self.mode = if self.planning_session.has_tasks() {
+            Mode::CurrentPlanNavigation
+        } else {
+            Mode::Normal
+        };
     }
 
     fn navigate_up(&mut self) {
@@ -1881,6 +1963,7 @@ impl App {
                     // Update both input_buffer and field.value for inline editing
                     self.input_buffer.push(c);
                     field.value.push(c);
+                    field.was_edited = true;
                 }
             }
             ViewType::InputTaskDetailField => {
@@ -1894,6 +1977,11 @@ impl App {
                         wizard.date_error = None;
                         self.input_buffer.push(c);
                         wizard.input_buffer.push(c); // Sync to wizard's field immediately
+                        if focus_idx == 0 {
+                            wizard.start_date_edited = true;
+                        } else {
+                            wizard.end_date_edited = true;
+                        }
                     }
                 }
             }
@@ -1925,6 +2013,7 @@ impl App {
                     // Update both input_buffer and field.value for inline editing
                     self.input_buffer.pop();
                     field.value.pop();
+                    field.was_edited = true;
                 }
             }
             ViewType::InputTaskDetailField => {
@@ -1937,6 +2026,11 @@ impl App {
                     if focus_idx == 0 || focus_idx == 2 {
                         wizard.date_error = None;
                         self.input_buffer.pop();
+                        if focus_idx == 0 {
+                            wizard.start_date_edited = true;
+                        } else {
+                            wizard.end_date_edited = true;
+                        }
                     }
                 }
             }
@@ -2398,7 +2492,7 @@ impl App {
                         assigned_to: None,
                         start_date: None,
                         due_date: None,
-                        priority: None,
+                        importance: None,
                         description: None,
                     });
                 }
@@ -2479,7 +2573,7 @@ impl App {
                     assigned_to: t.assigned_to.clone(),
                     start_date: t.start_date.clone(),
                     due_date: t.due_date.clone(),
-                    priority: t.priority.clone(),
+                    importance: t.importance.clone(),
                     description: None,
                 });
 
@@ -2657,7 +2751,7 @@ impl App {
             assigned_to: task.assigned_to.clone(),
             start_date: task.start_date.clone(),
             due_date: task.due_date.clone(),
-            priority: task.priority.clone(),
+            importance: task.importance.clone(),
             description: Some(task.description.clone()),
         })
     }
@@ -3083,28 +3177,33 @@ impl App {
             }
         }
 
+        if let Some(default_importance) = self.config.importance.first() {
+            values.insert("IMPORTANCE".to_string(), default_importance.clone());
+        }
+        values.insert("UUID".to_string(), uuid::Uuid::new_v4().to_string());
+
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
+            .filter(|f| f.strip_label)
+            .filter_map(|f| f.placeholder.clone())
             .collect();
 
-        let seeded_keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-        let base_keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+        let seeded_keywords = ["NAME", "TODAY", "OWNER", "UUID"];
+        let base_keywords = ["TODAY", "OWNER", "UUID"];
         let keywords: &[&str] = if seeded_name.is_some() {
             &seeded_keywords
         } else {
             &base_keywords
         };
 
-        // Build scope string showing where the new element will be created
-        let scope_value = match template_name {
-            "program" => "Programs (root level)".to_string(),
+        let path_hint = match template_name {
+            "program" => "Programs -> new program".to_string(),
             "project" => self
                 .navigation_state
                 .current_program
                 .clone()
-                .unwrap_or_default(),
+                .map(|p| format!("{p} -> new project"))
+                .unwrap_or_else(|| "Programs -> new project".to_string()),
             "milestone" | "task" => {
                 let mut parts = Vec::new();
                 if let Some(ref p) = self.navigation_state.current_program {
@@ -3118,43 +3217,63 @@ impl App {
                 {
                     parts.push(p.clone());
                 }
-                parts.join(" > ")
+                parts.push(format!("new {template_name}"));
+                parts.join(" -> ")
             }
-            "journal" => "Journal".to_string(),
-            _ => "".to_string(),
+            "journal" => "Journal -> new entry".to_string(),
+            _ => "new element".to_string(),
         };
 
-        let mut fields: Vec<FieldInfo> = all_fields
+        let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
+            .map(|(i, def)| {
+                let placeholder = def.placeholder.clone();
+                let key = def.key.clone();
+                let is_keyword = placeholder
+                    .as_ref()
+                    .is_some_and(|p| keywords.contains(&p.as_str()));
+                let is_choice =
+                    key.eq_ignore_ascii_case("status") || key.eq_ignore_ascii_case("importance");
+                let choices = if key.eq_ignore_ascii_case("status") {
+                    self.config.workflow.clone()
+                } else if key.eq_ignore_ascii_case("importance") {
+                    self.config.importance.clone()
                 } else {
-                    String::new()
+                    Vec::new()
+                };
+
+                let value = if let Some(ph) = placeholder.as_ref() {
+                    values.get(ph).cloned().unwrap_or_default()
+                } else {
+                    def.fixed_value.clone().unwrap_or_default()
+                };
+
+                let is_editable = !is_keyword && (placeholder.is_some() || is_choice);
+                let kind = if is_choice {
+                    FieldKind::Choice
+                } else if !is_editable && placeholder.is_some() {
+                    FieldKind::AutoFilled
+                } else if !is_editable {
+                    FieldKind::Fixed
+                } else if value.is_empty() {
+                    FieldKind::Empty
+                } else {
+                    FieldKind::Suggested
                 };
                 FieldInfo {
-                    label,
+                    key,
+                    label: def.label,
                     placeholder,
                     value,
-                    is_focused: false,
-                    is_editable: !is_keyword,
-                    display_order: i + 1,
+                    is_editable,
+                    was_edited: false,
+                    kind,
+                    choices,
+                    display_order: i,
                 }
             })
             .collect();
-
-        // Add scope field at the beginning (non-editable, shows creation path)
-        let scope_field = FieldInfo {
-            label: "Creating in:".to_string(),
-            placeholder: "SCOPE".to_string(),
-            value: scope_value,
-            is_focused: false,
-            is_editable: false,
-            display_order: 0,
-        };
-        fields.insert(0, scope_field);
 
         let initial_focus = fields
             .iter()
@@ -3164,6 +3283,7 @@ impl App {
 
         self.wizard_state.template = Some(TemplateFieldState {
             template_name: template_name.to_string(),
+            path_hint,
             fields,
             focus: initial_focus,
             values,
@@ -3265,9 +3385,14 @@ impl App {
                     // Confirm - collect all field values and create the element
                     // Save any current field value first
                     for field in &state.fields {
-                        state
-                            .values
-                            .insert(field.placeholder.clone(), field.value.clone());
+                        if let Some(placeholder) = field.placeholder.as_ref() {
+                            if field.is_editable && field.value.trim().is_empty() {
+                                continue;
+                            }
+                            state
+                                .values
+                                .insert(placeholder.clone(), field.value.clone());
+                        }
                     }
 
                     let template_name = state.template_name.clone();
@@ -3343,6 +3468,7 @@ impl App {
                     // Save current field value
                     if let Some(field) = state.fields.get_mut(idx) {
                         field.value = self.input_buffer.clone();
+                        field.was_edited = true;
                     }
 
                     // Find next editable field or move to CONFIRM button
@@ -3408,6 +3534,7 @@ impl App {
         // Use wizard state
         if let Some(ref mut wizard) = self.planning_wizard {
             wizard.cycle_duration(-1);
+            wizard.duration_edited = true;
         }
     }
 
@@ -3415,6 +3542,7 @@ impl App {
         // Use wizard state
         if let Some(ref mut wizard) = self.planning_wizard {
             wizard.cycle_duration(1);
+            wizard.duration_edited = true;
         }
     }
 
@@ -3583,7 +3711,7 @@ impl App {
                 assigned_to: t.assigned_to.clone(),
                 start_date: t.start_date.clone(),
                 due_date: t.due_date.clone(),
-                priority: t.priority.clone(),
+                importance: t.importance.clone(),
                 description: Some(t.description.clone()),
             },
             _ => {
@@ -3626,7 +3754,7 @@ impl App {
                 ("assigned_to", task.assigned_to.clone()),
                 ("start_date", task.start_date.clone()),
                 ("due_date", task.due_date.clone()),
-                ("priority", task.priority.clone()),
+                ("importance", task.importance.clone()),
             ];
             let updates_map: std::collections::HashMap<&str, Option<String>> =
                 updates.iter().map(|(k, v)| (*k, v.clone())).collect();
@@ -3796,25 +3924,32 @@ mod tests {
         // Set up template field state for testing
         let fields = vec![
             FieldInfo {
+                key: "title".to_string(),
                 label: "Title".to_string(),
-                placeholder: "TITLE".to_string(),
+                placeholder: Some("TITLE".to_string()),
                 value: String::new(),
-                is_focused: true,
                 is_editable: true,
+                was_edited: false,
+                kind: FieldKind::Empty,
+                choices: Vec::new(),
                 display_order: 0,
             },
             FieldInfo {
+                key: "status".to_string(),
                 label: "Status".to_string(),
-                placeholder: "DEFAULT_STATUS".to_string(),
+                placeholder: Some("DEFAULT_STATUS".to_string()),
                 value: "New".to_string(),
-                is_focused: false,
                 is_editable: false,
+                was_edited: false,
+                kind: FieldKind::AutoFilled,
+                choices: Vec::new(),
                 display_order: 1,
             },
         ];
 
         app.wizard_state.template = Some(TemplateFieldState {
             template_name: "test".to_string(),
+            path_hint: "Programs -> new program".to_string(),
             fields,
             focus: WizardFocus::Field(0),
             values: std::collections::HashMap::new(),
@@ -4338,7 +4473,7 @@ Test description
         // Fill in the program name in the first editable field
         if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
-                if field.is_editable && field.placeholder == "NAME" {
+                if field.is_editable && field.placeholder.as_deref() == Some("NAME") {
                     field.value = "NewProgram".to_string();
                     break;
                 }
@@ -4405,7 +4540,12 @@ Test description
             .wizard_state
             .template
             .as_ref()
-            .map(|state| state.fields.iter().any(|f| f.placeholder == "DESCRIPTION"))
+            .map(|state| {
+                state
+                    .fields
+                    .iter()
+                    .any(|f| f.placeholder.as_deref() == Some("DESCRIPTION"))
+            })
             .unwrap_or(false);
 
         assert!(
@@ -4416,9 +4556,9 @@ Test description
         // Fill in the program name and description
         if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
-                if field.placeholder == "NAME" {
+                if field.placeholder.as_deref() == Some("NAME") {
                     field.value = "TestProgram".to_string();
-                } else if field.placeholder == "DESCRIPTION" {
+                } else if field.placeholder.as_deref() == Some("DESCRIPTION") {
                     field.value = "This is a test description".to_string();
                 }
             }

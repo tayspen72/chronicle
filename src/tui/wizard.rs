@@ -16,13 +16,28 @@ pub enum WizardFocus {
 }
 
 #[derive(Debug, Clone)]
+pub enum FieldKind {
+    AutoFilled,
+    Suggested,
+    Empty,
+    Fixed,
+    Choice,
+}
+
+#[derive(Debug, Clone)]
 pub struct FieldInfo {
+    pub key: String,
     pub label: String,
-    pub placeholder: String,
+    pub placeholder: Option<String>,
     pub value: String,
-    pub is_focused: bool,
     /// true for user input fields, false for prepopulated keyword fields
     pub is_editable: bool,
+    /// true after user edits this field (drives gray -> white value style)
+    pub was_edited: bool,
+    /// Type of field styling/behavior
+    pub kind: FieldKind,
+    /// List-backed choices for choice fields
+    pub choices: Vec<String>,
     /// Position in template (0-based) to preserve order
     pub display_order: usize,
 }
@@ -30,6 +45,7 @@ pub struct FieldInfo {
 #[derive(Debug, Clone)]
 pub struct TemplateFieldState {
     pub template_name: String,
+    pub path_hint: String,
     pub fields: Vec<FieldInfo>,
     pub focus: WizardFocus,
     pub values: std::collections::HashMap<String, String>,
@@ -40,6 +56,7 @@ impl TemplateFieldState {
     pub fn new(template_name: String) -> Self {
         Self {
             template_name,
+            path_hint: String::new(),
             fields: Vec::new(),
             focus: WizardFocus::default(),
             values: std::collections::HashMap::new(),

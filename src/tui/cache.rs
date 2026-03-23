@@ -244,7 +244,7 @@ impl From<TaskMetadata> for SelectedTask {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             description: None,
         }
     }

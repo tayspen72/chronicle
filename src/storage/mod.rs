@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Result, StorageError};
 use chrono::Local;
+use heck::ToTitleCase;
 
 #[derive(Clone, Debug)]
 pub struct JournalEntry {
@@ -711,12 +712,18 @@ impl WorkspaceStorage for PathBuf {
     }
 }
 
-pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateFieldDefinition {
+    pub key: String,
+    pub label: String,
+    pub placeholder: Option<String>,
+    pub fixed_value: Option<String>,
+    pub strip_label: bool,
+}
+
+pub fn parse_template_fields(template: &str) -> Vec<TemplateFieldDefinition> {
     let mut fields = Vec::new();
     let mut seen_placeholders: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Only handle inline YAML format: "field: {{Placeholder}}"
-    // This is the only supported format
 
     let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
 
@@ -743,23 +750,35 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             continue;
         }
 
-        // Check for inline placeholders: "field: {{Placeholder}}"
-        // Only extract if it looks like a YAML field (has colon before the placeholder)
-        if let Some(colon_pos) = line_trimmed.find(':') {
+        if in_yaml && let Some(colon_pos) = line_trimmed.find(':') {
             let before_colon = &line_trimmed[..colon_pos];
             let after_colon = &line_trimmed[colon_pos + 1..];
+            let key = before_colon.trim().to_string();
+            let label = extract_label_from_yaml_line(before_colon);
 
-            // Check if there's a placeholder after the colon
             if let Some(cap) = re_inline.captures(after_colon)
                 && let Some(placeholder_match) = cap.get(1)
             {
                 let placeholder = placeholder_match.as_str().to_string();
                 if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
-                    // Extract label from text before the colon
-                    let label = extract_label_from_yaml_line(before_colon);
                     seen_placeholders.insert(placeholder.clone());
-                    fields.push((label, placeholder, true));
+                    fields.push(TemplateFieldDefinition {
+                        key,
+                        label,
+                        placeholder: Some(placeholder),
+                        fixed_value: None,
+                        strip_label: true,
+                    });
                 }
+            } else {
+                let fixed_value = after_colon.trim().trim_matches('"').trim_matches('\'');
+                fields.push(TemplateFieldDefinition {
+                    key,
+                    label,
+                    placeholder: None,
+                    fixed_value: Some(fixed_value.to_string()),
+                    strip_label: false,
+                });
             }
         }
 
@@ -772,8 +791,13 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             let placeholder = placeholder_match.as_str().to_string();
             if placeholder == "DESCRIPTION" && !seen_placeholders.contains(&placeholder) {
                 seen_placeholders.insert(placeholder.clone());
-                // DESCRIPTION in markdown body should be stripped from YAML and put in body
-                fields.push(("Description".to_string(), placeholder, true));
+                fields.push(TemplateFieldDefinition {
+                    key: "description".to_string(),
+                    label: "Description".to_string(),
+                    placeholder: Some(placeholder),
+                    fixed_value: None,
+                    strip_label: true,
+                });
             }
         }
     }
@@ -782,7 +806,7 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
         field_count = fields.len(),
         placeholders = ?fields
             .iter()
-            .map(|(_, placeholder, strip)| (placeholder.clone(), *strip))
+            .filter_map(|f| f.placeholder.as_ref().map(|p| (p.clone(), f.strip_label)))
             .collect::<Vec<_>>(),
         "parsed template fields"
     );
@@ -791,20 +815,7 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
 
 /// Extract label from YAML field name (e.g., "creation_date" -> "Creation Date")
 fn extract_label_from_yaml_line(field_name: &str) -> String {
-    // Convert field name to title case
-    // e.g., "creation_date" -> "Creation Date", "created_by" -> "Created By"
-    field_name
-        .replace('_', " ")
-        .split_whitespace()
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    field_name.replace('_', " ").to_title_case()
 }
 
 pub fn resolve_template(
@@ -1641,7 +1652,10 @@ status: {{DEFAULT_STATUS}}
         let fields = parse_template_fields(template);
 
         // Should detect both YAML fields and DESCRIPTION
-        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        let placeholders: Vec<&str> = fields
+            .iter()
+            .filter_map(|f| f.placeholder.as_deref())
+            .collect();
         assert!(
             placeholders.contains(&"DESCRIPTION"),
             "Should detect DESCRIPTION placeholder, got: {:?}",
@@ -1664,7 +1678,10 @@ Some markdown content without placeholders.
         let fields = parse_template_fields(template);
 
         // Should detect YAML fields but not DESCRIPTION
-        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        let placeholders: Vec<&str> = fields
+            .iter()
+            .filter_map(|f| f.placeholder.as_deref())
+            .collect();
         assert!(
             !placeholders.contains(&"DESCRIPTION"),
             "Should NOT detect DESCRIPTION when not present"

@@ -117,7 +117,7 @@ pub struct Task {
     pub assigned_to: Option<String>,
     pub start_date: Option<String>,
     pub due_date: Option<String>,
-    pub priority: Option<String>,
+    pub importance: Option<String>,
     #[serde(rename = "type")]
     pub element_type: Option<String>,
     #[serde(default)]
@@ -139,7 +139,7 @@ impl Task {
             assigned_to: None,
             start_date: None,
             due_date: None,
-            priority: None,
+            importance: None,
             element_type: Some("task".to_string()),
             description: String::new(),
             tags: Vec::new(),
@@ -167,7 +167,7 @@ pub struct SelectedTask {
     pub assigned_to: Option<String>,
     pub start_date: Option<String>,
     pub due_date: Option<String>,
-    pub priority: Option<String>,
+    pub importance: Option<String>,
     pub description: Option<String>,
 }
 
