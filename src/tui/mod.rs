@@ -104,6 +104,35 @@ enum JournalNavNode {
     OtherAction,
 }
 
+#[derive(Debug)]
+pub struct ElementReportRow {
+    pub name: String,
+    pub status: String,
+    pub grandchild_count: usize,
+}
+
+#[derive(Debug)]
+pub struct ElementReport {
+    pub child_plural: &'static str,
+    pub grandchild_singular: &'static str,
+    pub grandchild_plural: &'static str,
+    pub rows: Vec<ElementReportRow>,
+}
+
+#[derive(Debug)]
+pub struct SelectedElementView {
+    pub title: String,
+    pub status: String,
+    pub content: String,
+    pub report: ElementReport,
+}
+
+struct ReportDefinition {
+    child_plural: &'static str,
+    grandchild_singular: &'static str,
+    grandchild_plural: &'static str,
+}
+
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
@@ -1497,6 +1526,113 @@ impl App {
         );
         self.build_sidebar_items();
         self.sync_selection_with_tree_path();
+    }
+
+    pub fn selected_element_view(&self) -> Option<SelectedElementView> {
+        let idx = self.navigation_state.selected_entry_index;
+        let item = self.navigation_state.sidebar_items.get(idx)?;
+        if item.section != SidebarSection::Programs || item.is_header {
+            return None;
+        }
+
+        let path = if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
+            self.navigation_state.sidebar_tree.selected_path().to_vec()
+        } else {
+            item.tree_path.clone()?
+        };
+        if path.is_empty() {
+            return None;
+        }
+
+        let depth = path.len();
+        let def = Self::report_definition_for_depth(depth)?;
+        let selected_entry = self.resolve_entry_at_path(&path)?;
+        let content = self
+            .config
+            .workspace
+            .read_md_file(&selected_entry.path)
+            .unwrap_or_else(|_| "".to_string());
+        let selected_status = self.status_for_entry(&selected_entry);
+
+        let children = self.load_tree_level(&path);
+        let rows = children
+            .into_iter()
+            .map(|child| {
+                let child_name = child.name.clone();
+                let status = self.status_for_entry(&child);
+                let mut child_path = path.clone();
+                child_path.push(child_name.clone());
+                let grandchild_count = self.load_tree_level(&child_path).len();
+                ElementReportRow {
+                    name: child_name,
+                    status,
+                    grandchild_count,
+                }
+            })
+            .collect();
+
+        let report = ElementReport {
+            child_plural: def.child_plural,
+            grandchild_singular: def.grandchild_singular,
+            grandchild_plural: def.grandchild_plural,
+            rows,
+        };
+
+        Some(SelectedElementView {
+            title: selected_entry.name.clone(),
+            status: selected_status,
+            content,
+            report,
+        })
+    }
+
+    fn report_definition_for_depth(depth: usize) -> Option<ReportDefinition> {
+        match depth {
+            1 => Some(ReportDefinition {
+                child_plural: "Projects",
+                grandchild_singular: "Milestone",
+                grandchild_plural: "Milestones",
+            }),
+            2 => Some(ReportDefinition {
+                child_plural: "Milestones",
+                grandchild_singular: "Task",
+                grandchild_plural: "Tasks",
+            }),
+            3 => Some(ReportDefinition {
+                child_plural: "Tasks",
+                grandchild_singular: "Subtask",
+                grandchild_plural: "Subtasks",
+            }),
+            4 => Some(ReportDefinition {
+                child_plural: "Subtasks",
+                grandchild_singular: "Grandchild",
+                grandchild_plural: "Grandchildren",
+            }),
+            _ => None,
+        }
+    }
+
+    fn status_for_entry(&self, entry: &DirectoryEntry) -> String {
+        self.config
+            .workspace
+            .read_md_file(&entry.path)
+            .ok()
+            .and_then(|content| parse_element(&content).ok().flatten())
+            .map(|element| {
+                let status = element.status().trim();
+                let status_text = if status.is_empty() {
+                    "unspecified"
+                } else {
+                    status
+                };
+                status_text.to_string()
+            })
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {

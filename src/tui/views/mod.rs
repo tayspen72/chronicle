@@ -2,17 +2,226 @@
 
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::cache::build_journal_tree;
-use crate::tui::{App, Mode, navigation};
+use crate::tui::{App, ElementReport, Mode, SelectedElementView, navigation};
 use ratatui::{
     Frame,
-    layout::Constraint,
+    layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap},
 };
+use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
 
+pub fn render_element_report(f: &mut Frame, report: &ElementReport, area: ratatui::layout::Rect) {
+    if report.rows.is_empty() {
+        let message = format!("No {} detected.", report.child_plural);
+        let paragraph = Paragraph::new(message)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(report.child_plural),
+            );
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    let rows: Vec<Row> = report
+        .rows
+        .iter()
+        .map(|row| {
+            let grandchild_text = if row.grandchild_count == 0 {
+                format!("0 {} (none detected)", report.grandchild_plural)
+            } else if row.grandchild_count == 1 {
+                format!("1 {}", report.grandchild_singular)
+            } else {
+                format!("{} {}", row.grandchild_count, report.grandchild_plural)
+            };
+            Row::new(vec![
+                Cell::from(row.name.clone()),
+                Cell::from(row.status.clone()),
+                Cell::from(grandchild_text),
+            ])
+        })
+        .collect();
+
+    let column_widths = [
+        Constraint::Percentage(50),
+        Constraint::Length(14),
+        Constraint::Length(26),
+    ];
+    let table = Table::new(rows, column_widths)
+        .header(
+            Row::new(vec![
+                Cell::from("Name"),
+                Cell::from("Status"),
+                Cell::from(report.grandchild_plural),
+            ])
+            .style(Style::default().fg(Color::LightBlue))
+            .bottom_margin(1),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(report.child_plural),
+        );
+
+    f.render_widget(table, area);
+}
+
+fn render_selected_element_view(
+    f: &mut Frame,
+    selected: &SelectedElementView,
+    area: ratatui::layout::Rect,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(selected.title.clone());
+    f.render_widget(block, area);
+
+    let inner = ratatui::layout::Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let yaml_rows = parse_yaml_frontmatter_rows(&selected.content);
+    let details_height = (yaml_rows.len() as u16 + 3).clamp(4, 10);
+    let report_height = if selected.report.rows.is_empty() {
+        4
+    } else {
+        (selected.report.rows.len() as u16 + 3).clamp(5, 12)
+    };
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(details_height),
+            Constraint::Min(4),
+            Constraint::Length(report_height),
+        ])
+        .split(inner);
+
+    render_yaml_details(f, &yaml_rows, &selected.status, sections[0]);
+
+    let markdown_body = strip_yaml_frontmatter(&selected.content);
+    let markdown = Paragraph::new(markdown_to_text(markdown_body))
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Content"),
+        );
+    f.render_widget(markdown, sections[1]);
+
+    render_element_report(f, &selected.report, sections[2]);
+}
+
+fn render_yaml_details(
+    f: &mut Frame,
+    rows: &[(String, String)],
+    status: &str,
+    area: ratatui::layout::Rect,
+) {
+    if rows.is_empty() {
+        let message = format!("No YAML frontmatter detected.\nStatus: {}.", status);
+        let paragraph = Paragraph::new(message)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title("Details"),
+            );
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    let table_rows: Vec<Row> = rows
+        .iter()
+        .map(|(key, value)| Row::new(vec![Cell::from(key.clone()), Cell::from(value.clone())]))
+        .collect();
+    let widths = [Constraint::Length(24), Constraint::Min(20)];
+    let table = Table::new(table_rows, widths)
+        .header(
+            Row::new(vec![Cell::from("Field"), Cell::from("Value")])
+                .style(Style::default().fg(Color::LightBlue))
+                .bottom_margin(1),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Details"),
+        );
+    f.render_widget(table, area);
+}
+
+fn parse_yaml_frontmatter_rows(content: &str) -> Vec<(String, String)> {
+    let (frontmatter, _) = split_yaml_frontmatter(content);
+    let Some(frontmatter) = frontmatter else {
+        return Vec::new();
+    };
+
+    let parsed: Value = match serde_yaml::from_str(frontmatter) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    match parsed {
+        Value::Mapping(map) => mapping_to_rows(&map),
+        other => vec![("value".to_string(), yaml_value_to_string(&other))],
+    }
+}
+
+fn mapping_to_rows(map: &Mapping) -> Vec<(String, String)> {
+    map.iter()
+        .map(|(key, value)| {
+            let key_text = match key {
+                Value::String(text) => text.clone(),
+                _ => yaml_value_to_string(key),
+            };
+            (key_text, yaml_value_to_string(value))
+        })
+        .collect()
+}
+
+fn yaml_value_to_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => v.clone(),
+        Value::Sequence(items) => items
+            .iter()
+            .map(yaml_value_to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Mapping(_) => match serde_yaml::to_string(value) {
+            Ok(serialized) => serialized.replace('\n', " ").trim().to_string(),
+            Err(_) => String::new(),
+        },
+        Value::Tagged(tagged) => yaml_value_to_string(&tagged.value),
+    }
+}
+
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if let Some(selected) = app.selected_element_view() {
+        render_selected_element_view(f, &selected, area);
+        return;
+    }
     let idx = app.navigation_state.selected_entry_index;
     let mut content_to_show = "No item selected".to_string();
     let mut title = "Empty".to_string();
@@ -600,19 +809,39 @@ fn markdown_to_text(content: &str) -> Text<'static> {
 }
 
 fn strip_yaml_frontmatter(content: &str) -> &str {
-    let mut lines = content.lines();
-    if lines.next() != Some("---") {
-        return content;
+    let (_, body) = split_yaml_frontmatter(content);
+    body
+}
+
+fn split_yaml_frontmatter(content: &str) -> (Option<&str>, &str) {
+    let Some(first_line) = content.lines().next() else {
+        return (None, content);
+    };
+    if first_line.trim_end() != "---" {
+        return (None, content);
     }
 
-    let mut byte_offset = 0usize;
-    for line in content.lines() {
-        byte_offset += line.len() + 1;
-        if line == "---" && byte_offset > 4 {
-            return &content[byte_offset..];
+    let mut cursor = first_line.len();
+    if content.as_bytes().get(cursor) == Some(&b'\n') {
+        cursor += 1;
+    }
+    let frontmatter_start = cursor;
+
+    for line in content[cursor..].lines() {
+        let line_start = cursor;
+        cursor += line.len();
+        if content.as_bytes().get(cursor) == Some(&b'\n') {
+            cursor += 1;
+        }
+
+        if line.trim_end() == "---" {
+            let frontmatter = &content[frontmatter_start..line_start];
+            let body = &content[cursor..];
+            return (Some(frontmatter), body);
         }
     }
-    content
+
+    (None, content)
 }
 
 fn parse_heading(line: &str) -> Option<(usize, &str)> {
@@ -1804,5 +2033,24 @@ Some body text
         assert_eq!(parse_list_item("* item"), Some("item"));
         assert_eq!(parse_list_item("2. item"), Some("item"));
         assert_eq!(parse_list_item("plain"), None);
+    }
+
+    #[test]
+    fn test_split_yaml_frontmatter_returns_body() {
+        let md = "---\nstatus: active\nowner: me\n---\n\n# Description\nhello";
+        let (frontmatter, body) = split_yaml_frontmatter(md);
+
+        assert_eq!(frontmatter, Some("status: active\nowner: me\n"));
+        assert!(body.trim_start().starts_with("# Description"));
+    }
+
+    #[test]
+    fn test_parse_yaml_frontmatter_rows_keeps_key_order() {
+        let md = "---\na: one\nb: two\nlist:\n  - x\n  - y\n---\nbody";
+        let rows = parse_yaml_frontmatter_rows(md);
+
+        assert_eq!(rows[0], ("a".to_string(), "one".to_string()));
+        assert_eq!(rows[1], ("b".to_string(), "two".to_string()));
+        assert_eq!(rows[2], ("list".to_string(), "x, y".to_string()));
     }
 }
