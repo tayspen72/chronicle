@@ -239,11 +239,7 @@ Selection is not on Alpha4 (Section headers are not select-able)
 
 ### Open Issues
 
-1. **Dead code**: `commands/` directory (CLI commands) is disconnected from TUI
-2. **Journal folder structure**:
-   - `journal/current/YYYY-MM-DD.md` — today's journal entry
-   - `journal/history/YYYY/MMM/YYYY-MM-DD.md` — history entries grouped by year and 3-letter month (e.g., `journal/history/2026/mar/2026-03-18.md`)
-3. **Current Plan Enter key**: Pressing Enter on "Current Plan" shows all tasks in the system instead of a useful view. Should either route to start a new planning session or be removed entirely
+- None currently tracked.
 
 ### Creation Wizard
 
@@ -385,6 +381,9 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 | Date | Event |
 |------|-------|
+| 2026-03-24 | Feature: Programs tree selection now renders a combined element view in the main window: YAML details table, markdown body content, and child status/count report |
+| 2026-03-24 | UX tweak: Empty child-report state now shows only "No <child> detected" without repeating selected element status |
+| 2026-03-24 | Feature: Binary now routes `init`, `jot`, `extract`, and `new-task` CLI commands through `src/commands`, removing the disconnected/dead-code path |
 | 2026-03-22 | Navigator panel and unified tree structure completed: Programs and Journal History now share consistent tree semantics (expand/collapse/selection/rendering) |
 | 2026-03-21 | Spec: Added Tree Navigation Model section with 8 example states |
 | 2026-03-21 | Bug fix: Journal history tree connector chars and indentation |
@@ -421,56 +420,18 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 ## Future Features
 
-### Next Recommended Feature: Current Plan Report
-
-Replace the current "Current Plan" behavior with a dedicated, useful report in the main window:
-- Group tasks by Program → Project → Milestone
-- Show task status, assignee, importance, start/due dates
-- Support quick filtering (e.g., by status, assignee)
-- Keep sidebar behavior unchanged (main window remains a viewport of selection)
-
-This resolves an active open issue and gives immediate user-facing value.
-
-### Creation Wizard UX
-
-Refactor all element creation wizards (Program, Project, Milestone, Task, Subtask) to use consistent field handling:
-- Field names bold, values gray until user-edited, white after user edit
-- Non-editable fields are visible but not focusable
-- Fields are parsed from template YAML in source order, with title-cased labels
-- Choice fields (`status`, `importance`) support left/right cycling with visible option list
-- Unified Enter/Escape navigation contract across creation-style wizards
-- This applies to all creation-style wizards: element creation, planning session, and add-to-plan task editor
-
 ### Config Defaults
 
-Support partial or empty config files:
-- Missing config entries should fall back to documented defaults.
-- Users should only need to define keys they want to override.
+Require `workspace`, `editor`, and `owner` in `config.toml`.
+All other config entries should remain optional and fall back to documented defaults.
 
 ### Subtask Creation Wizard Parity
 
 Add subtask creation flow parity with the same creation wizard UX contract used by program/project/milestone/task.
 
-### Program/Element Reports
-
-Add a report view for each element type in the Programs section that shows children with their status:
-
-- **Program report**: lists all projects under it with status (e.g., "Alpha: Project 1 [Active], Project 2 [Blocked], Project 3 [New]")
-- **Project report**: lists milestones under it with status
-- **Milestone report**: lists tasks under it with status
-- **Task report**: lists subtasks under it with status
-
-Reports appear in the main window when the element is selected in the sidebar (matching the viewport principle).
-
 ### Planning Reports
 
-1. **Current Plan report**: When a planning session exists, Enter on "Current Plan" shows a structured report of tasks in the session. Tasks should be grouped and separated by Program → Project → Milestone, with task details (name, status, dates, importance) shown in a readable table format.
-
-2. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
-
-3. **Backlog report**: Currently shows all tasks. Should be refined to show only tasks in the current plan that are in the "New" state and assigned to the current user.
-
-4. **My Tasks**: Add a new entry under the Planning section that shows a useful report of all tasks assigned to the current user that are not in the "New" state (i.e., Active, Blocked, Testing, etc.).
+1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
 
 ### Theming
 

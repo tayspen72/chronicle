@@ -176,6 +176,12 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             action: None,
         },
         CommandMatch {
+            label: "My Tasks".to_string(),
+            view: ViewType::MyTasks,
+            exit: false,
+            action: None,
+        },
+        CommandMatch {
             label: "Current Plan".to_string(),
             view: ViewType::WeeklyPlanning,
             exit: false,
@@ -324,6 +330,7 @@ pub fn filter_commands(
                     "Programs"
                     | "Journal"
                     | "Backlog"
+                    | "My Tasks"
                     | "Current Plan"
                     | "Open Today's Journal"
                     | "Journal History"

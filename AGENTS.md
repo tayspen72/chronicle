@@ -193,3 +193,4 @@ _Append a rule here whenever an agent makes a mistake. One line, specific, actio
 - Always run `git status` BEFORE implementing any feature or fix. Create a branch from `develop` if one doesn't exist. Document this as "Pre-flight Check" in AGENTS.md.
 
 - NEVER merge to develop without first asking the user to manually verify the changes. After `@verify-app` passes, inform the user that the branch is ready for manual testing and ask before merging.
+- Reports must render from file-backed data (not stale in-memory snapshots), and any report edits must write through to the source markdown immediately.

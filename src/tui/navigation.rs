@@ -1,10 +1,7 @@
 //! Navigation module - sidebar state and tree traversal.
 
 use crate::storage::DirectoryEntry;
-use crate::tui::cache::{
-    JournalNode, extract_year_from_path, extract_year_month_from_path, month_abbrev_to_name,
-    month_name_to_abbrev,
-};
+use crate::tui::cache::{JournalNode, extract_year_from_path, extract_year_month_from_path};
 use crate::tui::sidebar_tree::SidebarTreeModel;
 
 #[derive(Debug, Clone, Default)]
@@ -669,25 +666,21 @@ impl JournalTreeState {
     pub fn months_for_year(&self, year: &str) -> Vec<String> {
         let mut months: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for entry in &self.entries {
-            if let Some((entry_year, month_abbrev)) = extract_year_month_from_path(&entry.path)
+            if let Some((entry_year, month)) = extract_year_month_from_path(&entry.path)
                 && entry_year == year
-                && let Some(month_name) = month_abbrev_to_name(&month_abbrev)
             {
-                months.insert(month_name.to_string());
+                months.insert(month);
             }
         }
         months.into_iter().collect()
     }
 
     pub fn entries_for_month(&self, year: &str, month: &str) -> Vec<&crate::storage::JournalEntry> {
-        let target_abbrev = month_name_to_abbrev(month).unwrap_or("");
-
         self.entries
             .iter()
             .filter(|entry| {
-                if let Some((entry_year, month_abbrev)) = extract_year_month_from_path(&entry.path)
-                {
-                    return entry_year == year && month_abbrev.to_lowercase() == target_abbrev;
+                if let Some((entry_year, entry_month)) = extract_year_month_from_path(&entry.path) {
+                    return entry_year == year && entry_month == month;
                 }
                 false
             })

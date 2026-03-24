@@ -285,6 +285,7 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::JournalArchiveList => views::render_archive_list(f, app, area),
         ViewType::JournalToday => views::render_journal_today(f, app, area),
         ViewType::Backlog => views::render_backlog(f, app, area),
+        ViewType::MyTasks => views::render_my_tasks(f, app, area),
         ViewType::WeeklyPlanning => views::render_weekly_planning(f, app, area),
         ViewType::ViewingContent => views::render_content_viewer(f, app, area),
         ViewType::InputProgram => views::render_input(f, app, area, "Enter program name:"),

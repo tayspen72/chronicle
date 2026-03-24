@@ -2,10 +2,12 @@
 
 use chronicle::model::SelectedTask;
 use chronicle::storage::JournalStorage;
+use chronicle::storage::md::parse_element;
 use chronicle::tui::navigation::SidebarSection;
 use chronicle::tui::test_utils::{app_with_empty_workspace, app_with_journal_entries};
 use chronicle::tui::{Mode, ViewType};
 use crossterm::event::KeyCode;
+use std::fs;
 use std::path::PathBuf;
 
 fn planned_task(
@@ -172,10 +174,10 @@ fn test_years_not_visible_when_history_not_expanded() {
 fn test_journal_entries_loaded_on_history_expand() {
     let (_temp, mut app) = app_with_journal_entries();
 
-    // Initially journal_entries should be empty
+    // Journal entries are preloaded during app startup.
     assert!(
-        app.journal_entries.is_empty(),
-        "Journal entries should be empty initially"
+        !app.journal_entries.is_empty(),
+        "Journal entries should be preloaded at startup"
     );
 
     // Find History
@@ -233,12 +235,9 @@ fn test_journal_tree_state_years_and_months() {
     // Check months for the year
     let months = app.journal_tree_state.months_for_year("2026");
     assert!(!months.is_empty(), "Should have at least one month");
-    // Should have February and March
-    assert!(
-        months.contains(&"February".to_string()),
-        "Should have February"
-    );
-    assert!(months.contains(&"March".to_string()), "Should have March");
+    // Should have 02 and 03
+    assert!(months.contains(&"02".to_string()), "Should have 02");
+    assert!(months.contains(&"03".to_string()), "Should have 03");
 }
 
 #[test]
@@ -319,12 +318,12 @@ fn test_expand_history_shows_month_items() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "February" || item.name == "March")
+        .filter(|item| item.name == "02" || item.name == "03")
         .collect();
 
     assert!(
         !month_items.is_empty(),
-        "Month items (February, March) should be visible after expanding year"
+        "Month items (02, 03) should be visible after expanding year"
     );
 
     // Should have indent 2 (under year, under History)
@@ -376,7 +375,7 @@ fn test_expand_history_with_preloaded_entries_shows_months() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "February" || item.name == "March")
+        .filter(|item| item.name == "02" || item.name == "03")
         .collect();
 
     assert!(
@@ -469,16 +468,16 @@ fn test_navigate_left_from_journal_entry_collapses_to_parent() {
     // Expand year (shows months)
     app.handle_key(KeyCode::Right);
 
-    // Select March month
+    // Select 03 month
     let march_idx = app
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
+        .position(|item| item.name == "03")
         .unwrap();
     app.navigation_state.selected_entry_index = march_idx;
 
-    // Expand March (shows entries)
+    // Expand 03 (shows entries)
     app.handle_key(KeyCode::Right);
 
     // Should now have journal entry items visible
@@ -519,13 +518,13 @@ fn test_navigate_left_from_journal_entry_collapses_to_parent() {
     let selected_item = &app.navigation_state.sidebar_items[selected_idx];
 
     assert_eq!(
-        selected_item.name, "March",
-        "Selection should be on March (parent), got '{}'",
+        selected_item.name, "03",
+        "Selection should be on 03 (parent), got '{}'",
         selected_item.name
     );
     assert!(
         selected_item.is_journal_header,
-        "Selected item should be a journal header (March)"
+        "Selected item should be a journal header (03)"
     );
     assert!(
         selected_item
@@ -572,12 +571,12 @@ fn test_navigate_left_from_month_collapses_to_history() {
     // Expand year (shows months)
     app.handle_key(KeyCode::Right);
 
-    // Select March month
+    // Select 03 month
     let march_idx = app
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
+        .position(|item| item.name == "03")
         .unwrap();
     app.navigation_state.selected_entry_index = march_idx;
 
@@ -607,7 +606,7 @@ fn test_navigate_left_from_month_collapses_to_history() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "March" || item.name == "February")
+        .filter(|item| item.name == "03" || item.name == "02")
         .collect();
     assert!(
         month_items.is_empty(),
@@ -647,7 +646,7 @@ fn test_collapse_year_hides_months_in_sidebar() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "March" || item.name == "February")
+        .filter(|item| item.name == "03" || item.name == "02")
         .collect();
     assert!(
         !month_items_before.is_empty(),
@@ -679,7 +678,7 @@ fn test_collapse_year_hides_months_in_sidebar() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "March" || item.name == "February")
+        .filter(|item| item.name == "03" || item.name == "02")
         .collect();
     assert!(
         month_items_after.is_empty(),
@@ -746,19 +745,19 @@ fn test_collapse_month_hides_entries_in_sidebar() {
             .collect::<Vec<_>>()
     );
 
-    // Select March explicitly (auto-selection after expanding year selects February)
+    // Select 03 explicitly (auto-selection after expanding year selects 02)
     let march_idx = app
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
+        .position(|item| item.name == "03")
         .unwrap();
     app.navigation_state.selected_entry_index = march_idx;
 
-    // Expand March (shows entries)
+    // Expand 03 (shows entries)
     app.handle_key(KeyCode::Right);
 
-    // Selection should move into March's first entry after expansion
+    // Selection should move into 03's first entry after expansion
     let selected_item =
         &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
     assert!(
@@ -766,10 +765,10 @@ fn test_collapse_month_hides_entries_in_sidebar() {
             .journal_path
             .as_ref()
             .is_some_and(|p| p.len() == 3),
-        "Selection should move to the first March entry after expansion"
+        "Selection should move to the first 03 entry after expansion"
     );
 
-    // Verify entries are visible after expanding March
+    // Verify entries are visible after expanding 03
     let entries_after_expand: Vec<_> = app
         .navigation_state
         .sidebar_items
@@ -778,18 +777,18 @@ fn test_collapse_month_hides_entries_in_sidebar() {
         .collect();
     assert!(
         !entries_after_expand.is_empty(),
-        "Entries should be visible after expanding March"
+        "Entries should be visible after expanding 03"
     );
 
     // Press Left to collapse entry and parent month
     // This should hide entries and select the parent month
     app.handle_key(KeyCode::Left);
 
-    // Selection should be on March (parent month), not the year
+    // Selection should be on 03 (parent month), not the year
     let selected_item =
         &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
     assert_eq!(
-        selected_item.name, "March",
+        selected_item.name, "03",
         "Selection should be on parent month after pressing Left on entry"
     );
 
@@ -836,17 +835,17 @@ fn test_journal_tree_has_correct_indentation() {
     // Check state after expanding year (before expanding any month)
     let feb_expanded = app
         .navigation_state
-        .is_expanded(&["2026".to_string(), "February".to_string()]);
+        .is_expanded(&["2026".to_string(), "02".to_string()]);
     let mar_expanded = app
         .navigation_state
-        .is_expanded(&["2026".to_string(), "March".to_string()]);
+        .is_expanded(&["2026".to_string(), "03".to_string()]);
     assert!(
         !feb_expanded,
-        "February should NOT be expanded after just expanding year"
+        "02 should NOT be expanded after just expanding year"
     );
     assert!(
         !mar_expanded,
-        "March should NOT be expanded after just expanding year"
+        "03 should NOT be expanded after just expanding year"
     );
 
     // Verify NO entries are visible after expanding year (before expanding any month)
@@ -865,16 +864,16 @@ fn test_journal_tree_has_correct_indentation() {
             .collect::<Vec<_>>()
     );
 
-    // Select March explicitly (auto-selection may have selected February)
+    // Select 03 explicitly (auto-selection may have selected 02)
     let march_idx = app
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
+        .position(|item| item.name == "03")
         .unwrap();
     app.navigation_state.selected_entry_index = march_idx;
 
-    // Expand March (shows entries)
+    // Expand 03 (shows entries)
     app.handle_key(KeyCode::Right);
 
     // Verify indentation levels
@@ -891,10 +890,10 @@ fn test_journal_tree_has_correct_indentation() {
         .navigation_state
         .sidebar_items
         .iter()
-        .filter(|item| item.name == "February")
+        .filter(|item| item.name == "02")
         .collect();
-    assert!(!feb_items.is_empty(), "February should exist");
-    assert_eq!(feb_items[0].indent, 2, "February should have indent 2");
+    assert!(!feb_items.is_empty(), "02 should exist");
+    assert_eq!(feb_items[0].indent, 2, "02 should have indent 2");
 
     let entry_items: Vec<_> = app
         .navigation_state
@@ -1044,8 +1043,8 @@ fn test_right_on_journal_entry_is_noop() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
-        .expect("March should exist");
+        .position(|item| item.name == "03")
+        .expect("03 should exist");
     app.navigation_state.selected_entry_index = march_idx;
     app.handle_key(KeyCode::Right);
 
@@ -1113,8 +1112,8 @@ fn test_right_on_expanded_journal_headers_is_noop() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
-        .expect("March should exist");
+        .position(|item| item.name == "03")
+        .expect("03 should exist");
     app.navigation_state.selected_entry_index = march_idx;
     app.handle_key(KeyCode::Right);
 
@@ -1122,8 +1121,8 @@ fn test_right_on_expanded_journal_headers_is_noop() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
-        .expect("March should still exist");
+        .position(|item| item.name == "03")
+        .expect("03 should still exist");
     app.navigation_state.selected_entry_index = march_idx_again;
     app.handle_key(KeyCode::Right);
     assert_eq!(
@@ -1150,17 +1149,17 @@ fn test_repeated_left_on_journal_walks_up_tiers_consistently() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
-        .expect("March should exist");
+        .position(|item| item.name == "03")
+        .expect("03 should exist");
     app.navigation_state.selected_entry_index = march_idx;
     app.handle_key(KeyCode::Right);
 
     app.handle_key(KeyCode::Left);
     let selected = &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
-    assert_eq!(selected.name, "March");
+    assert_eq!(selected.name, "03");
     assert_eq!(
         selected.journal_path.as_ref(),
-        Some(&vec!["2026".to_string(), "March".to_string()]),
+        Some(&vec!["2026".to_string(), "03".to_string()]),
         "Left from entry should select the exact parent month node"
     );
 
@@ -1203,8 +1202,8 @@ fn test_enter_on_journal_entry_opens_viewer() {
         .navigation_state
         .sidebar_items
         .iter()
-        .position(|item| item.name == "March")
-        .expect("March should exist");
+        .position(|item| item.name == "03")
+        .expect("03 should exist");
     app.navigation_state.selected_entry_index = march_idx;
     app.handle_key(KeyCode::Right);
 
@@ -1251,6 +1250,12 @@ fn test_current_plan_navigation_uses_task_selection_only() {
     ];
     app.mode = Mode::CurrentPlanNavigation;
     app.review_state.selection_index = 0;
+    app.navigation_state.selected_entry_index = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.name == "Current Plan")
+        .expect("Current Plan should exist in sidebar");
 
     let before_sidebar_index = app.navigation_state.selected_entry_index;
     app.handle_key(KeyCode::Down);
@@ -1262,4 +1267,59 @@ fn test_current_plan_navigation_uses_task_selection_only() {
 
     app.handle_key(KeyCode::Up);
     assert_eq!(app.review_state.selection_index, 0);
+}
+
+#[test]
+fn test_backlog_assign_writes_task_file() {
+    let (temp, mut app) = app_with_empty_workspace();
+    let workspace = temp.path();
+
+    let task_path = workspace.join("task.md");
+    let content = r#"---
+uuid: task-1
+title: Task 1
+status: New
+creation_date: 2026-03-24
+type: task
+---
+
+# Description
+"#;
+    fs::write(&task_path, content).expect("should write task fixture");
+
+    app.config.owner = "me".to_string();
+    app.planning_session.active = true;
+    app.planning_session.tasks = vec![SelectedTask {
+        uuid: "task-1".to_string(),
+        path: task_path.clone(),
+        program: "Program1".to_string(),
+        project: "Project1".to_string(),
+        milestone: "Milestone1".to_string(),
+        task_name: "Task 1".to_string(),
+        status: "New".to_string(),
+        assigned_to: None,
+        start_date: None,
+        due_date: None,
+        importance: None,
+        description: None,
+    }];
+
+    let backlog_idx = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .position(|i| i.name == "Backlog")
+        .expect("Backlog should exist in sidebar");
+    app.navigation_state.selected_entry_index = backlog_idx;
+    app.handle_key(KeyCode::Enter);
+    app.handle_key(KeyCode::Char('a'));
+
+    let updated = fs::read_to_string(&task_path).expect("should read updated task");
+    let element = parse_element(&updated)
+        .expect("parse should succeed")
+        .expect("element should be present");
+    let chronicle::model::Element::Task(task) = element else {
+        panic!("expected task element")
+    };
+    assert_eq!(task.assigned_to.as_deref(), Some("me"));
 }

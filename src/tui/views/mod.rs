@@ -2,7 +2,7 @@
 
 use crate::storage::{JournalStorage, WorkspaceStorage};
 use crate::tui::cache::build_journal_tree;
-use crate::tui::{App, ElementReport, Mode, SelectedElementView, navigation};
+use crate::tui::{App, ElementReport, Mode, PlanningReportKind, SelectedElementView, navigation};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
@@ -317,9 +317,13 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                         render_weekly_planning(f, app, area);
                         return;
                     }
+                    "MyTasks" => {
+                        render_my_tasks(f, app, area);
+                        return;
+                    }
                     "Backlog" => {
-                        title = "Backlog".to_string();
-                        content_to_show = "Under development".to_string();
+                        render_backlog(f, app, area);
+                        return;
                     }
                     _ => {}
                 }
@@ -451,16 +455,180 @@ pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect
 
 /// Renders the Backlog view showing all tasks across all programs/projects/milestones.
 pub fn render_backlog(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let _ = app;
-    let paragraph = Paragraph::new("Under development")
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title("Backlog"),
-        );
-    f.render_widget(paragraph, area);
+    let tasks = app.backlog_report_tasks();
+    let is_interactive = app.mode == Mode::CurrentPlanNavigation
+        && app.active_planning_report() == Some(PlanningReportKind::Backlog);
+    let selected_idx = app.review_state.selection_index;
+
+    render_plan_task_table(
+        f,
+        area,
+        "Backlog",
+        &tasks,
+        is_interactive,
+        selected_idx,
+        "No unassigned tasks in current plan.",
+    );
+
+    let hints = if is_interactive {
+        "j/k: move | a: assign to me | Esc/q: back"
+    } else {
+        "Enter: navigate backlog tasks"
+    };
+    render_hint_line(f, area, hints);
+}
+
+pub fn render_my_tasks(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let assigned_tasks = app.my_assigned_plan_tasks();
+    let todos = app.today_todo_items();
+    let is_interactive = app.mode == Mode::CurrentPlanNavigation
+        && app.active_planning_report() == Some(PlanningReportKind::MyTasks);
+    let selected_idx = app.review_state.selection_index;
+    let task_count = assigned_tasks.len();
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length((task_count as u16 + 4).clamp(6, 12)),
+            Constraint::Min(6),
+        ])
+        .split(area);
+
+    render_plan_task_table(
+        f,
+        sections[0],
+        "My Tasks",
+        &assigned_tasks,
+        is_interactive,
+        selected_idx,
+        "No current-plan tasks assigned to you.",
+    );
+
+    if todos.is_empty() {
+        let paragraph = Paragraph::new("No To Do items found in today's journal.")
+            .style(Style::default().fg(Color::White))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title("Today's To Do"),
+            );
+        f.render_widget(paragraph, sections[1]);
+    } else {
+        let rows = todos
+            .iter()
+            .enumerate()
+            .map(|(idx, todo)| {
+                let list_idx = task_count + idx;
+                let is_selected = is_interactive && selected_idx == list_idx;
+                let style = if is_selected {
+                    Style::default().fg(Color::Black).bg(Color::LightYellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let checkbox = if todo.checked { "[x]" } else { "[ ]" };
+                Row::new(vec![
+                    Cell::from(checkbox).style(style),
+                    Cell::from(todo.text.clone()).style(style),
+                ])
+            })
+            .collect::<Vec<_>>();
+
+        let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(20)])
+            .header(
+                Row::new(vec![Cell::from("Done"), Cell::from("Task")])
+                    .style(Style::default().fg(Color::LightBlue))
+                    .bottom_margin(1),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title("Today's To Do"),
+            );
+        f.render_widget(table, sections[1]);
+    }
+
+    let hints = if is_interactive {
+        "j/k: move | s: cycle task status | x: toggle To Do checkbox | Esc/q: back"
+    } else {
+        "Enter: navigate my tasks + today's To Do"
+    };
+    render_hint_line(f, area, hints);
+}
+
+fn render_plan_task_table(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: &str,
+    tasks: &[crate::model::SelectedTask],
+    is_interactive: bool,
+    selected_idx: usize,
+    empty_message: &str,
+) {
+    if tasks.is_empty() {
+        let paragraph = Paragraph::new(empty_message)
+            .style(Style::default().fg(Color::White))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(title),
+            );
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    let rows = tasks
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| {
+            let is_selected = is_interactive && idx == selected_idx;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::LightYellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Row::new(vec![
+                Cell::from(task.task_name.clone()).style(style),
+                Cell::from(task.due_date.clone().unwrap_or_else(|| "-".to_string())).style(style),
+                Cell::from(task.assigned_to.clone().unwrap_or_else(|| "-".to_string()))
+                    .style(style),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(50),
+            Constraint::Length(12),
+            Constraint::Length(18),
+        ],
+    )
+    .header(
+        Row::new(vec![
+            Cell::from("Title"),
+            Cell::from("Due Date"),
+            Cell::from("Assigned To"),
+        ])
+        .style(Style::default().fg(Color::LightBlue))
+        .bottom_margin(1),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(title),
+    );
+    f.render_widget(table, area);
+}
+
+fn render_hint_line(f: &mut Frame, area: ratatui::layout::Rect, text: &str) {
+    let hints = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+    let hint_area =
+        ratatui::layout::Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    f.render_widget(hints, hint_area);
 }
 
 /// Renders the Current Plan view showing tasks organized by hierarchy with workflow columns.

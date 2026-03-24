@@ -301,9 +301,13 @@ impl JournalStorage for PathBuf {
     }
 
     fn today_journal_path(&self) -> PathBuf {
-        let today = Local::now().format("%Y-%m-%d");
+        let now = Local::now();
+        let year = now.format("%Y").to_string();
+        let month = now.format("%m").to_string();
+        let today = now.format("%Y-%m-%d").to_string();
         self.journal_dir()
-            .join("current")
+            .join(year)
+            .join(month)
             .join(format!("{}.md", today))
     }
 
@@ -327,7 +331,7 @@ impl JournalStorage for PathBuf {
     }
 
     fn list_journal_entries(&self) -> Result<Vec<JournalEntry>> {
-        let history_dir = self.journal_dir().join("history");
+        let history_dir = self.journal_dir();
 
         if !history_dir.exists() {
             return Ok(vec![]);

@@ -80,6 +80,7 @@ pub enum ViewType {
     #[allow(dead_code)]
     JournalToday,
     Backlog,
+    MyTasks,
     WeeklyPlanning,
     ViewingContent,
     InputProgram,
@@ -133,6 +134,31 @@ struct ReportDefinition {
     grandchild_plural: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanningReportKind {
+    WeeklyPlanning,
+    Backlog,
+    MyTasks,
+}
+
+impl PlanningReportKind {
+    fn from_sidebar_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "WeeklyPlanning" => Some(Self::WeeklyPlanning),
+            "Backlog" => Some(Self::Backlog),
+            "MyTasks" => Some(Self::MyTasks),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DailyTodoItem {
+    pub line_index: usize,
+    pub checked: bool,
+    pub text: String,
+}
+
 pub struct App {
     pub config: Config,
     pub current_view: ViewType,
@@ -155,6 +181,7 @@ pub struct App {
     pub planning_wizard: Option<planning_wizard::PlanningWizardState>,
     // Task wizard state
     pub task_wizard: Option<task_wizard::TaskWizardState>,
+    pub backlog_staged_uuids: Option<Vec<String>>,
     // Planning preview confirmed flag
     // Archive list tree structure (maps tree index -> journal entry index)
     pub archive_tree_mapping: Vec<Option<usize>>,
@@ -188,11 +215,13 @@ impl App {
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
             task_wizard: None,
+            backlog_staged_uuids: None,
             archive_tree_mapping: Vec::new(),
             journal_tree_state: JournalTreeState::new(),
         };
 
         app.load_tree_view_data();
+        app.ensure_journal_entries_loaded();
         app.resume_planning_session();
         app
     }
@@ -432,27 +461,67 @@ impl App {
 
         // Handle CurrentPlanNavigation mode specially
         if self.mode == Mode::CurrentPlanNavigation {
-            match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.navigate_review(-1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.navigate_review(1);
-                }
-                KeyCode::Char('s') => {
-                    self.cycle_task_status();
-                }
-                KeyCode::Char('x') => {
-                    self.remove_task_from_session();
-                }
-                KeyCode::Enter => {
-                    self.open_current_plan_task_in_editor();
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
+            match self.active_planning_report() {
+                Some(PlanningReportKind::WeeklyPlanning) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_review(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_review(1);
+                    }
+                    KeyCode::Char('s') => {
+                        self.cycle_task_status();
+                    }
+                    KeyCode::Char('x') => {
+                        self.remove_task_from_session();
+                    }
+                    KeyCode::Enter => {
+                        self.open_current_plan_task_in_editor();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                Some(PlanningReportKind::Backlog) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_report_rows(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_report_rows(1);
+                    }
+                    KeyCode::Char('a') => {
+                        self.assign_selected_backlog_task_to_owner();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                Some(PlanningReportKind::MyTasks) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_report_rows(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_report_rows(1);
+                    }
+                    KeyCode::Char('s') => {
+                        self.cycle_selected_my_task_status();
+                    }
+                    KeyCode::Char('x') => {
+                        self.toggle_selected_my_todo();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                None => {
                     self.mode = Mode::Normal;
-                    self.current_view = ViewType::TreeView;
                 }
-                _ => {}
             }
             return;
         }
@@ -917,20 +986,24 @@ impl App {
     /// Expands the History item: loads journal entries if needed, expands the tree,
     /// reloads program data, rebuilds sidebar with programs + journal tree, and selects the first child.
     fn expand_history(&mut self) {
-        if self.journal_entries.is_empty()
-            && let Ok(entries) = self.config.workspace.list_journal_entries()
-        {
-            self.journal_entries = entries;
-        }
-
-        if !self.journal_entries.is_empty() {
-            self.journal_tree_state
-                .set_entries(self.journal_entries.clone());
-        }
+        self.ensure_journal_entries_loaded();
 
         self.journal_expand_path(&[]);
         self.load_tree_view_data();
         self.select_first_journal_child(&[]);
+    }
+
+    fn ensure_journal_entries_loaded(&mut self) {
+        if self.journal_entries.is_empty() {
+            self.refresh_journal_entries_cache();
+        }
+    }
+
+    fn refresh_journal_entries_cache(&mut self) {
+        if let Ok(entries) = self.config.workspace.list_journal_entries() {
+            self.journal_entries = entries.clone();
+            self.journal_tree_state.set_entries(entries);
+        }
     }
 
     fn navigate_left(&mut self) {
@@ -1217,6 +1290,14 @@ impl App {
         })
     }
 
+    pub fn active_planning_report(&self) -> Option<PlanningReportKind> {
+        self.navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .and_then(|item| item.is_planning_item.as_deref())
+            .and_then(PlanningReportKind::from_sidebar_tag)
+    }
+
     fn show_current_plan_report(&mut self) {
         if let Some(idx) = self.current_plan_sidebar_index() {
             self.navigation_state.selected_entry_index = idx;
@@ -1239,6 +1320,7 @@ impl App {
 
         self.navigation_state.navigate_up();
         self.sync_scope_from_sidebar_selection();
+        self.clear_backlog_staging_if_needed();
 
         // Cross-section navigation: collapse previous section
         if let Some(prev_section) = prev_section {
@@ -1288,6 +1370,7 @@ impl App {
 
         self.navigation_state.navigate_down();
         self.sync_scope_from_sidebar_selection();
+        self.clear_backlog_staging_if_needed();
 
         // Cross-section navigation: collapse previous section
         if let Some(prev_section) = prev_section {
@@ -1402,9 +1485,18 @@ impl App {
                         self.mode = Mode::Normal;
                     }
                 }
+                "MyTasks" => {
+                    self.current_view = ViewType::TreeView;
+                    self.mode = Mode::CurrentPlanNavigation;
+                    self.review_state.selection_index = 0;
+                }
                 "Backlog" => {
-                    self.current_view = ViewType::Backlog;
-                    self.mode = Mode::Normal;
+                    self.current_view = ViewType::TreeView;
+                    self.mode = Mode::CurrentPlanNavigation;
+                    if self.backlog_staged_uuids.is_none() {
+                        self.backlog_staged_uuids = Some(self.backlog_task_uuids());
+                    }
+                    self.review_state.selection_index = 0;
                 }
                 _ => {}
             }
@@ -1936,6 +2028,11 @@ impl App {
                 .node_data(SidebarNodeData::Planning),
         );
         self.navigation_state.sidebar_items.push(
+            SidebarItem::new("My Tasks", SidebarSection::Planning)
+                .planning_item("MyTasks")
+                .node_data(SidebarNodeData::Planning),
+        );
+        self.navigation_state.sidebar_items.push(
             SidebarItem::new("Backlog", SidebarSection::Planning)
                 .planning_item("Backlog")
                 .node_data(SidebarNodeData::Planning),
@@ -2052,6 +2149,17 @@ impl App {
             }
             ViewType::JournalArchiveList => {
                 self.open_selected_archive_entry();
+            }
+            ViewType::Backlog => {
+                self.mode = Mode::CurrentPlanNavigation;
+                self.review_state.selection_index = 0;
+                if self.backlog_staged_uuids.is_none() {
+                    self.backlog_staged_uuids = Some(self.backlog_task_uuids());
+                }
+            }
+            ViewType::MyTasks => {
+                self.mode = Mode::CurrentPlanNavigation;
+                self.review_state.selection_index = 0;
             }
             ViewType::InputProgram => {
                 self.confirm_create_program();
@@ -2315,6 +2423,7 @@ impl App {
         let workspace = &self.config.workspace;
         match workspace.list_journal_entries() {
             Ok(entries) => {
+                self.journal_tree_state.set_entries(entries.clone());
                 self.journal_entries = entries;
                 self.navigation_state.selected_entry_index = 0;
                 self.current_view = ViewType::JournalArchiveList;
@@ -2982,6 +3091,258 @@ impl App {
         self.review_state.selection_index = new_idx;
     }
 
+    pub fn backlog_report_tasks(&self) -> Vec<SelectedTask> {
+        let snapshots = self.report_task_snapshots();
+        let uuids = self
+            .backlog_staged_uuids
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.backlog_task_uuids());
+        uuids
+            .into_iter()
+            .filter_map(|uuid| snapshots.iter().find(|task| task.uuid == uuid).cloned())
+            .collect()
+    }
+
+    pub fn my_assigned_plan_tasks(&self) -> Vec<SelectedTask> {
+        let owner = self.current_user_name().to_ascii_lowercase();
+        self.report_task_snapshots()
+            .iter()
+            .filter(|task| {
+                task.assigned_to
+                    .as_deref()
+                    .is_some_and(|assigned| assigned.trim().to_ascii_lowercase() == owner)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn today_todo_items(&self) -> Vec<DailyTodoItem> {
+        let path = self.config.workspace.today_journal_path();
+        let Ok(content) = self.config.workspace.read_md_file(&path) else {
+            return Vec::new();
+        };
+        Self::parse_todo_items(&content)
+    }
+
+    fn current_user_name(&self) -> String {
+        let owner = self.config.owner.trim();
+        if !owner.is_empty() {
+            owner.to_string()
+        } else {
+            std::env::var("USER")
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "me".to_string())
+        }
+    }
+
+    fn report_task_snapshots(&self) -> Vec<SelectedTask> {
+        self.planning_session
+            .tasks
+            .iter()
+            .map(|task| self.task_snapshot_from_file(task))
+            .collect()
+    }
+
+    fn task_snapshot_from_file(&self, task: &SelectedTask) -> SelectedTask {
+        let mut snapshot = task.clone();
+        let Ok(content) = self.config.workspace.read_md_file(&task.path) else {
+            return snapshot;
+        };
+        let Ok(Some(element)) = parse_element(&content) else {
+            return snapshot;
+        };
+        let crate::model::Element::Task(parsed_task) = element else {
+            return snapshot;
+        };
+        snapshot.task_name = parsed_task.title;
+        snapshot.status = parsed_task.status;
+        snapshot.assigned_to = parsed_task.assigned_to.clone();
+        snapshot.start_date = parsed_task.start_date.clone();
+        snapshot.due_date = parsed_task.due_date.clone();
+        snapshot.importance = parsed_task.importance.clone();
+        snapshot.description = Some(parsed_task.description.clone());
+        snapshot
+    }
+
+    fn backlog_task_uuids(&self) -> Vec<String> {
+        self.planning_session
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.assigned_to
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+            })
+            .map(|task| task.uuid.clone())
+            .collect()
+    }
+
+    fn backlog_task_indices_in_session(&self) -> Vec<usize> {
+        let uuids = self
+            .backlog_staged_uuids
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.backlog_task_uuids());
+        uuids
+            .into_iter()
+            .filter_map(|uuid| {
+                self.planning_session
+                    .tasks
+                    .iter()
+                    .position(|task| task.uuid == uuid)
+            })
+            .collect()
+    }
+
+    fn my_plan_task_indices_in_session(&self) -> Vec<usize> {
+        let owner = self.current_user_name().to_ascii_lowercase();
+        self.planning_session
+            .tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, task)| {
+                task.assigned_to
+                    .as_deref()
+                    .is_some_and(|assigned| assigned.trim().to_ascii_lowercase() == owner)
+                    .then_some(idx)
+            })
+            .collect()
+    }
+
+    fn navigate_report_rows(&mut self, direction: isize) {
+        let count = match self.active_planning_report() {
+            Some(PlanningReportKind::Backlog) => self.backlog_task_indices_in_session().len(),
+            Some(PlanningReportKind::MyTasks) => {
+                self.my_plan_task_indices_in_session().len() + self.today_todo_items().len()
+            }
+            _ => 0,
+        };
+        if count == 0 {
+            self.review_state.selection_index = 0;
+            return;
+        }
+
+        let current = self.review_state.selection_index.min(count - 1);
+        let new_idx = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(count - 1)
+        };
+        self.review_state.selection_index = new_idx;
+    }
+
+    fn assign_selected_backlog_task_to_owner(&mut self) {
+        let report_idx = self.review_state.selection_index;
+        let indices = self.backlog_task_indices_in_session();
+        let Some(&task_idx) = indices.get(self.review_state.selection_index) else {
+            return;
+        };
+        self.review_state.selection_index = task_idx;
+        self.set_task_assigned_to(self.current_user_name());
+        self.save_current_planning_session();
+        self.review_state.selection_index = report_idx.min(indices.len().saturating_sub(1));
+    }
+
+    fn cycle_selected_my_task_status(&mut self) {
+        let report_idx = self.review_state.selection_index;
+        let task_indices = self.my_plan_task_indices_in_session();
+        let Some(&task_idx) = task_indices.get(self.review_state.selection_index) else {
+            return;
+        };
+        self.review_state.selection_index = task_idx;
+        self.cycle_task_status();
+        self.review_state.selection_index = report_idx.min(task_indices.len().saturating_sub(1));
+    }
+
+    fn toggle_selected_my_todo(&mut self) {
+        let task_count = self.my_plan_task_indices_in_session().len();
+        if self.review_state.selection_index < task_count {
+            return;
+        }
+        let todo_idx = self.review_state.selection_index - task_count;
+        let mut lines;
+        let path = self.config.workspace.today_journal_path();
+        let Ok(content) = self.config.workspace.read_md_file(&path) else {
+            return;
+        };
+        lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
+        let ends_with_newline = content.ends_with('\n');
+
+        let todos = Self::parse_todo_items(&content);
+        let Some(todo) = todos.get(todo_idx) else {
+            return;
+        };
+        if todo.line_index >= lines.len() {
+            return;
+        }
+
+        let marker = if todo.checked { ' ' } else { 'x' };
+        lines[todo.line_index] = format!("- [{}] {}", marker, todo.text);
+        let mut updated = lines.join("\n");
+        if ends_with_newline {
+            updated.push('\n');
+        }
+        if let Err(e) = self.config.workspace.save_journal_entry(&path, &updated) {
+            eprintln!("Failed to update today's To Do item: {e}");
+        }
+    }
+
+    fn clear_backlog_staging_if_needed(&mut self) {
+        if self.active_planning_report() != Some(PlanningReportKind::Backlog) {
+            self.backlog_staged_uuids = None;
+        }
+    }
+
+    fn parse_todo_items(content: &str) -> Vec<DailyTodoItem> {
+        let mut items = Vec::new();
+        let mut in_todo = false;
+
+        for (idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let heading = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
+                if heading == "to do" || heading == "todo" || heading == "to-do" {
+                    in_todo = true;
+                    continue;
+                }
+                if in_todo {
+                    break;
+                }
+                continue;
+            }
+
+            if !in_todo {
+                continue;
+            }
+
+            if let Some(text) = trimmed
+                .strip_prefix("- [ ] ")
+                .or(trimmed.strip_prefix("* [ ] "))
+            {
+                items.push(DailyTodoItem {
+                    line_index: idx,
+                    checked: false,
+                    text: text.trim().to_string(),
+                });
+            } else if let Some(text) = trimmed
+                .strip_prefix("- [x] ")
+                .or(trimmed.strip_prefix("* [x] "))
+                .or(trimmed.strip_prefix("- [X] "))
+                .or(trimmed.strip_prefix("* [X] "))
+            {
+                items.push(DailyTodoItem {
+                    line_index: idx,
+                    checked: true,
+                    text: text.trim().to_string(),
+                });
+            }
+        }
+
+        items
+    }
+
     fn open_current_plan_task_in_editor(&mut self) {
         let Some(task) = self
             .planning_session
@@ -3047,19 +3408,25 @@ impl App {
     }
 
     fn set_task_assigned_to(&mut self, name: String) {
-        let Some(task) = self
+        let idx = self.review_state.selection_index;
+        let Some(task_path) = self
             .planning_session
             .tasks
-            .get_mut(self.review_state.selection_index)
+            .get(idx)
+            .map(|task| task.path.clone())
         else {
             return;
         };
-        task.assigned_to = Some(name.clone());
+        let assigned_value = name.clone();
         if let Err(e) = crate::storage::md::update_task_fields(
-            &task.path,
+            &task_path,
             [("assigned_to", Some(name))].into_iter().collect(),
         ) {
             eprintln!("Failed to update task assigned_to: {e}");
+            return;
+        }
+        if let Some(task) = self.planning_session.tasks.get_mut(idx) {
+            task.assigned_to = Some(assigned_value);
         }
     }
 

@@ -6,38 +6,55 @@ use crate::model::SelectedTask;
 use crate::storage::{DirectoryEntry, JournalEntry};
 use std::path::PathBuf;
 
-/// 3-letter month abbreviations (lowercase) mapped to full names
-pub const MONTH_ABBREVS: &[(&str, &str)] = &[
-    ("jan", "January"),
-    ("feb", "February"),
-    ("mar", "March"),
-    ("apr", "April"),
-    ("may", "May"),
-    ("jun", "June"),
-    ("jul", "July"),
-    ("aug", "August"),
-    ("sep", "September"),
-    ("oct", "October"),
-    ("nov", "November"),
-    ("dec", "December"),
+/// Maps month tokens (abbrev/full) to numeric month strings.
+const MONTH_TOKENS: &[(&str, &str)] = &[
+    ("jan", "01"),
+    ("january", "01"),
+    ("feb", "02"),
+    ("february", "02"),
+    ("mar", "03"),
+    ("march", "03"),
+    ("apr", "04"),
+    ("april", "04"),
+    ("may", "05"),
+    ("jun", "06"),
+    ("june", "06"),
+    ("jul", "07"),
+    ("july", "07"),
+    ("aug", "08"),
+    ("august", "08"),
+    ("sep", "09"),
+    ("sept", "09"),
+    ("september", "09"),
+    ("oct", "10"),
+    ("october", "10"),
+    ("nov", "11"),
+    ("november", "11"),
+    ("dec", "12"),
+    ("december", "12"),
 ];
 
-pub fn month_abbrev_to_name(abbrev: &str) -> Option<&'static str> {
-    MONTH_ABBREVS
-        .iter()
-        .find(|(a, _)| *a == abbrev.to_lowercase())
-        .map(|(_, name)| *name)
-}
+pub fn canonical_month_token(month: &str) -> Option<String> {
+    let trimmed = month.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
 
-pub fn month_name_to_abbrev(name: &str) -> Option<&'static str> {
-    MONTH_ABBREVS
+    if let Ok(numeric) = trimmed.parse::<u8>()
+        && (1..=12).contains(&numeric)
+    {
+        return Some(format!("{:02}", numeric));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    MONTH_TOKENS
         .iter()
-        .find(|(_, full_name)| *full_name == name)
-        .map(|(abbrev, _)| *abbrev)
+        .find(|(token, _)| *token == lower)
+        .map(|(_, num)| (*num).to_string())
 }
 
 pub fn extract_year_from_path(path: &std::path::Path) -> Option<String> {
-    let components: Vec<_> = path
+    let components: Vec<String> = path
         .components()
         .filter_map(|c| match c {
             std::path::Component::Normal(s) => s.to_str().map(String::from),
@@ -45,18 +62,13 @@ pub fn extract_year_from_path(path: &std::path::Path) -> Option<String> {
         })
         .collect();
 
-    if let Some(pos) = components.iter().position(|s| s == "history")
-        && let Some(year) = components.get(pos + 1)
-        && year.len() == 4
-        && year.chars().all(|c| c.is_ascii_digit())
-    {
-        return Some(year.clone());
-    }
-    None
+    let rel = journal_relative_components(&components)?;
+    let year = rel.first()?;
+    (year.len() == 4 && year.chars().all(|c| c.is_ascii_digit())).then(|| year.clone())
 }
 
 pub fn extract_year_month_from_path(path: &std::path::Path) -> Option<(String, String)> {
-    let components: Vec<_> = path
+    let components: Vec<String> = path
         .components()
         .filter_map(|c| match c {
             std::path::Component::Normal(s) => s.to_str().map(String::from),
@@ -64,16 +76,25 @@ pub fn extract_year_month_from_path(path: &std::path::Path) -> Option<(String, S
         })
         .collect();
 
-    if let Some(pos) = components.iter().position(|s| s == "history")
-        && components.len() >= pos + 3
-    {
-        let year = components.get(pos + 1)?.clone();
-        let month = components.get(pos + 2)?.clone();
-        if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
-            return Some((year, month));
-        }
+    let rel = journal_relative_components(&components)?;
+    if rel.len() < 2 {
+        return None;
     }
-    None
+    let year = rel.first()?.clone();
+    if year.len() != 4 || !year.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let month = canonical_month_token(rel.get(1)?)?;
+    Some((year, month))
+}
+
+fn journal_relative_components(components: &[String]) -> Option<Vec<String>> {
+    let journal_idx = components.iter().position(|s| s == "journal")?;
+    let mut rel = components.get(journal_idx + 1..)?.to_vec();
+    if rel.first().is_some_and(|s| s == "history") {
+        rel.remove(0);
+    }
+    Some(rel)
 }
 
 /// Represents a node in the journal history tree.
@@ -125,11 +146,10 @@ impl JournalNode {
     }
 
     pub fn from_entry(entry: &JournalEntry) -> Option<Self> {
-        let (year, month_abbrev) = extract_year_month_from_path(&entry.path)?;
-        let month_name = month_abbrev_to_name(&month_abbrev)?.to_string();
+        let (year, month) = extract_year_month_from_path(&entry.path)?;
         Some(JournalNode::Entry {
             year,
-            month: month_name,
+            month,
             entry: entry.clone(),
         })
     }
@@ -146,14 +166,11 @@ pub fn build_journal_tree(entries: &[JournalEntry]) -> Vec<TreeItem> {
     > = std::collections::BTreeMap::new();
 
     for (idx, entry) in entries.iter().enumerate() {
-        if let Some((year, month_abbrev)) = extract_year_month_from_path(&entry.path) {
-            let month_name = month_abbrev_to_name(&month_abbrev)
-                .unwrap_or("Unknown")
-                .to_string();
+        if let Some((year, month)) = extract_year_month_from_path(&entry.path) {
             by_year
                 .entry(year)
                 .or_default()
-                .entry(month_name)
+                .entry(month)
                 .or_default()
                 .push(idx);
         }
@@ -276,25 +293,25 @@ mod tests {
     fn test_journal_node_month() {
         let node = JournalNode::Month {
             year: "2026".to_string(),
-            month: "March".to_string(),
+            month: "03".to_string(),
         };
-        assert_eq!(node.path_components(), vec!["2026", "March"]);
+        assert_eq!(node.path_components(), vec!["2026", "03"]);
         assert!(node.is_header());
-        assert_eq!(node.label(), "March");
+        assert_eq!(node.label(), "03");
     }
 
     #[test]
     fn test_journal_node_entry() {
         let entry = JournalEntry {
             filename: "2026-03-15.md".to_string(),
-            path: std::path::PathBuf::from("journal/history/2026/mar/2026-03-15.md"),
+            path: std::path::PathBuf::from("journal/2026/03/2026-03-15.md"),
         };
         let node = JournalNode::Entry {
             year: "2026".to_string(),
-            month: "March".to_string(),
+            month: "03".to_string(),
             entry,
         };
-        assert_eq!(node.path_components(), vec!["2026", "March", "2026-03-15"]);
+        assert_eq!(node.path_components(), vec!["2026", "03", "2026-03-15"]);
         assert!(!node.is_header());
         assert_eq!(node.label(), "2026-03-15");
     }
@@ -303,7 +320,7 @@ mod tests {
     fn test_journal_node_from_entry() {
         let entry = JournalEntry {
             filename: "2026-03-15.md".to_string(),
-            path: std::path::PathBuf::from("journal/history/2026/mar/2026-03-15.md"),
+            path: std::path::PathBuf::from("journal/2026/03/2026-03-15.md"),
         };
         let node = JournalNode::from_entry(&entry);
         assert!(node.is_some());
