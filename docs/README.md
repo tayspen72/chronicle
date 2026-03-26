@@ -10,6 +10,7 @@ This folder contains implementation-focused documentation for the Chronicle TUI 
 - [Workspace Model](./workspace-model.md)
 - [TUI Navigation](./tui-navigation.md)
 - [Template Wizard](./template-wizard.md)
+- [Journal System](./journal.md)
 - [Diagnostics](./diagnostics.md)
 - [Development](./development.md)
 

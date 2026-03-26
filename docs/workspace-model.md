@@ -15,7 +15,9 @@ workspace/
 │   ├── current/
 │   └── history/
 ├── journal/
-│   └── YYYY-MM-DD.md
+│   └── YYYY/
+│       └── MM/
+│           └── YYYY-MM-DD.md
 └── .archive/
 ```
 

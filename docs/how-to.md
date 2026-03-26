@@ -39,3 +39,10 @@ level = "debug"
 
 Log file:
 - `~/.config/chronicle/logs/diagnostics.log`
+
+## Use Journal Todos
+
+1. Open today's journal from the History sidebar (press Enter)
+2. Add items to the "# To do" section using `- [ ] ` or `* [ ] ` syntax
+3. View and toggle todos in the "My Tasks" planning report
+4. Use `chronicle jot "note"` to add timestamped entries to the "# Notes" section

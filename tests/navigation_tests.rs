@@ -1185,7 +1185,7 @@ fn test_repeated_left_on_journal_walks_up_tiers_consistently() {
 }
 
 #[test]
-fn test_enter_on_journal_entry_opens_viewer() {
+fn test_enter_on_journal_entry_launches_editor() {
     let (_temp, mut app) = app_with_journal_entries();
 
     let history_idx = app
@@ -1209,11 +1209,7 @@ fn test_enter_on_journal_entry_opens_viewer() {
 
     app.handle_key(KeyCode::Enter);
 
-    assert_eq!(app.current_view, ViewType::ViewingContent);
-    assert!(
-        app.selected_content.is_some(),
-        "Enter on journal entry should open selected content"
-    );
+    assert_eq!(app.current_view, ViewType::TreeView);
 }
 
 #[test]

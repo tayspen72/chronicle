@@ -1508,8 +1508,7 @@ impl App {
                 "Today" => {
                     let today_path = self.config.workspace.today_journal_path();
                     if today_path.exists() {
-                        // Content preview is already rendered inline in TreeView.
-                        self.current_view = ViewType::TreeView;
+                        self.launch_editor(&today_path);
                     } else {
                         match self.create_today_journal_from_template() {
                             Ok(path) => self.launch_editor(&path),
@@ -1538,15 +1537,9 @@ impl App {
                 .journal_entries
                 .iter()
                 .find(|e| *e.filename.trim_end_matches(".md") == *label)
-                && let Ok(content) = self.config.workspace.read_journal_entry(&entry.path)
             {
-                self.current_content_text = Some(content);
-                self.selected_content = Some(DirectoryEntry {
-                    name: entry.filename.clone(),
-                    path: entry.path.clone(),
-                    is_dir: false,
-                });
-                self.current_view = ViewType::ViewingContent;
+                let path = entry.path.clone();
+                self.launch_editor(&path);
             }
             return;
         }

@@ -420,15 +420,6 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 ## Future Features
 
-### Config Defaults
-
-Require `workspace`, `editor`, and `owner` in `config.toml`.
-All other config entries should remain optional and fall back to documented defaults.
-
-### Subtask Creation Wizard Parity
-
-Add subtask creation flow parity with the same creation wizard UX contract used by program/project/milestone/task.
-
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
