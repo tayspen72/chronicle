@@ -13,16 +13,21 @@ use ratatui::{
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
 
-pub fn render_element_report(f: &mut Frame, report: &ElementReport, area: ratatui::layout::Rect) {
+pub fn render_element_report(
+    f: &mut Frame,
+    app: &App,
+    report: &ElementReport,
+    area: ratatui::layout::Rect,
+) {
     if report.rows.is_empty() {
         let message = format!("No {} detected.", report.child_plural);
         let paragraph = Paragraph::new(message)
-            .style(Style::default().fg(Color::White))
+            .style(app.text_primary())
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title(report.child_plural),
             );
         f.render_widget(paragraph, area);
@@ -60,13 +65,13 @@ pub fn render_element_report(f: &mut Frame, report: &ElementReport, area: ratatu
                 Cell::from("Status"),
                 Cell::from(report.grandchild_plural),
             ])
-            .style(Style::default().fg(Color::LightBlue))
+            .style(app.content_table_header_style())
             .bottom_margin(1),
         )
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.content_table_border_style())
                 .title(report.child_plural),
         );
 
@@ -75,12 +80,13 @@ pub fn render_element_report(f: &mut Frame, report: &ElementReport, area: ratatu
 
 fn render_selected_element_view(
     f: &mut Frame,
+    app: &App,
     selected: &SelectedElementView,
     area: ratatui::layout::Rect,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(app.border_style())
         .title(selected.title.clone());
     f.render_widget(block, area);
 
@@ -111,25 +117,26 @@ fn render_selected_element_view(
         ])
         .split(inner);
 
-    render_yaml_details(f, &yaml_rows, &selected.status, sections[0]);
+    render_yaml_details(f, app, &yaml_rows, &selected.status, sections[0]);
 
     let markdown_body = strip_yaml_frontmatter(&selected.content);
     let markdown = Paragraph::new(markdown_to_text(markdown_body))
-        .style(Style::default().fg(Color::White))
+        .style(app.text_primary())
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Content"),
         );
     f.render_widget(markdown, sections[1]);
 
-    render_element_report(f, &selected.report, sections[2]);
+    render_element_report(f, app, &selected.report, sections[2]);
 }
 
 fn render_yaml_details(
     f: &mut Frame,
+    app: &App,
     rows: &[(String, String)],
     status: &str,
     area: ratatui::layout::Rect,
@@ -137,12 +144,12 @@ fn render_yaml_details(
     if rows.is_empty() {
         let message = format!("No YAML frontmatter detected.\nStatus: {}.", status);
         let paragraph = Paragraph::new(message)
-            .style(Style::default().fg(Color::White))
+            .style(app.text_primary())
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title("Details"),
             );
         f.render_widget(paragraph, area);
@@ -157,13 +164,13 @@ fn render_yaml_details(
     let table = Table::new(table_rows, widths)
         .header(
             Row::new(vec![Cell::from("Field"), Cell::from("Value")])
-                .style(Style::default().fg(Color::LightBlue))
+                .style(app.content_table_header_style())
                 .bottom_margin(1),
         )
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Details"),
         );
     f.render_widget(table, area);
@@ -219,7 +226,7 @@ fn yaml_value_to_string(value: &Value) -> String {
 
 pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if let Some(selected) = app.selected_element_view() {
-        render_selected_element_view(f, &selected, area);
+        render_selected_element_view(f, app, &selected, area);
         return;
     }
     let idx = app.navigation_state.selected_entry_index;
@@ -337,19 +344,19 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     let paragraph = Paragraph::new(markdown_to_text(&content_to_show))
-        .style(Style::default().fg(Color::White))
+        .style(app.text_primary())
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         );
 
     f.render_widget(paragraph, area);
 }
 
-pub fn render_journal_welcome(f: &mut Frame, _app: &App, area: ratatui::layout::Rect) {
+pub fn render_journal_welcome(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let content = "Journal\n\n\
         Welcome to your journal!\n\n\
         Type /journal to access:\n\
@@ -357,14 +364,12 @@ pub fn render_journal_welcome(f: &mut Frame, _app: &App, area: ratatui::layout::
           - Journal History\n\n\
         Press / to open command palette";
 
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title("Journal"),
-        );
+    let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.border_style())
+            .title("Journal"),
+    );
     f.render_widget(paragraph, area);
 }
 
@@ -372,25 +377,23 @@ pub fn render_journal_today(f: &mut Frame, app: &App, area: ratatui::layout::Rec
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let content = format!("Today's Journal\n\n{}", app.input_buffer);
 
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(format!("Journal - {}", today)),
-        );
+    let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.border_style())
+            .title(format!("Journal - {}", today)),
+    );
     f.render_widget(paragraph, area);
 }
 
 pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.journal_entries.is_empty() {
         let paragraph = Paragraph::new("No journal entries found.")
-            .style(Style::default().fg(Color::White))
+            .style(app.text_primary())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title("Journal History"),
             );
         f.render_widget(paragraph, area);
@@ -445,10 +448,10 @@ pub fn render_archive_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Journal History"),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -462,6 +465,7 @@ pub fn render_backlog(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     render_plan_task_table(
         f,
+        app,
         area,
         "Backlog",
         &tasks,
@@ -496,6 +500,7 @@ pub fn render_my_tasks(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     render_plan_task_table(
         f,
+        app,
         sections[0],
         "My Tasks",
         &assigned_tasks,
@@ -506,11 +511,11 @@ pub fn render_my_tasks(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     if todos.is_empty() {
         let paragraph = Paragraph::new("No To Do items found in today's journal.")
-            .style(Style::default().fg(Color::White))
+            .style(app.text_primary())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title("Today's To Do"),
             );
         f.render_widget(paragraph, sections[1]);
@@ -543,7 +548,7 @@ pub fn render_my_tasks(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title("Today's To Do"),
             );
         f.render_widget(table, sections[1]);
@@ -559,6 +564,7 @@ pub fn render_my_tasks(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 fn render_plan_task_table(
     f: &mut Frame,
+    app: &App,
     area: ratatui::layout::Rect,
     title: &str,
     tasks: &[crate::model::SelectedTask],
@@ -568,11 +574,11 @@ fn render_plan_task_table(
 ) {
     if tasks.is_empty() {
         let paragraph = Paragraph::new(empty_message)
-            .style(Style::default().fg(Color::White))
+            .style(app.text_primary())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(app.border_style())
                     .title(title),
             );
         f.render_widget(paragraph, area);
@@ -618,7 +624,7 @@ fn render_plan_task_table(
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(app.border_style())
             .title(title),
     );
     f.render_widget(table, area);
@@ -637,12 +643,12 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
         let empty_state = Paragraph::new(
             "No current planning session found.\n\nPress 'Enter' or '/Start Planning Session' to create a new plan.",
         )
-        .style(Style::default().fg(Color::White))
+        .style(app.text_primary())
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Current Plan"),
         );
         f.render_widget(empty_state, area);
@@ -751,7 +757,7 @@ pub fn render_weekly_planning(f: &mut Frame, app: &App, area: ratatui::layout::R
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         )
         .column_spacing(1);
@@ -885,7 +891,7 @@ pub fn render_content_viewer(f: &mut Frame, app: &App, area: ratatui::layout::Re
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(app.border_style())
         .title(title);
 
     f.render_widget(block, area);
@@ -898,7 +904,7 @@ pub fn render_content_viewer(f: &mut Frame, app: &App, area: ratatui::layout::Re
     };
 
     let paragraph = Paragraph::new(markdown_to_text(&content))
-        .style(Style::default().fg(Color::White))
+        .style(app.text_primary())
         .wrap(Wrap { trim: false });
     f.render_widget(paragraph, inner_area);
 }
@@ -1123,14 +1129,12 @@ pub fn render_input(f: &mut Frame, app: &App, area: ratatui::layout::Rect, promp
         "{}\n\n> {}\n\nPress Enter to confirm, Esc to cancel",
         prompt, app.input_buffer
     );
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title("Input"),
-        );
+    let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.border_style())
+            .title("Input"),
+    );
     f.render_widget(paragraph, area);
 }
 
@@ -1265,16 +1269,20 @@ pub fn render_template_fields(f: &mut Frame, app: &App, area: ratatui::layout::R
     );
 }
 
-pub fn render_placeholder(f: &mut Frame, area: ratatui::layout::Rect, title: &str, message: &str) {
+pub fn render_placeholder(
+    f: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    title: &str,
+    message: &str,
+) {
     let content = format!("{}\n\n({})", title, message);
-    let paragraph = Paragraph::new(content)
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(title),
-        );
+    let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.border_style())
+            .title(title),
+    );
     f.render_widget(paragraph, area);
 }
 
@@ -1312,10 +1320,10 @@ pub fn render_programs_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -1333,14 +1341,12 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
             "{}\n\n(No projects yet. Use /new project to create one.)",
             title
         );
-        let paragraph = Paragraph::new(content)
-            .style(Style::default().fg(Color::White))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(title),
-            );
+        let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.border_style())
+                .title(title),
+        );
         f.render_widget(paragraph, area);
         return;
     }
@@ -1367,10 +1373,10 @@ pub fn render_projects_list(f: &mut Frame, app: &App, area: ratatui::layout::Rec
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -1391,14 +1397,12 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
             "{}\n\n(No milestones yet. Use /new milestone to create one.)",
             title
         );
-        let paragraph = Paragraph::new(content)
-            .style(Style::default().fg(Color::White))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(title),
-            );
+        let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.border_style())
+                .title(title),
+        );
         f.render_widget(paragraph, area);
         return;
     }
@@ -1425,10 +1429,10 @@ pub fn render_milestones_list(f: &mut Frame, app: &App, area: ratatui::layout::R
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -1447,14 +1451,12 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 
     if app.tree_data.tasks.is_empty() {
         let content = format!("{}\n\n(No tasks yet. Use /new task to create one.)", title);
-        let paragraph = Paragraph::new(content)
-            .style(Style::default().fg(Color::White))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(title),
-            );
+        let paragraph = Paragraph::new(content).style(app.text_primary()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.border_style())
+                .title(title),
+        );
         f.render_widget(paragraph, area);
         return;
     }
@@ -1481,10 +1483,10 @@ pub fn render_tasks_list(f: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title(title),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -1953,7 +1955,7 @@ pub fn render_planning_preview(f: &mut Frame, app: &App, area: ratatui::layout::
     let tasks_para = Paragraph::new(task_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(app.border_style())
             .title(format!("Tasks ({})", task_count)),
     );
     f.render_widget(tasks_para, chunks[1]);

@@ -23,6 +23,7 @@ pub enum CommandAction {
     StartPlanningSession,
     ClosePlanningSession,
     ReviewSession,
+    SwitchTheme,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -246,6 +247,12 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::WeeklyPlanning,
             exit: false,
             action: Some(CommandAction::ReviewSession),
+        },
+        CommandMatch {
+            label: "Theme".to_string(),
+            view: ViewType::TreeView,
+            exit: false,
+            action: Some(CommandAction::SwitchTheme),
         },
         CommandMatch {
             label: "Exit".to_string(),

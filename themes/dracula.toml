@@ -1,0 +1,125 @@
+# Chronicle Dracula Theme
+# Based on the Dracula color scheme
+
+[palette]
+background = "#282a36"
+black = "#21222c"
+dark_gray = "#44475a"
+gray = "#6272a4"
+light_gray = "#f8f8f2"
+white = "#ffffff"
+cyan = "#8be9fd"
+green = "#50fa7b"
+orange = "#ffb86c"
+pink = "#ff79c6"
+purple = "#bd93f9"
+red = "#ff5555"
+yellow = "#f1fa8c"
+
+[ui.background]
+bg = "background"
+
+[ui.surface]
+bg = "black"
+
+[ui.text.primary]
+fg = "white"
+
+[ui.text.secondary]
+fg = "gray"
+
+[ui.text.muted]
+fg = "dark_gray"
+
+[ui.selection]
+bg = "purple"
+fg = "white"
+
+[ui.selection.active]
+fg = "black"
+bg = "yellow"
+
+[ui.border.normal]
+fg = "dark_gray"
+
+[ui.border.focused]
+fg = "pink"
+
+[ui.sidebar.header]
+fg = "gray"
+
+[ui.sidebar.item]
+fg = "white"
+
+[ui.sidebar.selected]
+fg = "background"
+bg = "purple"
+modifiers = ["bold"]
+
+[ui.sidebar.create_action]
+fg = "green"
+modifiers = ["italic"]
+
+[ui.status]
+normal = "green"
+command = "orange"
+input = "cyan"
+select = "pink"
+review = "pink"
+hierarchical_selection = "cyan"
+planning_preview = "purple"
+task_detail_wizard = "yellow"
+current_plan_navigation = "cyan"
+theme_selection = "cyan"
+
+[ui.content.title]
+fg = "pink"
+modifiers = ["bold"]
+
+[ui.content.header]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.content.table_header]
+fg = "pink"
+
+[ui.content.table_border]
+fg = "dark_gray"
+
+[ui.wizard.field_label]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.wizard.field_value]
+fg = "white"
+
+[ui.wizard.field_value_empty]
+fg = "gray"
+
+[ui.wizard.field_value_auto]
+fg = "gray"
+
+[ui.wizard.button_confirm]
+fg = "black"
+bg = "green"
+modifiers = ["bold"]
+
+[ui.wizard.button_cancel]
+fg = "gray"
+
+[ui.wizard.button_selected]
+fg = "background"
+bg = "purple"
+
+[ui.command.input]
+fg = "white"
+bg = "black"
+
+[ui.command.result]
+fg = "white"
+bg = "black"
+
+[ui.command.result_selected]
+fg = "black"
+bg = "purple"
+modifiers = ["bold"]

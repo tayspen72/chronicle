@@ -1,0 +1,126 @@
+# Chronicle Nord Theme
+# Based on the Nord color scheme
+
+[palette]
+background = "#2e3440"
+black = "#3b4252"
+dark_gray = "#4c566a"
+gray = "#616e88"
+light_gray = "#d8dee9"
+white = "#eceff4"
+blue = "#88c0d0"
+cyan = "#81a1c1"
+light_cyan = "#8fbcbb"
+purple = "#b48ead"
+yellow = "#ebcb8b"
+orange = "#d08770"
+green = "#a3be8c"
+red = "#bf616a"
+
+[ui.background]
+bg = "background"
+
+[ui.surface]
+bg = "black"
+
+[ui.text.primary]
+fg = "white"
+
+[ui.text.secondary]
+fg = "gray"
+
+[ui.text.muted]
+fg = "dark_gray"
+
+[ui.selection]
+bg = "blue"
+fg = "black"
+
+[ui.selection.active]
+fg = "black"
+bg = "yellow"
+
+[ui.border.normal]
+fg = "dark_gray"
+
+[ui.border.focused]
+fg = "cyan"
+
+[ui.sidebar.header]
+fg = "gray"
+
+[ui.sidebar.item]
+fg = "white"
+
+[ui.sidebar.selected]
+fg = "background"
+bg = "cyan"
+modifiers = ["bold"]
+
+[ui.sidebar.create_action]
+fg = "green"
+modifiers = ["italic"]
+
+[ui.status]
+normal = "green"
+command = "yellow"
+input = "cyan"
+select = "purple"
+review = "purple"
+hierarchical_selection = "light_cyan"
+planning_preview = "blue"
+task_detail_wizard = "yellow"
+current_plan_navigation = "light_cyan"
+theme_selection = "light_cyan"
+
+[ui.content.title]
+fg = "cyan"
+modifiers = ["bold"]
+
+[ui.content.header]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.content.table_header]
+fg = "cyan"
+
+[ui.content.table_border]
+fg = "dark_gray"
+
+[ui.wizard.field_label]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.wizard.field_value]
+fg = "white"
+
+[ui.wizard.field_value_empty]
+fg = "gray"
+
+[ui.wizard.field_value_auto]
+fg = "gray"
+
+[ui.wizard.button_confirm]
+fg = "background"
+bg = "green"
+modifiers = ["bold"]
+
+[ui.wizard.button_cancel]
+fg = "gray"
+
+[ui.wizard.button_selected]
+fg = "background"
+bg = "cyan"
+
+[ui.command.input]
+fg = "white"
+bg = "black"
+
+[ui.command.result]
+fg = "white"
+bg = "black"
+
+[ui.command.result_selected]
+fg = "black"
+bg = "cyan"
+modifiers = ["bold"]

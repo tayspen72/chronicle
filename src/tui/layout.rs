@@ -3,7 +3,7 @@ use crate::tui::{App, Mode, ViewType};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
@@ -64,6 +64,8 @@ pub fn tree_prefix_for_item(
 }
 
 pub fn render(f: &mut Frame, app: &App) {
+    f.render_widget(Block::default().style(app.background_style()), f.area());
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -81,7 +83,7 @@ pub fn render(f: &mut Frame, app: &App) {
     };
 
     let command_bar = Paragraph::new(command_text)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(app.text_secondary())
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(command_bar, chunks[0]);
 
@@ -106,6 +108,11 @@ pub fn render(f: &mut Frame, app: &App) {
     // Command palette overlay
     if matches!(app.mode, Mode::CommandPalette) {
         render_command_palette(f, app);
+    }
+
+    // Theme selection overlay
+    if matches!(app.mode, Mode::ThemeSelection) {
+        render_theme_selection(f, app);
     }
 
     // Status bar
@@ -241,26 +248,13 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let style = if item.is_header {
-                Style::default().fg(Color::DarkGray)
+                app.sidebar_header_style()
             } else if item.is_create_action {
-                // Style create action items with dimmed cyan to indicate it's an action
-                if is_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                } else {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                }
+                app.sidebar_create_action_style(is_selected)
             } else if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
+                app.sidebar_selected_style()
             } else {
-                Style::default().fg(Color::White)
+                app.sidebar_style()
             };
             ListItem::new(full_label).style(style)
         })
@@ -270,10 +264,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Navigator"),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -329,11 +323,11 @@ fn render_command_palette(f: &mut Frame, app: &App) {
 
     // Command input
     let input = Paragraph::new(app.command_palette.display_text())
-        .style(Style::default().fg(Color::White).bg(Color::Black))
+        .style(app.command_input_style())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightBlue))
+                .border_style(app.command_border_style())
                 .title("Command"),
         );
 
@@ -347,12 +341,9 @@ fn render_command_palette(f: &mut Frame, app: &App) {
         .enumerate()
         .map(|(idx, cmd)| {
             let style = if idx == app.command_palette.selection_index {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
+                app.command_result_selected_style()
             } else {
-                Style::default().fg(Color::White).bg(Color::Black)
+                app.command_result_style()
             };
             ListItem::new(cmd.label.as_str()).style(style)
         })
@@ -362,9 +353,9 @@ fn render_command_palette(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(app.border_style()),
         )
-        .style(Style::default().fg(Color::White).bg(Color::Black));
+        .style(app.command_result_style());
 
     f.render_widget(list, popup[1]);
 }
@@ -392,19 +383,21 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         breadcrumb_parts.join(" > ")
     };
 
-    // Determine mode text and color
-    let (mode_text, mode_color) = match app.mode {
-        Mode::Normal => ("NORMAL", Color::Green),
-        Mode::CommandPalette => ("COMMAND", Color::Yellow),
-        Mode::Input => ("INPUT", Color::Cyan),
-        Mode::TaskSelection => ("SELECT", Color::Magenta),
-        Mode::ReviewSession => ("REVIEW", Color::LightMagenta),
-        Mode::HierarchicalSelection => ("ADD TASKS", Color::LightCyan),
-        Mode::PlanningPreview => ("PREVIEW", Color::LightBlue),
-        Mode::TaskDetailWizard => ("EDIT TASK", Color::LightYellow),
-        Mode::InputTaskDetailField => ("INPUT", Color::Cyan),
-        Mode::CurrentPlanNavigation => ("PLAN NAV", Color::LightCyan),
+    let mode_text = match app.mode {
+        Mode::Normal => "NORMAL",
+        Mode::CommandPalette => "COMMAND",
+        Mode::Input => "INPUT",
+        Mode::TaskSelection => "SELECT",
+        Mode::ReviewSession => "REVIEW",
+        Mode::HierarchicalSelection => "ADD TASKS",
+        Mode::PlanningPreview => "PREVIEW",
+        Mode::TaskDetailWizard => "EDIT TASK",
+        Mode::InputTaskDetailField => "INPUT",
+        Mode::CurrentPlanNavigation => "PLAN NAV",
+        Mode::ThemeSelection => "THEME",
     };
+
+    let mode_color = app.status_color();
 
     // Split the status bar into left (breadcrumb) and right (mode) sections
     let chunks = Layout::default()
@@ -417,7 +410,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Render breadcrumb (left side)
     let breadcrumb_widget = Paragraph::new(breadcrumb)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(app.text_secondary())
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(breadcrumb_widget, chunks[0]);
 
@@ -670,4 +663,68 @@ mod tests {
             "Level2b should have pipe at level 1 because Level3 exists"
         );
     }
+}
+
+fn render_theme_selection(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let popup = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(5),    // Theme list
+            Constraint::Length(3), // Instructions
+        ])
+        .margin(10)
+        .split(area);
+
+    // Clear the background behind the popup
+    f.render_widget(Clear, area);
+
+    // Title
+    let title = Paragraph::new("Select Theme")
+        .style(
+            app.text_primary()
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme_border_style()),
+        );
+    f.render_widget(title, popup[0]);
+
+    // Theme list
+    let items: Vec<ListItem> = app
+        .available_themes
+        .iter()
+        .enumerate()
+        .map(|(idx, theme)| {
+            let is_selected = idx == app.theme_selection_index;
+            let is_active = theme == &app.config.theme;
+            let style = if is_selected {
+                app.sidebar_selected_style()
+            } else {
+                app.sidebar_style()
+            };
+            let prefix = if is_selected { "▶ " } else { "  " };
+            let suffix = if is_active { " *" } else { "" };
+            ListItem::new(format!("{}{}{}", prefix, theme, suffix)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme_border_style()),
+        )
+        .style(app.text_primary());
+
+    f.render_widget(list, popup[1]);
+
+    // Instructions
+    let instructions = Paragraph::new("↑↓ Navigate • Enter Confirm • Esc Cancel  (* = saved)")
+        .style(app.text_secondary())
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(instructions, popup[2]);
 }

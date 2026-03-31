@@ -1,0 +1,125 @@
+# Chronicle Default Dark Theme
+# This theme mirrors the original hardcoded colors in the TUI
+
+[palette]
+black = "#000000"
+white = "#ffffff"
+dark_gray = "#3a3a3a"
+gray = "#808080"
+blue = "#0000ff"
+light_blue = "#66b3ff"
+cyan = "#00d4aa"
+light_cyan = "#66e0d4"
+yellow = "#f0e68c"
+light_yellow = "#ffff99"
+green = "#98fb98"
+magenta = "#ff79c6"
+light_magenta = "#ff99cc"
+
+[ui.background]
+bg = "black"
+
+[ui.surface]
+bg = "dark_gray"
+
+[ui.text.primary]
+fg = "white"
+
+[ui.text.secondary]
+fg = "dark_gray"
+
+[ui.text.muted]
+fg = "dark_gray"
+
+[ui.selection]
+bg = "light_blue"
+fg = "black"
+
+[ui.selection.active]
+fg = "black"
+bg = "yellow"
+
+[ui.border.normal]
+fg = "dark_gray"
+
+[ui.border.focused]
+fg = "light_blue"
+
+[ui.sidebar.header]
+fg = "dark_gray"
+
+[ui.sidebar.item]
+fg = "white"
+
+[ui.sidebar.selected]
+fg = "black"
+bg = "light_blue"
+modifiers = ["bold"]
+
+[ui.sidebar.create_action]
+fg = "cyan"
+modifiers = ["italic"]
+
+[ui.status]
+normal = "green"
+command = "yellow"
+input = "cyan"
+select = "magenta"
+review = "light_magenta"
+hierarchical_selection = "light_cyan"
+planning_preview = "light_blue"
+task_detail_wizard = "light_yellow"
+current_plan_navigation = "light_cyan"
+theme_selection = "light_cyan"
+
+[ui.content.title]
+fg = "light_blue"
+modifiers = ["bold"]
+
+[ui.content.header]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.content.table_header]
+fg = "light_blue"
+
+[ui.content.table_border]
+fg = "dark_gray"
+
+[ui.wizard.field_label]
+fg = "white"
+modifiers = ["bold"]
+
+[ui.wizard.field_value]
+fg = "white"
+
+[ui.wizard.field_value_empty]
+fg = "dark_gray"
+
+[ui.wizard.field_value_auto]
+fg = "dark_gray"
+
+[ui.wizard.button_confirm]
+fg = "black"
+bg = "cyan"
+modifiers = ["bold"]
+
+[ui.wizard.button_cancel]
+fg = "dark_gray"
+
+[ui.wizard.button_selected]
+fg = "black"
+bg = "light_blue"
+
+[ui.command.input]
+fg = "white"
+bg = "black"
+
+[ui.command.result]
+fg = "white"
+bg = "black"
+
+[ui.command.result_selected]
+fg = "black"
+bg = "light_blue"
+modifiers = ["bold"]

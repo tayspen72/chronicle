@@ -23,7 +23,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend, style::Style};
 use std::io::{self, Write};
 
 use crate::config::Config;
@@ -36,6 +36,7 @@ use crate::storage::planning::{
 use crate::storage::{
     DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
+use crate::theme::Theme;
 use cache::{TaskMetadata, TreeData};
 use chrono::Local;
 use command::{CommandAction, CommandMatch, CommandPalette};
@@ -70,6 +71,8 @@ pub enum Mode {
     InputTaskDetailField,
     /// User is navigating the Current Plan report by tasks
     CurrentPlanNavigation,
+    /// User is selecting a theme
+    ThemeSelection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +164,7 @@ pub struct DailyTodoItem {
 
 pub struct App {
     pub config: Config,
+    pub theme: Theme,
     pub current_view: ViewType,
     pub navigation_state: NavigationState,
     pub mode: Mode,
@@ -187,6 +191,10 @@ pub struct App {
     pub archive_tree_mapping: Vec<Option<usize>>,
     // Journal tree state for sidebar expansion
     pub journal_tree_state: JournalTreeState,
+    // Theme selection state
+    pub available_themes: Vec<String>,
+    pub theme_selection_index: usize,
+    pub previous_theme: Option<crate::theme::Theme>,
 }
 
 impl App {
@@ -196,8 +204,18 @@ impl App {
     const JOURNAL_EXPANSION_ROOT: &'static str = "__journal__";
 
     pub fn new(config: Config) -> Self {
+        let theme = config.load_theme().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to load theme '{}': {}, using default",
+                config.theme,
+                e
+            );
+            crate::theme::default_theme()
+        });
+
         let mut app = App {
             config,
+            theme,
             current_view: ViewType::TreeView,
             navigation_state: NavigationState::new(),
             mode: Mode::Normal,
@@ -218,12 +236,307 @@ impl App {
             backlog_staged_uuids: None,
             archive_tree_mapping: Vec::new(),
             journal_tree_state: JournalTreeState::new(),
+            available_themes: crate::theme::loader::list_available_themes(),
+            theme_selection_index: 0,
+            previous_theme: None,
         };
 
         app.load_tree_view_data();
         app.ensure_journal_entries_loaded();
         app.resume_planning_session();
         app
+    }
+
+    pub fn background_style(&self) -> ratatui::style::Style {
+        self.theme.ui.background.unwrap_or_default()
+    }
+
+    pub fn text_primary(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .text
+            .primary
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::White))
+    }
+
+    pub fn text_secondary(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .text
+            .secondary
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn sidebar_style(&self) -> ratatui::style::Style {
+        self.theme.ui.sidebar.item.unwrap_or_default()
+    }
+
+    pub fn sidebar_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.sidebar.selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn sidebar_header_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .sidebar
+            .header
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn sidebar_create_action_style(&self, selected: bool) -> ratatui::style::Style {
+        if let Some(style) = &self.theme.ui.sidebar.create_action {
+            if selected {
+                return (*style)
+                    .bg(ratatui::style::Color::Cyan)
+                    .fg(ratatui::style::Color::Black);
+            }
+            return *style;
+        }
+        if selected {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Cyan)
+        } else {
+            ratatui::style::Style::default().fg(ratatui::style::Color::Cyan)
+        }
+    }
+
+    pub fn border_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .border
+            .normal
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn status_color(&self) -> ratatui::style::Color {
+        match self.mode {
+            Mode::Normal => self
+                .theme
+                .ui
+                .status
+                .normal
+                .unwrap_or(ratatui::style::Color::Green),
+            Mode::CommandPalette => self
+                .theme
+                .ui
+                .status
+                .command
+                .unwrap_or(ratatui::style::Color::Yellow),
+            Mode::Input | Mode::InputTaskDetailField => self
+                .theme
+                .ui
+                .status
+                .input
+                .unwrap_or(ratatui::style::Color::Cyan),
+            Mode::TaskSelection => self
+                .theme
+                .ui
+                .status
+                .select
+                .unwrap_or(ratatui::style::Color::Magenta),
+            Mode::ReviewSession => self
+                .theme
+                .ui
+                .status
+                .review
+                .unwrap_or(ratatui::style::Color::LightMagenta),
+            Mode::HierarchicalSelection => self
+                .theme
+                .ui
+                .status
+                .hierarchical_selection
+                .unwrap_or(ratatui::style::Color::LightCyan),
+            Mode::PlanningPreview => self
+                .theme
+                .ui
+                .status
+                .planning_preview
+                .unwrap_or(ratatui::style::Color::LightBlue),
+            Mode::TaskDetailWizard => self
+                .theme
+                .ui
+                .status
+                .task_detail_wizard
+                .unwrap_or(ratatui::style::Color::LightYellow),
+            Mode::CurrentPlanNavigation => self
+                .theme
+                .ui
+                .status
+                .current_plan_navigation
+                .unwrap_or(ratatui::style::Color::LightCyan),
+            Mode::ThemeSelection => self
+                .theme
+                .ui
+                .status
+                .theme_selection
+                .unwrap_or(ratatui::style::Color::LightCyan),
+        }
+    }
+
+    pub fn command_input_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.input.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .bg(ratatui::style::Color::Black)
+        })
+    }
+
+    pub fn command_result_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.result.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .bg(ratatui::style::Color::Black)
+        })
+    }
+
+    pub fn command_result_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.result_selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn command_border_style(&self) -> ratatui::style::Style {
+        self.theme.ui.border.focused.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn theme_border_style(&self) -> ratatui::style::Style {
+        self.theme.ui.border.focused.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightCyan)
+        })
+    }
+
+    pub fn content_title_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.title.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn content_header_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.header.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn content_table_header_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.table_header.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn content_table_border_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .content
+            .table_border
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_field_label_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.field_label.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn wizard_field_value_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::White))
+    }
+
+    pub fn wizard_field_empty_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value_empty
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_field_auto_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value_auto
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_button_confirm_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.button_confirm.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Cyan)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn wizard_button_cancel_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .button_cancel
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_button_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.button_selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn selection_bg(&self) -> ratatui::style::Color {
+        self.theme
+            .ui
+            .selection
+            .bg
+            .unwrap_or(ratatui::style::Color::LightBlue)
+    }
+
+    pub fn selection_fg(&self) -> ratatui::style::Style {
+        if let Some(fg) = self.theme.ui.selection.fg {
+            Style::default().fg(fg)
+        } else {
+            Style::default().fg(ratatui::style::Color::Black)
+        }
+    }
+
+    pub fn hierarchy_program_style(&self) -> ratatui::style::Style {
+        Style::default().add_modifier(ratatui::style::Modifier::BOLD)
+    }
+
+    pub fn hierarchy_project_style(&self) -> ratatui::style::Style {
+        Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
+    }
+
+    pub fn hierarchy_milestone_style(&self) -> ratatui::style::Style {
+        Style::default().fg(ratatui::style::Color::LightCyan)
+    }
+
+    pub fn selection_active_style(&self) -> ratatui::style::Style {
+        self.theme.ui.selection.active.unwrap_or_else(|| {
+            Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Yellow)
+        })
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -636,6 +949,32 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+            return;
+        }
+
+        // Handle ThemeSelection mode
+        if self.mode == Mode::ThemeSelection {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.theme_selection_index > 0 {
+                        self.theme_selection_index -= 1;
+                        self.preview_theme();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.theme_selection_index < self.available_themes.len().saturating_sub(1) {
+                        self.theme_selection_index += 1;
+                        self.preview_theme();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.confirm_theme_selection();
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.cancel_theme_selection();
+                }
+                _ => {}
             }
             return;
         }
@@ -2309,7 +2648,10 @@ impl App {
                 // Only reset mode if we're not entering a special mode that should persist
                 if !matches!(
                     self.mode,
-                    Mode::TaskSelection | Mode::ReviewSession | Mode::HierarchicalSelection
+                    Mode::TaskSelection
+                        | Mode::ReviewSession
+                        | Mode::HierarchicalSelection
+                        | Mode::ThemeSelection
                 ) {
                     self.mode = Mode::Normal;
                 }
@@ -2380,6 +2722,9 @@ impl App {
             }
             Some(CommandAction::ReviewSession) => {
                 self.start_review_session();
+            }
+            Some(CommandAction::SwitchTheme) => {
+                self.start_theme_selection();
             }
             None => {
                 self.current_view = cmd.view.clone();
@@ -3070,6 +3415,59 @@ impl App {
         self.review_state.reset();
         self.planning_session.rolled_over_tasks.clear();
         self.mode = Mode::ReviewSession;
+    }
+
+    fn start_theme_selection(&mut self) {
+        self.available_themes = crate::theme::loader::list_available_themes();
+        tracing::debug!("Available themes: {:?}", self.available_themes);
+        if let Some(current) = self
+            .available_themes
+            .iter()
+            .position(|t| t == &self.config.theme)
+        {
+            self.theme_selection_index = current;
+        } else {
+            self.theme_selection_index = 0;
+        }
+        self.previous_theme = Some(self.theme.clone());
+        self.mode = Mode::ThemeSelection;
+    }
+
+    fn preview_theme(&mut self) {
+        if let Some(name) = self
+            .available_themes
+            .get(self.theme_selection_index)
+            .cloned()
+        {
+            match crate::theme::loader::load_theme(&name) {
+                Ok(t) => self.theme = t,
+                Err(e) => tracing::warn!("Failed to preview theme '{}': {}", name, e),
+            }
+        }
+    }
+
+    fn confirm_theme_selection(&mut self) {
+        if let Some(theme_name) = self
+            .available_themes
+            .get(self.theme_selection_index)
+            .cloned()
+        {
+            self.config.theme = theme_name.clone();
+            if let Err(e) = self.config.save() {
+                tracing::error!("Failed to save config: {}", e);
+            } else {
+                tracing::info!("Confirmed theme: {}", theme_name);
+            }
+        }
+        self.previous_theme = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn cancel_theme_selection(&mut self) {
+        if let Some(prev) = self.previous_theme.take() {
+            self.theme = prev;
+        }
+        self.mode = Mode::Normal;
     }
 
     fn navigate_review(&mut self, direction: isize) {

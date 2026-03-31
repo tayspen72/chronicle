@@ -31,6 +31,10 @@ fn default_diagnostics_enabled() -> bool {
     false
 }
 
+fn default_theme() -> String {
+    "default_dark".to_string()
+}
+
 /// Diagnostics logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsConfig {
@@ -70,6 +74,9 @@ pub struct Config {
     /// Diagnostics logging for TUI debugging
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    /// Theme name to use for TUI
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -86,6 +93,7 @@ impl Default for Config {
             importance: default_importance(),
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
+            theme: default_theme(),
         }
     }
 }
@@ -128,8 +136,25 @@ impl Config {
             .map(|home| home.join(".config").join("chronicle"))
     }
 
+    pub fn save(&self) -> anyhow::Result<()> {
+        let config_path = Self::config_path()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+        let contents = toml::to_string_pretty(self)?;
+        fs::write(&config_path, contents)?;
+        Ok(())
+    }
+
     pub fn config_path() -> Option<PathBuf> {
         Self::config_dir().map(|p| p.join("config.toml"))
+    }
+
+    pub fn load_theme(&self) -> crate::Result<crate::theme::Theme> {
+        crate::theme::load_theme(&self.theme).map_err(|e| {
+            crate::Error::Config(crate::error::ConfigError::Invalid(format!(
+                "Failed to load theme '{}': {}",
+                self.theme, e
+            )))
+        })
     }
 
     pub fn load_or_create() -> Result<Self> {
@@ -221,6 +246,7 @@ impl Config {
             importance: default_importance(),
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
+            theme: default_theme(),
         })
     }
 }
@@ -334,6 +360,7 @@ editor = "vim"
             importance: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
+            theme: default_theme(),
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize");
