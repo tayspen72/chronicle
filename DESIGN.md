@@ -423,6 +423,7 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
+2. **Notebook Expansion**: The tool should expand notebook capability to allow for general notetaking. Specifically I want to encorporate a PARA notebook style, and research the potential for adding more.
 
 ### Theming
 
