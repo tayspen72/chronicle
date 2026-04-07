@@ -3,11 +3,69 @@ use crate::tui::{App, Mode, ViewType};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
+#[derive(Debug, Clone)]
+pub struct TreeItem {
+    pub name: String,
+    pub indent: usize,
+}
+
+pub fn compute_continuation_levels(items: &[TreeItem]) -> Vec<Vec<bool>> {
+    let max_indent = items.iter().map(|i| i.indent).max().unwrap_or(0);
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            (1..=max_indent)
+                .map(|d| {
+                    if item.indent > d + 1 {
+                        true
+                    } else {
+                        items[i + 1..].iter().any(|x| x.indent >= d)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+pub fn tree_prefix_for_item(
+    items: &[TreeItem],
+    item_index: usize,
+    continuation_levels: &[Vec<bool>],
+) -> String {
+    let item = &items[item_index];
+    if item.indent == 0 {
+        return item.name.clone();
+    }
+
+    // Pipes for levels 1 through indent-1 (level 0 is root, never has pipes)
+    let pipes: String = (1..item.indent)
+        .map(|d| {
+            let has_pipe = continuation_levels
+                .get(item_index)
+                .and_then(|l| l.get(d - 1))
+                .copied()
+                .unwrap_or(false);
+            if has_pipe { "│   " } else { "    " }
+        })
+        .collect();
+
+    let is_last = items[item_index + 1..]
+        .iter()
+        .all(|p| p.indent != item.indent);
+
+    let prefix = if is_last { "└── " } else { "├── " };
+
+    format!("{}{}{}", pipes, prefix, item.name)
+}
+
 pub fn render(f: &mut Frame, app: &App) {
+    f.render_widget(Block::default().style(app.background_style()), f.area());
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -19,13 +77,13 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Command bar
     let command_text = if matches!(app.mode, Mode::CommandPalette) {
-        format!("/{}", app.command_input)
+        app.command_palette.display_text()
     } else {
         "Commands: /".to_string()
     };
 
     let command_bar = Paragraph::new(command_text)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(app.text_secondary())
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(command_bar, chunks[0]);
 
@@ -52,87 +110,164 @@ pub fn render(f: &mut Frame, app: &App) {
         render_command_palette(f, app);
     }
 
+    // Theme selection overlay
+    if matches!(app.mode, Mode::ThemeSelection) {
+        render_theme_selection(f, app);
+    }
+
     // Status bar
     render_status_bar(f, app, chunks[2]);
 }
 
 fn calculate_sidebar_width(app: &App) -> u16 {
-    let mut max_len = 0usize;
+    let max_len = app
+        .navigation_state
+        .sidebar_items
+        .iter()
+        .map(|item| {
+            let prefix_len = if item.is_header || item.indent == 0 {
+                0
+            } else {
+                4
+            };
+            item.name.len() + (item.indent * 4) + prefix_len
+        })
+        .max()
+        .unwrap_or(0)
+        .max("Navigator".len());
 
-    max_len = max_len.max("Navigator".len());
-
-    for item in &app.sidebar_items {
-        let len = item.name.len() + (item.indent * 4);
-        max_len = max_len.max(len);
-    }
-
-    (max_len + 4).clamp(15, 60) as u16
+    ((max_len + 6) as u16).clamp(15, 60)
 }
 
 fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let idx = app.selected_entry_index;
+    let idx = app.navigation_state.selected_entry_index;
+    let in_selection_mode = app.mode == Mode::TaskSelection;
 
-    let items: Vec<ListItem> = app
-        .sidebar_items
+    let items = &app.navigation_state.sidebar_items;
+
+    let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
             let is_selected = i == idx;
-            let indent_str = "    ".repeat(item.indent);
+
+            // Determine checkbox prefix for TaskSelection mode
+            let checkbox_prefix =
+                (in_selection_mode && !item.is_header && item.indent >= 3).then(|| {
+                    let is_selected = item.path.as_ref().is_some_and(|p| {
+                        app.planning_session.is_path_selected(&p.to_string_lossy())
+                    });
+                    if is_selected { "[x] " } else { "[ ] " }
+                });
 
             let prefix = if item.is_header || item.indent == 0 {
                 item.name.clone()
             } else {
-                let is_last = app
-                    .sidebar_items
-                    .iter()
-                    .skip(i + 1)
-                    .take_while(|p| p.indent == item.indent)
-                    .next()
-                    .is_none();
-                if is_last {
-                    format!("└── {}", item.name)
+                let current_path = item.tree_path.as_ref().or(item.journal_path.as_ref());
+                if let Some(current_path) = current_path {
+                    let parent_path = &current_path[..current_path.len().saturating_sub(1)];
+
+                    // Pipes for levels 1..indent-1, constrained to the same section/tree.
+                    let pipes: String = (1..item.indent)
+                        .map(|depth| {
+                            let ancestor = &current_path[..depth];
+                            let ancestor_parent = &current_path[..depth.saturating_sub(1)];
+                            let has_pipe = items[i + 1..].iter().any(|candidate| {
+                                if candidate.section != item.section {
+                                    return false;
+                                }
+                                let candidate_path = candidate
+                                    .tree_path
+                                    .as_ref()
+                                    .or(candidate.journal_path.as_ref());
+                                let Some(candidate_path) = candidate_path else {
+                                    return false;
+                                };
+                                if candidate_path.len() < depth
+                                    || !candidate_path.starts_with(ancestor_parent)
+                                {
+                                    return false;
+                                }
+                                candidate_path[depth - 1] != ancestor[depth - 1]
+                            });
+                            if has_pipe { "│   " } else { "    " }
+                        })
+                        .collect();
+
+                    let has_next_sibling = items[i + 1..].iter().any(|candidate| {
+                        if candidate.section != item.section {
+                            return false;
+                        }
+                        let candidate_path = candidate
+                            .tree_path
+                            .as_ref()
+                            .or(candidate.journal_path.as_ref());
+                        let Some(candidate_path) = candidate_path else {
+                            return false;
+                        };
+                        candidate_path.len() == current_path.len()
+                            && candidate_path.starts_with(parent_path)
+                    });
+
+                    let tree_prefix = if has_next_sibling {
+                        "├── "
+                    } else {
+                        "└── "
+                    };
+                    format!("{}{}{}", pipes, tree_prefix, item.name)
                 } else {
-                    format!("├── {}", item.name)
+                    let is_last_in_section = items[i + 1..]
+                        .iter()
+                        .filter(|candidate| candidate.section == item.section)
+                        .all(|candidate| candidate.indent != item.indent);
+                    let tree_prefix = if is_last_in_section {
+                        "└── "
+                    } else {
+                        "├── "
+                    };
+                    format!(
+                        "{}{}{}",
+                        "    ".repeat(item.indent.saturating_sub(1)),
+                        tree_prefix,
+                        item.name
+                    )
                 }
             };
 
-            let full_label = format!("{}{}", indent_str, prefix);
+            let full_label = if let Some(cb) = checkbox_prefix {
+                // Prefix includes tree chars; strip them and prepend checkbox column
+                let tree_chars_len = if prefix.starts_with("│   ") { 12 } else { 4 };
+                format!(
+                    "{}{}{}",
+                    "    ".repeat(item.indent),
+                    cb,
+                    &prefix[tree_chars_len.min(prefix.len())..]
+                )
+            } else {
+                prefix.clone()
+            };
 
             let style = if item.is_header {
-                Style::default().fg(Color::DarkGray)
+                app.sidebar_header_style()
             } else if item.is_create_action {
-                // Style create action items with dimmed cyan to indicate it's an action
-                if is_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                } else {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(ratatui::style::Modifier::ITALIC)
-                }
+                app.sidebar_create_action_style(is_selected)
             } else if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
+                app.sidebar_selected_style()
             } else {
-                Style::default().fg(Color::White)
+                app.sidebar_style()
             };
             ListItem::new(full_label).style(style)
         })
         .collect();
 
-    let list = List::new(items)
+    let list = List::new(list_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.border_style())
                 .title("Navigator"),
         )
-        .style(Style::default().fg(Color::White));
+        .style(app.text_primary());
 
     f.render_widget(list, area);
 }
@@ -144,6 +279,7 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::JournalArchiveList => views::render_archive_list(f, app, area),
         ViewType::JournalToday => views::render_journal_today(f, app, area),
         ViewType::Backlog => views::render_backlog(f, app, area),
+        ViewType::MyTasks => views::render_my_tasks(f, app, area),
         ViewType::WeeklyPlanning => views::render_weekly_planning(f, app, area),
         ViewType::ViewingContent => views::render_content_viewer(f, app, area),
         ViewType::InputProgram => views::render_input(f, app, area, "Enter program name:"),
@@ -151,12 +287,22 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::InputMilestone => views::render_input(f, app, area, "Enter milestone name:"),
         ViewType::InputTask => views::render_input(f, app, area, "Enter task name:"),
         ViewType::InputTemplateField => {
-            if let Some(ref state) = app.template_field_state {
-                let prompt = format!("Fill in fields for: {}", state.template_name);
-                views::render_template_fields(f, app, area, &prompt);
-            } else {
-                views::render_input(f, app, area, "Enter value:");
-            }
+            views::render_template_fields(f, app, area);
+        }
+        ViewType::InputPlanningSessionDates => {
+            views::render_planning_dates_wizard(f, app, area);
+        }
+        ViewType::PlanningTaskPicker => {
+            views::render_planning_task_picker(f, app, area);
+        }
+        ViewType::HierarchicalTaskPicker => {
+            views::render_hierarchical_task_picker(f, app, area);
+        }
+        ViewType::PlanningPreview => {
+            views::render_planning_preview(f, app, area);
+        }
+        ViewType::TaskDetailWizard | ViewType::InputTaskDetailField => {
+            views::render_task_detail_wizard(f, app, area);
         }
     }
 }
@@ -176,12 +322,12 @@ fn render_command_palette(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     // Command input
-    let input = Paragraph::new(format!("/{}", app.command_input))
-        .style(Style::default().fg(Color::White).bg(Color::Black))
+    let input = Paragraph::new(app.command_palette.display_text())
+        .style(app.command_input_style())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightBlue))
+                .border_style(app.command_border_style())
                 .title("Command"),
         );
 
@@ -189,17 +335,15 @@ fn render_command_palette(f: &mut Frame, app: &App) {
 
     // Command results
     let items: Vec<ListItem> = app
-        .command_matches
+        .command_palette
+        .matches
         .iter()
         .enumerate()
         .map(|(idx, cmd)| {
-            let style = if idx == app.command_selection_index {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightBlue)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
+            let style = if idx == app.command_palette.selection_index {
+                app.command_result_selected_style()
             } else {
-                Style::default().fg(Color::White).bg(Color::Black)
+                app.command_result_style()
             };
             ListItem::new(cmd.label.as_str()).style(style)
         })
@@ -209,9 +353,9 @@ fn render_command_palette(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(app.border_style()),
         )
-        .style(Style::default().fg(Color::White).bg(Color::Black));
+        .style(app.command_result_style());
 
     f.render_widget(list, popup[1]);
 }
@@ -220,16 +364,16 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     // Build breadcrumb from current selection
     let mut breadcrumb_parts = Vec::new();
 
-    if let Some(program) = &app.current_program {
+    if let Some(program) = &app.navigation_state.current_program {
         breadcrumb_parts.push(program.clone());
     }
-    if let Some(project) = &app.current_project {
+    if let Some(project) = &app.navigation_state.current_project {
         breadcrumb_parts.push(project.clone());
     }
-    if let Some(milestone) = &app.current_milestone {
+    if let Some(milestone) = &app.navigation_state.current_milestone {
         breadcrumb_parts.push(milestone.clone());
     }
-    if let Some(task) = &app.current_task {
+    if let Some(task) = &app.navigation_state.current_task {
         breadcrumb_parts.push(task.clone());
     }
 
@@ -239,12 +383,21 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         breadcrumb_parts.join(" > ")
     };
 
-    // Determine mode text and color
-    let (mode_text, mode_color) = match app.mode {
-        Mode::Normal => ("NORMAL", Color::Green),
-        Mode::CommandPalette => ("COMMAND", Color::Yellow),
-        Mode::Input => ("INPUT", Color::Cyan),
+    let mode_text = match app.mode {
+        Mode::Normal => "NORMAL",
+        Mode::CommandPalette => "COMMAND",
+        Mode::Input => "INPUT",
+        Mode::TaskSelection => "SELECT",
+        Mode::ReviewSession => "REVIEW",
+        Mode::HierarchicalSelection => "ADD TASKS",
+        Mode::PlanningPreview => "PREVIEW",
+        Mode::TaskDetailWizard => "EDIT TASK",
+        Mode::InputTaskDetailField => "INPUT",
+        Mode::CurrentPlanNavigation => "PLAN NAV",
+        Mode::ThemeSelection => "THEME",
     };
+
+    let mode_color = app.status_color();
 
     // Split the status bar into left (breadcrumb) and right (mode) sections
     let chunks = Layout::default()
@@ -257,7 +410,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Render breadcrumb (left side)
     let breadcrumb_widget = Paragraph::new(breadcrumb)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(app.text_secondary())
         .block(Block::default().borders(Borders::NONE));
     f.render_widget(breadcrumb_widget, chunks[0]);
 
@@ -267,4 +420,311 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::NONE))
         .alignment(ratatui::layout::Alignment::Right);
     f.render_widget(mode_widget, chunks[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bug1_last_child_missing_pipe() {
+        // Bug #1: When expanding level 2 to see level 3 elements,
+        // the last level 3 child should have a pipe on level 2 row.
+        // Structure:
+        // Alpha1 (indent 0)
+        // ├── Beta1 (indent 1)
+        // │   ├── Gamma1 (indent 2)
+        // │   ├── Gamma2 (indent 2)
+        // │   └── Gamma3 (indent 2) <- last child, needs pipe from Beta1
+        // ├── Beta2 (indent 1)
+        // └── Beta3 (indent 1)
+        let items = vec![
+            TreeItem {
+                name: "Alpha1".to_string(),
+                indent: 0,
+            },
+            TreeItem {
+                name: "Beta1".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Gamma1".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Gamma2".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Gamma3".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Beta2".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Beta3".to_string(),
+                indent: 1,
+            },
+        ];
+
+        let continuation = compute_continuation_levels(&items);
+
+        // Beta1 (index 1) is at indent 1 - it should NOT have a pipe at level 0
+        // because level 0 is the root level and root items never have pipes (Rule 6)
+        let beta1_prefix = tree_prefix_for_item(&items, 1, &continuation);
+        assert!(
+            !beta1_prefix.starts_with("│"),
+            "Beta1 should NOT have pipe at level 0 (root). Got: {}",
+            beta1_prefix
+        );
+
+        // But Beta1 SHOULD have a pipe at level 1 (from its own indentation)
+        // because Gamma3 comes after it at deeper indent
+        // continuation starts at d=1, so level 1 is at index 0
+        let beta1_cont_at_1 = continuation.get(1).and_then(|c| c.get(0));
+        assert_eq!(
+            beta1_cont_at_1,
+            Some(&true),
+            "Beta1 should have pipe at level 1 because it has descendants"
+        );
+
+        // Check Gamma3 (index 4) - this is the last child of Beta1
+        // It should also have a pipe because Beta1 has more children (Beta2, Beta3)
+        // The pipe at level 1 should be present (continuation now starts at d=1, so index 0 = level 1)
+        assert_eq!(
+            continuation[4].get(0),
+            Some(&true),
+            "Gamma3 should have pipe at level 1 (from Beta1)"
+        );
+    }
+
+    #[test]
+    fn test_bug3_single_child_with_grandchildren() {
+        // Bug #3: When a parent has only one child, and that child has grandchildren,
+        // the parent should use └── (not ├──) because it has no siblings.
+        // Structure:
+        // Alpha (indent 0)
+        // └── Beta (indent 1) <- single child, should use └── not ├──
+        //     ├── Gamma1 (indent 2)
+        //     ├── Gamma2 (indent 2)
+        //     └── Gamma3 (indent 2)
+        let items = vec![
+            TreeItem {
+                name: "Alpha".to_string(),
+                indent: 0,
+            },
+            TreeItem {
+                name: "Beta".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Gamma1".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Gamma2".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Gamma3".to_string(),
+                indent: 2,
+            },
+        ];
+
+        let continuation = compute_continuation_levels(&items);
+        let beta_prefix = tree_prefix_for_item(&items, 1, &continuation);
+
+        // Beta is the last sibling (no items after it with indent 1),
+        // so it should use └── even if it has descendants.
+        assert!(
+            beta_prefix.contains("└──"),
+            "Beta should use └── because it is the last sibling. Got: {}",
+            beta_prefix
+        );
+    }
+
+    #[test]
+    fn test_single_child_is_last_and_has_descendants() {
+        // Edge case: single child that has descendants still uses └──,
+        // because it is the last sibling.
+        let items = vec![
+            TreeItem {
+                name: "Parent".to_string(),
+                indent: 0,
+            },
+            TreeItem {
+                name: "Child".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Grandchild".to_string(),
+                indent: 2,
+            },
+        ];
+
+        let continuation = compute_continuation_levels(&items);
+        let child_prefix = tree_prefix_for_item(&items, 1, &continuation);
+
+        assert!(
+            child_prefix.contains("└──"),
+            "Child with grandchildren should use └── as last sibling. Got: {}",
+            child_prefix
+        );
+    }
+
+    #[test]
+    fn test_leaf_node_uses_last_marker() {
+        // Leaf node (no children) that is last sibling should use └──.
+        let items = vec![
+            TreeItem {
+                name: "Parent".to_string(),
+                indent: 0,
+            },
+            TreeItem {
+                name: "Child1".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Child2".to_string(),
+                indent: 1,
+            },
+        ];
+
+        let continuation = compute_continuation_levels(&items);
+        let child2_prefix = tree_prefix_for_item(&items, 2, &continuation);
+
+        assert!(
+            child2_prefix.contains("└──"),
+            "Last leaf should use └──. Got: {}",
+            child2_prefix
+        );
+    }
+
+    #[test]
+    fn test_pipes_for_deep_tree() {
+        // Test that pipes are correctly placed for deeply nested trees.
+        // Structure:
+        // Root (indent 0)
+        // └── Level1 (indent 1)
+        //     ├── Level2a (indent 2)
+        //     └── Level2b (indent 2)
+        //         └── Level3 (indent 3)
+        let items = vec![
+            TreeItem {
+                name: "Root".to_string(),
+                indent: 0,
+            },
+            TreeItem {
+                name: "Level1".to_string(),
+                indent: 1,
+            },
+            TreeItem {
+                name: "Level2a".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Level2b".to_string(),
+                indent: 2,
+            },
+            TreeItem {
+                name: "Level3".to_string(),
+                indent: 3,
+            },
+        ];
+
+        let continuation = compute_continuation_levels(&items);
+
+        // Level1 should NOT have pipe at level 0 (root level has no pipes per Rule 6)
+        let level1_prefix = tree_prefix_for_item(&items, 1, &continuation);
+        assert!(
+            !level1_prefix.starts_with("│"),
+            "Level1 should NOT have pipe at level 0 (root). Got: {}",
+            level1_prefix
+        );
+
+        // But Level1 SHOULD have pipe at level 1 (its own level)
+        // because Level2b exists
+        // continuation starts at d=1, so index 0 = d=1
+        let level1_cont_at_1 = continuation.get(1).and_then(|c| c.get(0));
+        assert_eq!(
+            level1_cont_at_1,
+            Some(&true),
+            "Level1 should have pipe at level 1 because Level2b exists"
+        );
+
+        // Level2b should have pipe at level 1 (its parent level) because Level3 exists
+        // continuation starts at d=1, so index 0 = d=1
+        let level2b_cont_at_1 = continuation.get(3).and_then(|c| c.get(0));
+        assert_eq!(
+            level2b_cont_at_1,
+            Some(&true),
+            "Level2b should have pipe at level 1 because Level3 exists"
+        );
+    }
+}
+
+fn render_theme_selection(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let popup = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(5),    // Theme list
+            Constraint::Length(3), // Instructions
+        ])
+        .margin(10)
+        .split(area);
+
+    // Clear the background behind the popup
+    f.render_widget(Clear, area);
+
+    // Title
+    let title = Paragraph::new("Select Theme")
+        .style(
+            app.text_primary()
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme_border_style()),
+        );
+    f.render_widget(title, popup[0]);
+
+    // Theme list
+    let items: Vec<ListItem> = app
+        .available_themes
+        .iter()
+        .enumerate()
+        .map(|(idx, theme)| {
+            let is_selected = idx == app.theme_selection_index;
+            let is_active = theme == &app.config.theme;
+            let style = if is_selected {
+                app.sidebar_selected_style()
+            } else {
+                app.sidebar_style()
+            };
+            let prefix = if is_selected { "▶ " } else { "  " };
+            let suffix = if is_active { " *" } else { "" };
+            ListItem::new(format!("{}{}{}", prefix, theme, suffix)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme_border_style()),
+        )
+        .style(app.text_primary());
+
+    f.render_widget(list, popup[1]);
+
+    // Instructions
+    let instructions = Paragraph::new("↑↓ Navigate • Enter Confirm • Esc Cancel  (* = saved)")
+        .style(app.text_secondary())
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(instructions, popup[2]);
 }

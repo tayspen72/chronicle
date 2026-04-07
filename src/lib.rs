@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod model;
 pub mod storage;
+pub mod theme;
 pub mod tui;
 
 pub use error::{Error, Result};

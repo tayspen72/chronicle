@@ -5,15 +5,26 @@ It manages a hierarchical workspace (`programs -> projects -> milestones -> task
 
 ## Current capabilities
 - Navigate the workspace tree in a TUI.
+- Render selected program/project/milestone/task content as: YAML details table, markdown body, and child status/count report.
 - Open Markdown files from the tree in your configured editor.
 - Create programs/projects/milestones/tasks through a template-driven wizard.
 - Open today’s journal and browse journal history.
-- Run backlog/planning views from the sidebar/command palette.
+- Run planning reports from the sidebar/command palette:
+  - Backlog (unassigned tasks in current plan, with quick assign-to-me)
+  - My Tasks (tasks assigned to you + today’s `# To do` checklist with checkbox toggles)
 
 ## Build and run
 ```bash
 cargo build
 cargo run
+```
+
+## CLI commands
+```bash
+cargo run -- init
+cargo run -- jot "Wrote release notes"
+cargo run -- extract
+cargo run -- new-task "Plan onboarding" --scope planning/current
 ```
 
 ## Quality checks
@@ -27,14 +38,35 @@ cargo fmt --check
 Chronicle loads config from:
 - `~/.config/chronicle/config.toml`
 
-Key fields:
+Required fields (must be present and non-empty):
 - `workspace`: root directory for all Chronicle data
-- `editor`: external editor command (default `hx`)
-- `owner`: default creator/owner value for templates
-- `workflow`: ordered status list (first value is default status)
-- `navigator_width`, `planning_duration`, `navigation_keys`
-- `diagnostics.enabled`: enable file diagnostics logging (default `false`)
-- `diagnostics.level`: `trace|debug|info|warn|error` (default `debug`)
+- `editor`: external editor command (for example `hx`, `vim`, `helix`)
+- `owner`: your identity for created/assigned task workflows
+
+Optional fields (system defaults are used when omitted):
+- `workflow`: ordered status list (default: `["New","Active","Blocked","Testing","Completed","Cancelled"]`)
+- `importance`: task importance options (default: `["low","medium","high"]`)
+- `planning_duration`: one of `weekly|biweekly|6weekly` (default: `weekly`)
+- `diagnostics.enabled`: enable file diagnostics logging (default: `false`)
+- `diagnostics.level`: `trace|debug|info|warn|error` (default: `debug`)
+
+Removed/unused fields:
+- `navigator_width` and `[navigation_keys]` are no longer used by the app.
+
+Example `config.toml`:
+```toml
+workspace = "/home/user/chronicle"
+editor = "hx"
+owner = "Your Name"
+
+workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
+importance = ["low", "medium", "high"]
+planning_duration = "weekly"
+
+[diagnostics]
+enabled = false
+level = "debug"
+```
 
 Example diagnostics config:
 
@@ -59,7 +91,7 @@ workspace/
 │   ├── current/
 │   └── history/
 ├── journal/
-│   └── YYYY-MM-DD.md
+│   └── YYYY/MM/YYYY-MM-DD.md
 ├── .archive/
 └── templates/
 ```
@@ -98,11 +130,11 @@ Diagnostics include:
 - warnings/errors already emitted through `tracing`
 
 ## Command modules
-The command modules (`init`, `jot`, `new_task`, `extract`) now use `Config.workspace` instead of hardcoded `data/` paths.
+The command modules (`init`, `jot`, `new-task`, `extract`) are wired through the main binary and use `Config.workspace` instead of hardcoded `data/` paths.
 
 - `init`: creates workspace directories
 - `jot`: appends a timestamped entry to today’s journal
-- `new_task`: writes a templated task into planning/current (or scoped path)
+- `new-task`: writes a templated task into planning/current (or scoped path)
 - `extract`: scans journal `/todo` lines into planning/current backlog files
 
 ## Notes

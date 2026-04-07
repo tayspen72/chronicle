@@ -4,7 +4,7 @@
 //! They are used by tests but not yet wired into the TUI.
 //! TODO: Wire up parse_element and element_to_markdown for element modification features.
 
-use crate::error::{ModelError, Result};
+use crate::error::{Error, ModelError, Result};
 use crate::model::{Element, LegacyTask, Milestone, Program, Project, Task};
 use chrono::{DateTime, NaiveDate, Utc};
 use regex::Regex;
@@ -65,7 +65,8 @@ pub fn parse_element(content: &str) -> Result<Option<Element>> {
         }
         "task" | "subtask" => {
             let mut task: Task = serde_yaml::from_str(frontmatter)?;
-            task.description = body.trim().to_string();
+            let desc = body.trim().trim_start_matches("# Description").trim();
+            task.description = desc.to_string();
             Element::Task(task)
         }
         _ => {
@@ -275,6 +276,55 @@ pub fn element_to_markdown(element: &Element) -> String {
     }
 }
 
+/// Update the status field in a task file's YAML frontmatter.
+pub fn update_task_status(path: &std::path::Path, new_status: &str) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let Ok(Some(Element::Task(mut task))) = parse_element(&content) else {
+        return Err(Error::Model(ModelError::Parse(
+            "Failed to parse element".into(),
+        )));
+    };
+
+    task.status = new_status.to_string();
+    let new_content = element_to_markdown(&Element::Task(task));
+    std::fs::write(path, new_content)?;
+    Ok(())
+}
+
+/// Update multiple fields in a task file's YAML frontmatter.
+/// Fields are: status, assigned_to, start_date, due_date, importance
+pub fn update_task_fields(
+    path: &std::path::Path,
+    updates: std::collections::HashMap<&str, Option<String>>,
+) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let Ok(Some(Element::Task(mut task))) = parse_element(&content) else {
+        return Err(Error::Model(ModelError::Parse(
+            "Failed to parse element".into(),
+        )));
+    };
+
+    if let Some(status) = updates.get("status") {
+        task.status = status.clone().unwrap_or_default();
+    }
+    if let Some(assigned_to) = updates.get("assigned_to") {
+        task.assigned_to = assigned_to.clone();
+    }
+    if let Some(start_date) = updates.get("start_date") {
+        task.start_date = start_date.clone();
+    }
+    if let Some(due_date) = updates.get("due_date") {
+        task.due_date = due_date.clone();
+    }
+    if let Some(importance) = updates.get("importance") {
+        task.importance = importance.clone();
+    }
+
+    let new_content = element_to_markdown(&Element::Task(task));
+    std::fs::write(path, new_content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +510,60 @@ First release with core features.
 
         assert_eq!(parsed.kind(), ElementKind::Task);
         assert_eq!(parsed.title(), "Test Task");
+    }
+
+    #[test]
+    fn test_parse_element_task_with_unquoted_date() {
+        // Test that unquoted date-only format works (Issue #3 fix)
+        let content = r#"---
+id: "34dce5f7-1198-4da4-accb-9641cde6e827"
+title: "Bug fixes 3"
+status: "Done"
+creation_date: 2026-03-13
+type: task
+---
+
+# Description
+Task with unquoted date.
+"#;
+        let element = parse_element(content).unwrap().expect("Should parse task");
+        assert_eq!(element.kind(), ElementKind::Task);
+        assert_eq!(element.title(), "Bug fixes 3");
+
+        if let Element::Task(task) = element {
+            assert_eq!(
+                task.creation_date.format("%Y-%m-%d").to_string(),
+                "2026-03-13"
+            );
+        } else {
+            panic!("Expected Task element");
+        }
+    }
+
+    #[test]
+    fn test_parse_element_task_with_quoted_date() {
+        // Test that quoted date string also works
+        let content = r#"---
+id: "test-id"
+title: "Test Task"
+status: "todo"
+creation_date: "2026-03-15"
+type: task
+---
+
+# Description
+Task with quoted date.
+"#;
+        let element = parse_element(content).unwrap().expect("Should parse task");
+        assert_eq!(element.kind(), ElementKind::Task);
+
+        if let Element::Task(task) = element {
+            assert_eq!(
+                task.creation_date.format("%Y-%m-%d").to_string(),
+                "2026-03-15"
+            );
+        } else {
+            panic!("Expected Task element");
+        }
     }
 }

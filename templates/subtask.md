@@ -1,6 +1,7 @@
 ---
 uuid: {{UUID}}
 title: {{NAME}}
+importance: {{IMPORTANCE}}
 status: {{DEFAULT_STATUS}}
 creation_date: {{TODAY}}
 created_by: {{OWNER}}

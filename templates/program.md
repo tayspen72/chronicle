@@ -1,9 +1,10 @@
 ---
 uuid: {{UUID}}
 title: {{NAME}}
+importance: {{IMPORTANCE}}
 status: {{DEFAULT_STATUS}}
 tags: program
 ---
 
-# DESCRIPTION
+# Description
 {{DESCRIPTION}}

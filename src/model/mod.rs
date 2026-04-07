@@ -3,8 +3,50 @@
 //! This module defines the core data structures for Programs, Projects,
 //! Milestones, and Tasks, along with unified Element enum.
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::path::PathBuf;
+
+/// Custom serde module for flexible date parsing.
+/// Handles both RFC 3339 format (2026-03-13T12:00:00Z) and date-only format (2026-03-13).
+pub mod date_serde {
+    use super::*;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        // First, try to deserialize as a string
+        let s = String::deserialize(deserializer)?;
+        let trimmed = s.trim();
+
+        // Try RFC 3339 format first
+        if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+            return Ok(dt.with_timezone(&Utc));
+        }
+
+        // Try date-only format (YYYY-MM-DD)
+        if let Ok(naive_date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+            let naive_dt = naive_date.and_hms_opt(0, 0, 0).unwrap_or_default();
+            return Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc));
+        }
+
+        Err(D::Error::custom(format!(
+            "invalid date format '{}', expected YYYY-MM-DD or RFC 3339",
+            trimmed
+        )))
+    }
+
+    pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize as RFC 3339 format
+        serializer.serialize_str(&date.to_rfc3339())
+    }
+}
 
 /// Program - top-level container for projects.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -26,7 +68,7 @@ pub struct Project {
     pub title: String,
     #[serde(default)]
     pub status: String,
-    #[serde(default = "default_creation_date")]
+    #[serde(default = "default_creation_date", with = "date_serde")]
     pub creation_date: DateTime<Utc>,
     pub created_by: Option<String>,
     pub assigned_to: Option<String>,
@@ -44,7 +86,7 @@ pub struct Milestone {
     pub title: String,
     #[serde(default)]
     pub status: String,
-    #[serde(default = "default_creation_date")]
+    #[serde(default = "default_creation_date", with = "date_serde")]
     pub creation_date: DateTime<Utc>,
     pub created_by: Option<String>,
     pub assigned_to: Option<String>,
@@ -64,14 +106,18 @@ fn default_creation_date() -> DateTime<Utc> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Task {
     #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub status: String,
-    #[serde(default = "default_creation_date")]
+    #[serde(default = "default_creation_date", with = "date_serde")]
     pub creation_date: DateTime<Utc>,
     pub created_by: Option<String>,
     pub assigned_to: Option<String>,
+    pub start_date: Option<String>,
     pub due_date: Option<String>,
+    pub importance: Option<String>,
     #[serde(rename = "type")]
     pub element_type: Option<String>,
     #[serde(default)]
@@ -85,12 +131,15 @@ impl Task {
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
+            uuid: String::new(),
             title: title.into(),
             status: "todo".to_string(),
             creation_date: Utc::now(),
             created_by: None,
             assigned_to: None,
+            start_date: None,
             due_date: None,
+            importance: None,
             element_type: Some("task".to_string()),
             description: String::new(),
             tags: Vec::new(),
@@ -102,6 +151,24 @@ impl Task {
     pub fn is_complete(&self) -> bool {
         self.status == "done"
     }
+}
+
+/// A task selected for inclusion in a planning session.
+/// Stores context (program/project/milestone) for display in planning view.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SelectedTask {
+    pub uuid: String,
+    pub path: PathBuf,
+    pub program: String,
+    pub project: String,
+    pub milestone: String,
+    pub task_name: String,
+    pub status: String,
+    pub assigned_to: Option<String>,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    pub importance: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Element kind enum for type identification.
@@ -212,4 +279,38 @@ impl LegacyTask {
     pub fn is_complete(&self) -> bool {
         matches!(self.status.as_deref(), Some("done"))
     }
+}
+
+/// Status of a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SessionStatus {
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "completed")]
+    Completed,
+    #[serde(rename = "archived")]
+    Archived,
+}
+
+impl Default for SessionStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+/// Planning session for tracking selected tasks over a time period.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanningSession {
+    #[serde(rename = "type")]
+    pub element_type: String,
+    pub uuid: String,
+    pub title: String,
+    pub creation_date: String,
+    pub created_by: Option<String>,
+    pub start_date: String,
+    pub end_date: String,
+    pub duration: String,
+    #[serde(default)]
+    pub status: SessionStatus,
+    pub tasks: Vec<String>,
 }

@@ -1,4 +1,5 @@
 pub mod md;
+pub mod planning;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -7,13 +8,15 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Result, StorageError};
 use chrono::Local;
+use heck::ToTitleCase;
 
+#[derive(Clone, Debug)]
 pub struct JournalEntry {
     pub filename: String,
     pub path: PathBuf,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
@@ -134,6 +137,28 @@ pub fn validate_element_name(name: &str) -> Result<()> {
         ))
         .into()),
     }
+}
+
+fn collect_journal_entries_recursive(dir: &Path, entries: &mut Vec<JournalEntry>) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_journal_entries_recursive(&path, entries)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            entries.push(JournalEntry { filename, path });
+        }
+    }
+    Ok(())
 }
 
 fn validate_target_path(workspace_root: &Path, target_path: &Path) -> Result<()> {
@@ -276,8 +301,14 @@ impl JournalStorage for PathBuf {
     }
 
     fn today_journal_path(&self) -> PathBuf {
-        let today = Local::now().format("%Y-%m-%d");
-        self.journal_dir().join(format!("{}.md", today))
+        let now = Local::now();
+        let year = now.format("%Y").to_string();
+        let month = now.format("%m").to_string();
+        let today = now.format("%Y-%m-%d").to_string();
+        self.journal_dir()
+            .join(year)
+            .join(month)
+            .join(format!("{}.md", today))
     }
 
     fn open_or_create_today_journal(&self) -> Result<(PathBuf, String)> {
@@ -292,31 +323,22 @@ impl JournalStorage for PathBuf {
             }
             let template = include_str!("../../templates/journal.md");
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let content = template.replace("YYYY-MM-DD", &today);
+            let content = template.replace("{{TODAY}}", &today);
+            let content = content.replace("{{UUID}}", &uuid::Uuid::new_v4().to_string());
             fs::write(&path, &content)?;
             Ok((path, content))
         }
     }
 
     fn list_journal_entries(&self) -> Result<Vec<JournalEntry>> {
-        let journal_dir = self.journal_dir();
+        let history_dir = self.journal_dir();
 
-        if !journal_dir.exists() {
+        if !history_dir.exists() {
             return Ok(vec![]);
         }
 
-        let mut entries: Vec<JournalEntry> = fs::read_dir(&journal_dir)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension()?.to_str()? == "md" {
-                    let filename = path.file_name()?.to_str()?.to_string();
-                    Some(JournalEntry { filename, path })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut entries: Vec<JournalEntry> = Vec::new();
+        collect_journal_entries_recursive(&history_dir, &mut entries)?;
 
         entries.sort_by(|a, b| b.filename.cmp(&a.filename));
 
@@ -694,12 +716,18 @@ impl WorkspaceStorage for PathBuf {
     }
 }
 
-pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateFieldDefinition {
+    pub key: String,
+    pub label: String,
+    pub placeholder: Option<String>,
+    pub fixed_value: Option<String>,
+    pub strip_label: bool,
+}
+
+pub fn parse_template_fields(template: &str) -> Vec<TemplateFieldDefinition> {
     let mut fields = Vec::new();
     let mut seen_placeholders: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Only handle inline YAML format: "field: {{Placeholder}}"
-    // This is the only supported format
 
     let re_inline = regex::Regex::new(r"\{\{(\w+)\}\}").unwrap();
 
@@ -726,23 +754,35 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             continue;
         }
 
-        // Check for inline placeholders: "field: {{Placeholder}}"
-        // Only extract if it looks like a YAML field (has colon before the placeholder)
-        if let Some(colon_pos) = line_trimmed.find(':') {
+        if in_yaml && let Some(colon_pos) = line_trimmed.find(':') {
             let before_colon = &line_trimmed[..colon_pos];
             let after_colon = &line_trimmed[colon_pos + 1..];
+            let key = before_colon.trim().to_string();
+            let label = extract_label_from_yaml_line(before_colon);
 
-            // Check if there's a placeholder after the colon
             if let Some(cap) = re_inline.captures(after_colon)
                 && let Some(placeholder_match) = cap.get(1)
             {
                 let placeholder = placeholder_match.as_str().to_string();
                 if !placeholder.is_empty() && !seen_placeholders.contains(&placeholder) {
-                    // Extract label from text before the colon
-                    let label = extract_label_from_yaml_line(before_colon);
                     seen_placeholders.insert(placeholder.clone());
-                    fields.push((label, placeholder, true));
+                    fields.push(TemplateFieldDefinition {
+                        key,
+                        label,
+                        placeholder: Some(placeholder),
+                        fixed_value: None,
+                        strip_label: true,
+                    });
                 }
+            } else {
+                let fixed_value = after_colon.trim().trim_matches('"').trim_matches('\'');
+                fields.push(TemplateFieldDefinition {
+                    key,
+                    label,
+                    placeholder: None,
+                    fixed_value: Some(fixed_value.to_string()),
+                    strip_label: false,
+                });
             }
         }
 
@@ -755,8 +795,13 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
             let placeholder = placeholder_match.as_str().to_string();
             if placeholder == "DESCRIPTION" && !seen_placeholders.contains(&placeholder) {
                 seen_placeholders.insert(placeholder.clone());
-                // DESCRIPTION in markdown body should be stripped from YAML and put in body
-                fields.push(("Description".to_string(), placeholder, true));
+                fields.push(TemplateFieldDefinition {
+                    key: "description".to_string(),
+                    label: "Description".to_string(),
+                    placeholder: Some(placeholder),
+                    fixed_value: None,
+                    strip_label: true,
+                });
             }
         }
     }
@@ -765,7 +810,7 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
         field_count = fields.len(),
         placeholders = ?fields
             .iter()
-            .map(|(_, placeholder, strip)| (placeholder.clone(), *strip))
+            .filter_map(|f| f.placeholder.as_ref().map(|p| (p.clone(), f.strip_label)))
             .collect::<Vec<_>>(),
         "parsed template fields"
     );
@@ -774,20 +819,7 @@ pub fn parse_template_fields(template: &str) -> Vec<(String, String, bool)> {
 
 /// Extract label from YAML field name (e.g., "creation_date" -> "Creation Date")
 fn extract_label_from_yaml_line(field_name: &str) -> String {
-    // Convert field name to title case
-    // e.g., "creation_date" -> "Creation Date", "created_by" -> "Created By"
-    field_name
-        .replace('_', " ")
-        .split_whitespace()
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    field_name.replace('_', " ").to_title_case()
 }
 
 pub fn resolve_template(
@@ -1624,7 +1656,10 @@ status: {{DEFAULT_STATUS}}
         let fields = parse_template_fields(template);
 
         // Should detect both YAML fields and DESCRIPTION
-        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        let placeholders: Vec<&str> = fields
+            .iter()
+            .filter_map(|f| f.placeholder.as_deref())
+            .collect();
         assert!(
             placeholders.contains(&"DESCRIPTION"),
             "Should detect DESCRIPTION placeholder, got: {:?}",
@@ -1647,7 +1682,10 @@ Some markdown content without placeholders.
         let fields = parse_template_fields(template);
 
         // Should detect YAML fields but not DESCRIPTION
-        let placeholders: Vec<&str> = fields.iter().map(|(_, p, _)| p.as_str()).collect();
+        let placeholders: Vec<&str> = fields
+            .iter()
+            .filter_map(|f| f.placeholder.as_deref())
+            .collect();
         assert!(
             !placeholders.contains(&"DESCRIPTION"),
             "Should NOT detect DESCRIPTION when not present"

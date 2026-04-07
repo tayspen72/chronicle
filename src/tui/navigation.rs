@@ -1,12 +1,89 @@
-//! Navigation module.
-//!
-//! Handles sidebar navigation state and tree traversal.
-//!
-//! NOTE: This module contains extracted types and logic for navigation.
-//! The App struct in mod.rs still has inline implementations that duplicate this logic.
-//! TODO: Wire up these types to replace inline navigation handling in App.
+//! Navigation module - sidebar state and tree traversal.
 
 use crate::storage::DirectoryEntry;
+use crate::tui::cache::{JournalNode, extract_year_from_path, extract_year_month_from_path};
+use crate::tui::sidebar_tree::SidebarTreeModel;
+
+#[derive(Debug, Clone, Default)]
+pub enum SidebarNodeData {
+    Program(DirectoryEntry),
+    Journal(JournalNode),
+    Planning,
+    JournalAction,
+    Action,
+    #[default]
+    Empty,
+}
+
+/// State for navigation (tree selection, sidebar, current scope).
+#[derive(Debug, Clone, Default)]
+pub struct NavigationState {
+    pub sidebar_tree: SidebarTreeModel<()>,
+    pub selected_entry_index: usize,
+    pub sidebar_items: Vec<SidebarItem>,
+    pub current_program: Option<String>,
+    pub current_project: Option<String>,
+    pub current_milestone: Option<String>,
+    pub current_task: Option<String>,
+}
+
+impl NavigationState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn selected_path(&self) -> &[String] {
+        self.sidebar_tree.selected_path()
+    }
+
+    pub fn selected_depth(&self) -> usize {
+        self.sidebar_tree.selected_depth()
+    }
+
+    pub fn set_selected_path(&mut self, path: Vec<String>) {
+        self.sidebar_tree.set_selected_path(path);
+    }
+
+    pub fn expand_path(&mut self, path: &[String]) {
+        self.sidebar_tree.expand_path(path);
+    }
+
+    pub fn collapse_path(&mut self, path: &[String]) {
+        self.sidebar_tree.collapse_path(path);
+    }
+
+    pub fn is_expanded(&self, path: &[String]) -> bool {
+        self.sidebar_tree.is_expanded(path)
+    }
+
+    /// Updates current_* scope fields from a path vector.
+    pub fn set_scope_from_path(&mut self, path: &[String]) {
+        self.current_program = path.first().cloned();
+        self.current_project = path.get(1).cloned();
+        self.current_milestone = path.get(2).cloned();
+        self.current_task = path.get(3).cloned();
+    }
+
+    /// Updates current_* scope fields from the tree model's selected path.
+    pub fn update_scope_from_tree(&mut self) {
+        let path = self.sidebar_tree.selected_path().to_vec();
+        self.set_scope_from_path(&path);
+    }
+
+    /// Navigate up in sidebar and return the new index.
+    pub fn navigate_up(&mut self) -> usize {
+        let new_index = navigate_up(&self.sidebar_items, self.selected_entry_index);
+        self.selected_entry_index = new_index;
+        new_index
+    }
+
+    /// Navigate down in sidebar and return the new index.
+    pub fn navigate_down(&mut self) -> usize {
+        let new_index = navigate_down(&self.sidebar_items, self.selected_entry_index);
+        self.selected_entry_index = new_index;
+        new_index
+    }
+}
 
 /// Section of the sidebar.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,12 +106,13 @@ pub struct SidebarItem {
     pub path: Option<std::path::PathBuf>,
     pub tree_path: Option<Vec<String>>,
     pub has_children: bool,
-    /// If true, this item triggers an action (e.g., "Create Program") rather than navigation
     pub is_create_action: bool,
+    pub journal_path: Option<Vec<String>>,
+    pub is_journal_header: bool,
+    pub node_data: SidebarNodeData,
 }
 
 impl SidebarItem {
-    /// Creates a new sidebar item.
     #[must_use]
     #[allow(dead_code)]
     pub fn new(name: impl Into<String>, section: SidebarSection) -> Self {
@@ -49,6 +127,9 @@ impl SidebarItem {
             tree_path: None,
             has_children: false,
             is_create_action: false,
+            journal_path: None,
+            is_journal_header: false,
+            node_data: SidebarNodeData::Empty,
         }
     }
 
@@ -98,6 +179,64 @@ impl SidebarItem {
     pub fn create_action(mut self) -> Self {
         self.is_create_action = true;
         self
+    }
+
+    /// Sets the journal path for this item.
+    #[must_use]
+    pub fn journal_path(mut self, path: Vec<String>) -> Self {
+        self.journal_path = Some(path);
+        self
+    }
+
+    /// Marks this as a journal header (year/month).
+    #[must_use]
+    pub fn journal_header(mut self) -> Self {
+        self.is_journal_header = true;
+        self
+    }
+
+    #[must_use]
+    pub fn node_data(mut self, data: SidebarNodeData) -> Self {
+        self.node_data = data;
+        self
+    }
+
+    pub fn program(entry: DirectoryEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            section: SidebarSection::Programs,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: 0,
+            path: Some(entry.path.clone()),
+            tree_path: Some(vec![entry.name.clone()]),
+            has_children: false,
+            is_create_action: false,
+            journal_path: None,
+            is_journal_header: false,
+            node_data: SidebarNodeData::Program(entry),
+        }
+    }
+
+    pub fn journal(node: JournalNode, path: Vec<String>) -> Self {
+        let label = node.label().to_string();
+        let is_header = node.is_header();
+        Self {
+            name: label,
+            section: SidebarSection::Journal,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent: path.len(),
+            path: None,
+            tree_path: Some(path.clone()),
+            has_children: is_header,
+            is_create_action: false,
+            journal_path: Some(path.clone()),
+            is_journal_header: is_header,
+            node_data: SidebarNodeData::Journal(node),
+        }
     }
 }
 
@@ -232,8 +371,7 @@ pub fn build_sidebar_items(
     // Planning section
     items.push(SidebarItem::new("Planning", SidebarSection::Planning).header());
     items.push(
-        SidebarItem::new("Weekly Planning", SidebarSection::Planning)
-            .planning_item("WeeklyPlanning"),
+        SidebarItem::new("Current Plan", SidebarSection::Planning).planning_item("WeeklyPlanning"),
     );
     items.push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
 
@@ -413,5 +551,139 @@ mod tests {
         assert_eq!(items[1].name, "+ Create Program...");
         assert!(items[1].is_create_action);
         assert_eq!(items[1].indent, 1);
+    }
+
+    #[test]
+    fn test_first_and_last_selectable_in_section() {
+        // Create a sidebar structure similar to build_sidebar_items:
+        // - Programs header (index 0)
+        // - Program1 (index 1)
+        // - Program2 (index 2)
+        // - Spacer (index 3)
+        // - Planning header (index 4)
+        // - Current Plan (index 5)
+        // - Backlog (index 6)
+        // - Spacer (index 7)
+        // - Journal header (index 8)
+        // - Today (index 9)
+        // - History (index 10)
+        let items = vec![
+            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("Program1", SidebarSection::Programs),
+            SidebarItem::new("Program2", SidebarSection::Programs),
+            SidebarItem::new("", SidebarSection::Planning), // spacer
+            SidebarItem::new("Planning", SidebarSection::Planning).header(),
+            SidebarItem::new("Current Plan", SidebarSection::Planning)
+                .planning_item("WeeklyPlanning"),
+            SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"),
+            SidebarItem::new("", SidebarSection::Journal), // spacer
+            SidebarItem::new("Journal", SidebarSection::Journal).header(),
+            SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"),
+            SidebarItem::new("History", SidebarSection::Journal).journal_item("History"),
+        ];
+
+        // Test finding first selectable in Journal section
+        let first_journal = items
+            .iter()
+            .position(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Journal
+            })
+            .unwrap();
+        assert_eq!(items[first_journal].name, "Today");
+        assert_eq!(first_journal, 9);
+
+        // Test finding last selectable in Journal section (for upward navigation)
+        let last_journal = items
+            .iter()
+            .rposition(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Journal
+            })
+            .unwrap();
+        assert_eq!(items[last_journal].name, "History");
+        assert_eq!(last_journal, 10);
+
+        // Test finding first selectable in Planning section
+        let first_planning = items
+            .iter()
+            .position(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Planning
+            })
+            .unwrap();
+        assert_eq!(items[first_planning].name, "Current Plan");
+        assert_eq!(first_planning, 5);
+
+        // Test finding last selectable in Planning section (for upward navigation)
+        let last_planning = items
+            .iter()
+            .rposition(|i| {
+                !i.is_header && !i.name.is_empty() && i.section == SidebarSection::Planning
+            })
+            .unwrap();
+        assert_eq!(items[last_planning].name, "Backlog");
+        assert_eq!(last_planning, 6);
+    }
+}
+
+/// Tracks expansion state for the journal history tree
+#[derive(Debug, Clone, Default)]
+pub struct JournalTreeState {
+    entries: Vec<crate::storage::JournalEntry>,
+}
+
+pub fn journal_entry_label(jpath: &[String]) -> Option<&str> {
+    jpath
+        .get(if jpath.len() == 3 { 2 } else { 1 })
+        .map(|s| s.as_str())
+}
+
+impl JournalTreeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<crate::storage::JournalEntry>) {
+        self.entries = entries;
+    }
+
+    pub fn entries(&self) -> &[crate::storage::JournalEntry] {
+        &self.entries
+    }
+
+    pub fn years(&self) -> Vec<String> {
+        let mut years: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if let Some(year) = extract_year_from_path(&entry.path) {
+                years.insert(year);
+            }
+        }
+        years.into_iter().rev().collect()
+    }
+
+    pub fn months_for_year(&self, year: &str) -> Vec<String> {
+        let mut months: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if let Some((entry_year, month)) = extract_year_month_from_path(&entry.path)
+                && entry_year == year
+            {
+                months.insert(month);
+            }
+        }
+        months.into_iter().collect()
+    }
+
+    pub fn entries_for_month(&self, year: &str, month: &str) -> Vec<&crate::storage::JournalEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                if let Some((entry_year, entry_month)) = extract_year_month_from_path(&entry.path) {
+                    return entry_year == year && entry_month == month;
+                }
+                false
+            })
+            .collect()
     }
 }

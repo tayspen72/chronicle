@@ -10,13 +10,14 @@ workspace/
 │   └── <program>/<program>.md
 │       └── projects/<project>/<project>.md
 │           └── milestones/<milestone>/<milestone>.md
-│               └── tasks/<task>/<task>.md
-│                   └── subtasks/<subtask>/<subtask>.md
+│               └── tasks/<name>.md
 ├── planning/
 │   ├── current/
 │   └── history/
 ├── journal/
-│   └── YYYY-MM-DD.md
+│   └── YYYY/
+│       └── MM/
+│           └── YYYY-MM-DD.md
 └── .archive/
 ```
 

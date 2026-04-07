@@ -1,8 +1,16 @@
+pub mod cache;
 pub mod command;
+pub mod hierarchical_picker;
 pub mod layout;
 pub mod navigation;
-pub mod tree;
+pub mod planning_session;
+pub mod planning_wizard;
+pub mod review;
+pub mod sidebar_tree;
+pub mod task_wizard;
+pub mod test_utils;
 pub mod views;
+pub mod wizard;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,17 +23,29 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend, style::Style};
 use std::io::{self, Write};
 
 use crate::config::Config;
+use crate::model::{PlanningSession, SelectedTask, SessionStatus};
+use crate::storage::md::parse_element;
+use crate::storage::planning::{
+    archive_planning_session, create_planning_session, generate_session_uuid, list_active_sessions,
+    load_planning_session, save_planning_session,
+};
 use crate::storage::{
     DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
 };
+use crate::theme::Theme;
+use cache::{TaskMetadata, TreeData};
 use chrono::Local;
-use command::{CommandAction, CommandMatch, get_command_list};
-use navigation::{SidebarItem, SidebarSection};
-use tree::TreeModel;
+use command::{CommandAction, CommandMatch, CommandPalette};
+use hierarchical_picker::HierarchicalPickerState;
+use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarNodeData, SidebarSection};
+use planning_session::PlanningSessionState;
+use planning_wizard::PlanningDateFocus;
+use review::ReviewState;
+use wizard::{FieldInfo, FieldKind, TemplateFieldState, WizardFocus, WizardState};
 
 /// Application interaction mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,45 +56,23 @@ pub enum Mode {
     CommandPalette,
     /// User is inputting data (e.g., creating element)
     #[allow(dead_code)]
-    Input, // TODO: Will be used for input mode in future sprint
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldInfo {
-    pub label: String,
-    pub placeholder: String,
-    pub value: String,
-    pub is_focused: bool,
-    /// true for user input fields, false for prepopulated keyword fields
-    pub is_editable: bool,
-    /// Position in template (0-based) to preserve order
-    pub display_order: usize,
-}
-
-/// Focus state for the template field wizard
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WizardFocus {
-    /// Focused on a field at the given index
-    Field(usize),
-    /// Focused on the CONFIRM button
-    ConfirmButton,
-    /// Focused on the CANCEL button
-    CancelButton,
-}
-
-impl Default for WizardFocus {
-    fn default() -> Self {
-        WizardFocus::Field(0)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TemplateFieldState {
-    pub template_name: String,
-    pub fields: Vec<FieldInfo>,
-    pub focus: WizardFocus,
-    pub values: std::collections::HashMap<String, String>,
-    pub strip_labels: std::collections::HashSet<String>,
+    Input,
+    /// User is selecting tasks for a planning session
+    TaskSelection,
+    /// User is reviewing tasks in a planning session
+    ReviewSession,
+    /// User is navigating hierarchical task picker
+    HierarchicalSelection,
+    /// User is previewing tasks before confirming plan
+    PlanningPreview,
+    /// User is editing task details before adding to plan
+    TaskDetailWizard,
+    /// User is inputting text for a task detail field
+    InputTaskDetailField,
+    /// User is navigating the Current Plan report by tasks
+    CurrentPlanNavigation,
+    /// User is selecting a theme
+    ThemeSelection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,8 +81,9 @@ pub enum ViewType {
     Journal,
     JournalArchiveList,
     #[allow(dead_code)]
-    JournalToday, // TODO: Reserved for future inline journal editing
+    JournalToday,
     Backlog,
+    MyTasks,
     WeeklyPlanning,
     ViewingContent,
     InputProgram,
@@ -92,70 +91,452 @@ pub enum ViewType {
     InputMilestone,
     InputTask,
     InputTemplateField,
+    InputPlanningSessionDates,
+    PlanningTaskPicker,
+    HierarchicalTaskPicker,
+    PlanningPreview,
+    TaskDetailWizard,
+    InputTaskDetailField,
+}
+
+#[derive(Debug, Clone)]
+enum JournalNavNode {
+    Today,
+    History,
+    Header(Vec<String>),
+    Entry(Vec<String>),
+    OtherAction,
+}
+
+#[derive(Debug)]
+pub struct ElementReportRow {
+    pub name: String,
+    pub status: String,
+    pub grandchild_count: usize,
+}
+
+#[derive(Debug)]
+pub struct ElementReport {
+    pub child_plural: &'static str,
+    pub grandchild_singular: &'static str,
+    pub grandchild_plural: &'static str,
+    pub rows: Vec<ElementReportRow>,
+}
+
+#[derive(Debug)]
+pub struct SelectedElementView {
+    pub title: String,
+    pub status: String,
+    pub content: String,
+    pub report: ElementReport,
+}
+
+struct ReportDefinition {
+    child_plural: &'static str,
+    grandchild_singular: &'static str,
+    grandchild_plural: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanningReportKind {
+    WeeklyPlanning,
+    Backlog,
+    MyTasks,
+}
+
+impl PlanningReportKind {
+    fn from_sidebar_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "WeeklyPlanning" => Some(Self::WeeklyPlanning),
+            "Backlog" => Some(Self::Backlog),
+            "MyTasks" => Some(Self::MyTasks),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DailyTodoItem {
+    pub line_index: usize,
+    pub checked: bool,
+    pub text: String,
 }
 
 pub struct App {
     pub config: Config,
+    pub theme: Theme,
     pub current_view: ViewType,
-    pub tree_model: TreeModel,
+    pub navigation_state: NavigationState,
     pub mode: Mode,
-    pub command_input: String,
-    pub command_matches: Vec<CommandMatch>,
+    pub command_palette: CommandPalette,
     pub should_exit: bool,
     pub journal_entries: Vec<JournalEntry>,
-    pub selected_entry_index: usize,
-    pub command_selection_index: usize,
     pub needs_terminal_reinit: bool,
-    pub current_program: Option<String>,
-    pub current_project: Option<String>,
-    pub current_milestone: Option<String>,
-    pub current_task: Option<String>,
-    pub programs: Vec<DirectoryEntry>,
-    pub projects: Vec<DirectoryEntry>,
-    pub milestones: Vec<DirectoryEntry>,
-    pub tasks: Vec<DirectoryEntry>,
-    pub subtasks: Vec<DirectoryEntry>,
+    pub tree_data: TreeData,
     pub input_buffer: String,
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
-    pub sidebar_items: Vec<SidebarItem>,
-    pub template_field_state: Option<TemplateFieldState>,
+    pub wizard_state: WizardState,
+    pub planning_session: PlanningSessionState,
+    pub review_state: ReviewState,
+    // Hierarchical task picker state
+    pub hierarchical_picker: HierarchicalPickerState,
+    // Extracted planning wizard state (replaces fields above)
+    pub planning_wizard: Option<planning_wizard::PlanningWizardState>,
+    // Task wizard state
+    pub task_wizard: Option<task_wizard::TaskWizardState>,
+    pub backlog_staged_uuids: Option<Vec<String>>,
+    // Planning preview confirmed flag
+    // Archive list tree structure (maps tree index -> journal entry index)
+    pub archive_tree_mapping: Vec<Option<usize>>,
+    // Journal tree state for sidebar expansion
+    pub journal_tree_state: JournalTreeState,
+    // Theme selection state
+    pub available_themes: Vec<String>,
+    pub theme_selection_index: usize,
+    pub previous_theme: Option<crate::theme::Theme>,
 }
 
 impl App {
+    const FOCUS_ASSIGNED_TO: usize = 100;
+    const FOCUS_START_DATE: usize = 101;
+    const FOCUS_DUE_DATE: usize = 102;
+    const JOURNAL_EXPANSION_ROOT: &'static str = "__journal__";
+
     pub fn new(config: Config) -> Self {
-        let command_matches = get_command_list();
+        let theme = config.load_theme().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to load theme '{}': {}, using default",
+                config.theme,
+                e
+            );
+            crate::theme::default_theme()
+        });
 
         let mut app = App {
             config,
+            theme,
             current_view: ViewType::TreeView,
-            tree_model: TreeModel::default(),
+            navigation_state: NavigationState::new(),
             mode: Mode::Normal,
-            command_input: String::new(),
-            command_matches,
+            command_palette: CommandPalette::new(),
             should_exit: false,
             journal_entries: Vec::new(),
-            selected_entry_index: 0,
-            command_selection_index: 0,
             needs_terminal_reinit: false,
-            current_program: None,
-            current_project: None,
-            current_milestone: None,
-            current_task: None,
-            programs: Vec::new(),
-            projects: Vec::new(),
-            milestones: Vec::new(),
-            tasks: Vec::new(),
-            subtasks: Vec::new(),
+            tree_data: TreeData::new(),
             input_buffer: String::new(),
             selected_content: None,
             current_content_text: None,
-            sidebar_items: Vec::new(),
-            template_field_state: None,
+            wizard_state: WizardState::new(),
+            planning_session: PlanningSessionState::new(),
+            review_state: ReviewState::new(),
+            hierarchical_picker: HierarchicalPickerState::new(),
+            planning_wizard: None,
+            task_wizard: None,
+            backlog_staged_uuids: None,
+            archive_tree_mapping: Vec::new(),
+            journal_tree_state: JournalTreeState::new(),
+            available_themes: crate::theme::loader::list_available_themes(),
+            theme_selection_index: 0,
+            previous_theme: None,
         };
 
         app.load_tree_view_data();
+        app.ensure_journal_entries_loaded();
+        app.resume_planning_session();
         app
+    }
+
+    pub fn background_style(&self) -> ratatui::style::Style {
+        self.theme.ui.background.unwrap_or_default()
+    }
+
+    pub fn text_primary(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .text
+            .primary
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::White))
+    }
+
+    pub fn text_secondary(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .text
+            .secondary
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn sidebar_style(&self) -> ratatui::style::Style {
+        self.theme.ui.sidebar.item.unwrap_or_default()
+    }
+
+    pub fn sidebar_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.sidebar.selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn sidebar_header_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .sidebar
+            .header
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn sidebar_create_action_style(&self, selected: bool) -> ratatui::style::Style {
+        if let Some(style) = &self.theme.ui.sidebar.create_action {
+            if selected {
+                return (*style)
+                    .bg(ratatui::style::Color::Cyan)
+                    .fg(ratatui::style::Color::Black);
+            }
+            return *style;
+        }
+        if selected {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Cyan)
+        } else {
+            ratatui::style::Style::default().fg(ratatui::style::Color::Cyan)
+        }
+    }
+
+    pub fn border_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .border
+            .normal
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn status_color(&self) -> ratatui::style::Color {
+        match self.mode {
+            Mode::Normal => self
+                .theme
+                .ui
+                .status
+                .normal
+                .unwrap_or(ratatui::style::Color::Green),
+            Mode::CommandPalette => self
+                .theme
+                .ui
+                .status
+                .command
+                .unwrap_or(ratatui::style::Color::Yellow),
+            Mode::Input | Mode::InputTaskDetailField => self
+                .theme
+                .ui
+                .status
+                .input
+                .unwrap_or(ratatui::style::Color::Cyan),
+            Mode::TaskSelection => self
+                .theme
+                .ui
+                .status
+                .select
+                .unwrap_or(ratatui::style::Color::Magenta),
+            Mode::ReviewSession => self
+                .theme
+                .ui
+                .status
+                .review
+                .unwrap_or(ratatui::style::Color::LightMagenta),
+            Mode::HierarchicalSelection => self
+                .theme
+                .ui
+                .status
+                .hierarchical_selection
+                .unwrap_or(ratatui::style::Color::LightCyan),
+            Mode::PlanningPreview => self
+                .theme
+                .ui
+                .status
+                .planning_preview
+                .unwrap_or(ratatui::style::Color::LightBlue),
+            Mode::TaskDetailWizard => self
+                .theme
+                .ui
+                .status
+                .task_detail_wizard
+                .unwrap_or(ratatui::style::Color::LightYellow),
+            Mode::CurrentPlanNavigation => self
+                .theme
+                .ui
+                .status
+                .current_plan_navigation
+                .unwrap_or(ratatui::style::Color::LightCyan),
+            Mode::ThemeSelection => self
+                .theme
+                .ui
+                .status
+                .theme_selection
+                .unwrap_or(ratatui::style::Color::LightCyan),
+        }
+    }
+
+    pub fn command_input_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.input.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .bg(ratatui::style::Color::Black)
+        })
+    }
+
+    pub fn command_result_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.result.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .bg(ratatui::style::Color::Black)
+        })
+    }
+
+    pub fn command_result_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.command.result_selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn command_border_style(&self) -> ratatui::style::Style {
+        self.theme.ui.border.focused.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn theme_border_style(&self) -> ratatui::style::Style {
+        self.theme.ui.border.focused.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightCyan)
+        })
+    }
+
+    pub fn content_title_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.title.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::LightBlue)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn content_header_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.header.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn content_table_header_style(&self) -> ratatui::style::Style {
+        self.theme.ui.content.table_header.unwrap_or_else(|| {
+            ratatui::style::Style::default().fg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn content_table_border_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .content
+            .table_border
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_field_label_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.field_label.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn wizard_field_value_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::White))
+    }
+
+    pub fn wizard_field_empty_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value_empty
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_field_auto_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .field_value_auto
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_button_confirm_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.button_confirm.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Cyan)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        })
+    }
+
+    pub fn wizard_button_cancel_style(&self) -> ratatui::style::Style {
+        self.theme
+            .ui
+            .wizard
+            .button_cancel
+            .unwrap_or_else(|| ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+    }
+
+    pub fn wizard_button_selected_style(&self) -> ratatui::style::Style {
+        self.theme.ui.wizard.button_selected.unwrap_or_else(|| {
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::LightBlue)
+        })
+    }
+
+    pub fn selection_bg(&self) -> ratatui::style::Color {
+        self.theme
+            .ui
+            .selection
+            .bg
+            .unwrap_or(ratatui::style::Color::LightBlue)
+    }
+
+    pub fn selection_fg(&self) -> ratatui::style::Style {
+        if let Some(fg) = self.theme.ui.selection.fg {
+            Style::default().fg(fg)
+        } else {
+            Style::default().fg(ratatui::style::Color::Black)
+        }
+    }
+
+    pub fn hierarchy_program_style(&self) -> ratatui::style::Style {
+        Style::default().add_modifier(ratatui::style::Modifier::BOLD)
+    }
+
+    pub fn hierarchy_project_style(&self) -> ratatui::style::Style {
+        Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
+    }
+
+    pub fn hierarchy_milestone_style(&self) -> ratatui::style::Style {
+        Style::default().fg(ratatui::style::Color::LightCyan)
+    }
+
+    pub fn selection_active_style(&self) -> ratatui::style::Style {
+        self.theme.ui.selection.active.unwrap_or_else(|| {
+            Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::Yellow)
+        })
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -210,30 +591,449 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, code: KeyCode) {
+    pub fn handle_key(&mut self, code: KeyCode) {
+        // Handle TaskSelection mode specially
+        if self.mode == Mode::TaskSelection {
+            match code {
+                KeyCode::Char(' ') => {
+                    self.toggle_task_selection();
+                }
+                KeyCode::Enter => {
+                    if self.planning_session.has_tasks() {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::WeeklyPlanning;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.cancel_task_selection();
+                }
+                KeyCode::Right => {
+                    self.navigate_right();
+                }
+                KeyCode::Left => {
+                    self.navigate_left();
+                }
+                KeyCode::Up => {
+                    self.navigate_up();
+                }
+                KeyCode::Down => {
+                    self.navigate_down();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle HierarchicalSelection mode specially
+        if self.mode == Mode::HierarchicalSelection {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.hierarchical_picker.navigate_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.hierarchical_picker.navigate_down();
+                }
+                KeyCode::Left => {
+                    // Go back up hierarchy, but don't cancel if tasks are selected
+                    if !self.hierarchical_picker.go_back() {
+                        // At root level - only cancel if no tasks selected or in session
+                        let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
+                        let has_session_tasks = self.planning_session.has_tasks();
+                        if !has_picker_tasks && !has_session_tasks {
+                            self.cancel_planning_wizard();
+                        }
+                    } else {
+                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
+                    }
+                }
+                KeyCode::Right => {
+                    // Drill down (same as Enter for navigation)
+                    if self.hierarchical_picker.level != hierarchical_picker::PickerLevel::Tasks
+                        && let Some((new_level, _name)) = self.hierarchical_picker.select_current()
+                    {
+                        self.load_hierarchical_picker_level(new_level);
+                    }
+                }
+                KeyCode::Enter => {
+                    let at_tasks_level =
+                        self.hierarchical_picker.level == hierarchical_picker::PickerLevel::Tasks;
+
+                    if at_tasks_level {
+                        // Open task detail wizard for the selected task
+                        self.open_task_detail_wizard();
+                    } else if let Some((new_level, _name)) =
+                        self.hierarchical_picker.select_current()
+                    {
+                        self.load_hierarchical_picker_level(new_level);
+                    }
+                }
+
+                KeyCode::Char('f') => {
+                    // 'f' for "Finish plan" - finalize if in wizard mode with tasks
+                    let has_picker_selections = !self.hierarchical_picker.selected_tasks.is_empty();
+                    let has_session_tasks = self.planning_session.has_tasks();
+                    if (has_picker_selections || has_session_tasks)
+                        && self.hierarchical_picker.is_wizard_mode
+                    {
+                        self.finalize_planning_session_from_picker();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if !self.hierarchical_picker.go_back() {
+                        // At root level - only cancel if no tasks selected or in session
+                        let has_picker_tasks = !self.hierarchical_picker.selected_tasks.is_empty();
+                        let has_session_tasks = self.planning_session.has_tasks();
+                        if !has_picker_tasks && !has_session_tasks {
+                            self.cancel_planning_wizard();
+                        }
+                    } else {
+                        self.load_hierarchical_picker_level(self.hierarchical_picker.level);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.cancel_planning_wizard();
+                }
+                KeyCode::Char('q') => {
+                    self.cancel_planning_wizard();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle ReviewSession mode specially
+        if self.mode == Mode::ReviewSession {
+            match code {
+                KeyCode::Char('s') => {
+                    self.cycle_task_status();
+                }
+                KeyCode::Char('r') => {
+                    self.toggle_rollover();
+                }
+                KeyCode::Char('d') => {
+                    self.mark_task_done();
+                }
+                KeyCode::Char('x') => {
+                    self.remove_task_from_session();
+                }
+                KeyCode::Char('m') => {
+                    // Add more tasks - go back to picker
+                    self.add_more_tasks_to_session();
+                }
+                KeyCode::Char('c') => {
+                    self.close_planning_session();
+                }
+                KeyCode::Char('a') => {
+                    // Set assigned to - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self
+                        .planning_session
+                        .tasks
+                        .get(self.review_state.selection_index)
+                        .and_then(|t| t.assigned_to.clone())
+                        .unwrap_or_default();
+                }
+                KeyCode::Char('b') => {
+                    // Set start date - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self
+                        .planning_session
+                        .tasks
+                        .get(self.review_state.selection_index)
+                        .and_then(|t| t.start_date.clone())
+                        .unwrap_or_default();
+                }
+                KeyCode::Char('e') => {
+                    // Set due date - use input mode
+                    self.mode = Mode::Input;
+                    self.input_buffer = self
+                        .planning_session
+                        .tasks
+                        .get(self.review_state.selection_index)
+                        .and_then(|t| t.due_date.clone())
+                        .unwrap_or_default();
+                }
+                KeyCode::Enter => {
+                    // Confirm and finalize session
+                    self.finalize_planning_session();
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.current_view = ViewType::WeeklyPlanning;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.navigate_review(-1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.navigate_review(1);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle CurrentPlanNavigation mode specially
+        if self.mode == Mode::CurrentPlanNavigation {
+            match self.active_planning_report() {
+                Some(PlanningReportKind::WeeklyPlanning) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_review(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_review(1);
+                    }
+                    KeyCode::Char('s') => {
+                        self.cycle_task_status();
+                    }
+                    KeyCode::Char('x') => {
+                        self.remove_task_from_session();
+                    }
+                    KeyCode::Enter => {
+                        self.open_current_plan_task_in_editor();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                Some(PlanningReportKind::Backlog) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_report_rows(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_report_rows(1);
+                    }
+                    KeyCode::Char('a') => {
+                        self.assign_selected_backlog_task_to_owner();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                Some(PlanningReportKind::MyTasks) => match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.navigate_report_rows(-1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.navigate_report_rows(1);
+                    }
+                    KeyCode::Char('s') => {
+                        self.cycle_selected_my_task_status();
+                    }
+                    KeyCode::Char('x') => {
+                        self.toggle_selected_my_todo();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                        self.current_view = ViewType::TreeView;
+                    }
+                    _ => {}
+                },
+                None => {
+                    self.mode = Mode::Normal;
+                }
+            }
+            return;
+        }
+
+        // Handle PlanningPreview mode specially
+        if self.mode == Mode::PlanningPreview {
+            match code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if self.review_state.preview_focus > 0 {
+                        self.review_state.preview_focus -= 1;
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if self.review_state.preview_focus < 2 {
+                        self.review_state.preview_focus += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    match self.review_state.preview_focus {
+                        0 => self.add_more_tasks_to_session(),
+                        1 => {
+                            // Save the planning session and return to Normal mode
+                            self.planning_session.active = true;
+                            if self.planning_session.uuid.is_none() {
+                                self.planning_session.uuid =
+                                    Some(crate::storage::planning::generate_session_uuid());
+                            }
+                            self.save_current_planning_session();
+                            self.show_current_plan_report();
+                        }
+                        2 => self.cancel_planning_wizard(),
+                        _ => {}
+                    }
+                }
+                KeyCode::Esc => {
+                    if self.review_state.preview_focus == 2 {
+                        self.cancel_planning_wizard();
+                    } else {
+                        self.review_state.preview_focus = 2;
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle TaskDetailWizard mode specially
+        if self.mode == Mode::TaskDetailWizard {
+            const TASK_WIZARD_FIELD_COUNT: usize = 7; // task name, status, assigned_to, start_date, due_date, importance, description
+            if let Some(ref mut wizard) = self.task_wizard {
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if wizard.field_index > 0 {
+                            wizard.field_index -= 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if wizard.field_index < TASK_WIZARD_FIELD_COUNT + 1 {
+                            // +1 for buttons row
+                            wizard.field_index += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if wizard.field_index < TASK_WIZARD_FIELD_COUNT {
+                            // On a field - cycle to next field (like template wizard)
+                            self.cycle_task_wizard_field_or_next();
+                        } else if wizard.field_index == TASK_WIZARD_FIELD_COUNT {
+                            // ADD TO PLAN button
+                            self.confirm_task_detail_wizard();
+                        } else {
+                            // CANCEL button
+                            self.cancel_task_detail_wizard();
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            if wizard.field_index == 8 {
+                                self.cancel_task_detail_wizard();
+                            } else {
+                                // Escape jumps to CANCEL button
+                                wizard.field_index = 8; // CancelButton index
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            task_wizard::cycle_task_wizard_choice(
+                                wizard,
+                                -1,
+                                &self.config.workflow,
+                                &self.config.importance,
+                            );
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        if let Some(ref mut wizard) = self.task_wizard {
+                            task_wizard::cycle_task_wizard_choice(
+                                wizard,
+                                1,
+                                &self.config.workflow,
+                                &self.config.importance,
+                            );
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        // Inline editing - type directly into the focused field
+                        self.handle_task_wizard_char(c);
+                    }
+                    KeyCode::Backspace => {
+                        // Inline editing - backspace in the focused field
+                        self.handle_task_wizard_backspace();
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        // Handle ThemeSelection mode
+        if self.mode == Mode::ThemeSelection {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.theme_selection_index > 0 {
+                        self.theme_selection_index -= 1;
+                        self.preview_theme();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.theme_selection_index < self.available_themes.len().saturating_sub(1) {
+                        self.theme_selection_index += 1;
+                        self.preview_theme();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.confirm_theme_selection();
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.cancel_theme_selection();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('/') => {
                 self.mode = Mode::CommandPalette;
-                self.command_input.clear();
+                self.command_palette.input.clear();
                 self.filter_commands();
             }
             KeyCode::Esc => {
                 if matches!(self.mode, Mode::CommandPalette) {
                     self.mode = Mode::Normal;
-                    self.command_input.clear();
-                    self.command_selection_index = 0;
+                    self.command_palette.input.clear();
+                    self.command_palette.selection_index = 0;
                 } else if self.current_view == ViewType::InputTemplateField {
                     // Escape jumps to CANCEL button
-                    if let Some(ref mut state) = self.template_field_state {
+                    if let Some(ref mut state) = self.wizard_state.template {
                         // Save current field value first
                         if let WizardFocus::Field(idx) = state.focus
                             && let Some(field) = state.fields.get_mut(idx)
                         {
                             field.value = self.input_buffer.clone();
+                            field.was_edited = true;
                         }
-                        state.focus = WizardFocus::CancelButton;
-                        self.input_buffer.clear();
+                        if state.focus == WizardFocus::CancelButton {
+                            self.wizard_state.template = None;
+                            self.current_view = ViewType::TreeView;
+                        } else {
+                            state.focus = WizardFocus::CancelButton;
+                            self.input_buffer.clear();
+                        }
                     }
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    // ESC jumps to CancelButton instead of canceling
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        if wizard.focus == PlanningDateFocus::CancelButton {
+                            self.cancel_planning_wizard();
+                        } else {
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        }
+                    }
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    // ESC cancels the planning wizard
+                    self.cancel_planning_wizard();
+                } else if self.current_view == ViewType::TaskDetailWizard {
+                    // Cancel task detail wizard and return to picker
+                    self.cancel_task_detail_wizard();
+                } else if self.mode == Mode::Input
+                    && matches!(
+                        self.review_state.input_focus,
+                        Some(Self::FOCUS_ASSIGNED_TO)
+                            | Some(Self::FOCUS_START_DATE)
+                            | Some(Self::FOCUS_DUE_DATE)
+                    )
+                {
+                    // Cancel task metadata input and return to ReviewSession
+                    self.input_buffer.clear();
+                    self.mode = Mode::ReviewSession;
                 } else if self.current_view == ViewType::TreeView {
                     // In TreeView, only navigate back if we're at root (empty path).
                     // When inside the tree (path not empty), do nothing because Left arrow
@@ -241,7 +1041,12 @@ impl App {
                     // can sometimes incorrectly trigger ESC first (the escape sequence parsing
                     // issue causes the ESC byte of the escape sequence to be interpreted as a
                     // separate keypress). By doing nothing, we prevent double-navigation.
-                    if self.tree_model.selected_path().is_empty() {
+                    if self
+                        .navigation_state
+                        .sidebar_tree
+                        .selected_path()
+                        .is_empty()
+                    {
                         self.current_view = ViewType::Journal;
                     }
                 } else {
@@ -249,14 +1054,62 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                self.navigate_right();
+                if self.current_view == ViewType::InputTemplateField {
+                    self.cycle_template_choice(1);
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        let focus_idx = wizard.focus.index();
+                        if focus_idx == 1 {
+                            // Duration field - cycle options
+                            self.cycle_duration_right();
+                        } else if focus_idx == 3 {
+                            // ConfirmButton - cycle to CancelButton
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        } else if focus_idx == 4 {
+                            // CancelButton - cycle back to StartDate
+                            wizard.focus = PlanningDateFocus::StartDate;
+                        } else {
+                            self.navigate_right();
+                        }
+                    } else {
+                        self.navigate_right();
+                    }
+                } else {
+                    self.navigate_right();
+                }
             }
             KeyCode::Left => {
-                self.navigate_left();
+                if self.current_view == ViewType::InputTemplateField {
+                    self.cycle_template_choice(-1);
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    if let Some(ref mut wizard) = self.planning_wizard {
+                        let focus_idx = wizard.focus.index();
+                        if focus_idx == 1 {
+                            // Duration field - cycle options
+                            self.cycle_duration_left();
+                        } else if focus_idx == 4 {
+                            // CancelButton - cycle to ConfirmButton
+                            wizard.focus = PlanningDateFocus::ConfirmButton;
+                        } else if focus_idx == 3 {
+                            // ConfirmButton - cycle back to CancelButton
+                            wizard.focus = PlanningDateFocus::CancelButton;
+                        } else {
+                            self.navigate_left();
+                        }
+                    } else {
+                        self.navigate_left();
+                    }
+                } else {
+                    self.navigate_left();
+                }
             }
             KeyCode::Up => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_up();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_up();
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    self.navigate_planning_tasks_up();
                 } else {
                     self.navigate_up();
                 }
@@ -264,6 +1117,10 @@ impl App {
             KeyCode::Down => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_down();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_down();
+                } else if self.current_view == ViewType::PlanningTaskPicker {
+                    self.navigate_planning_tasks_down();
                 } else {
                     self.navigate_down();
                 }
@@ -274,6 +1131,24 @@ impl App {
             KeyCode::Tab => {
                 if self.current_view == ViewType::InputTemplateField {
                     self.navigate_template_field_down();
+                } else if self.current_view == ViewType::InputPlanningSessionDates {
+                    self.navigate_planning_dates_down();
+                }
+            }
+            KeyCode::Char(' ') => {
+                if self.current_view == ViewType::PlanningTaskPicker {
+                    self.toggle_planning_task_selection();
+                } else if matches!(
+                    self.current_view,
+                    ViewType::InputProgram
+                        | ViewType::InputProject
+                        | ViewType::InputMilestone
+                        | ViewType::InputTask
+                        | ViewType::InputTemplateField
+                        | ViewType::InputPlanningSessionDates
+                        | ViewType::InputTaskDetailField
+                ) {
+                    self.handle_input_char(' ');
                 }
             }
             KeyCode::Char(c) => {
@@ -287,7 +1162,7 @@ impl App {
     }
 
     fn navigate_template_field_up(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             // Save current value if on a field
             if let WizardFocus::Field(idx) = state.focus
                 && let Some(field) = state.fields.get_mut(idx)
@@ -333,7 +1208,7 @@ impl App {
     }
 
     fn navigate_template_field_down(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             // Save current value if on a field
             if let WizardFocus::Field(idx) = state.focus
                 && let Some(field) = state.fields.get_mut(idx)
@@ -380,14 +1255,93 @@ impl App {
         }
     }
 
+    fn cycle_template_choice(&mut self, delta: isize) {
+        if let Some(ref mut state) = self.wizard_state.template {
+            match state.focus {
+                WizardFocus::Field(idx) => {
+                    let Some(field) = state.fields.get_mut(idx) else {
+                        return;
+                    };
+                    if field.choices.is_empty() || !field.is_editable {
+                        return;
+                    }
+
+                    let len = field.choices.len() as isize;
+                    let current_idx = field
+                        .choices
+                        .iter()
+                        .position(|choice| choice.eq_ignore_ascii_case(&field.value))
+                        .unwrap_or(0) as isize;
+                    let next_idx = (current_idx + delta).rem_euclid(len) as usize;
+                    field.value = field.choices[next_idx].clone();
+                    field.was_edited = true;
+                    self.input_buffer = field.value.clone();
+                }
+                WizardFocus::ConfirmButton => {
+                    state.focus = WizardFocus::CancelButton;
+                }
+                WizardFocus::CancelButton => {
+                    state.focus = WizardFocus::ConfirmButton;
+                }
+            }
+        }
+    }
+
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
-            tracing::debug!(
-                selected_index = self.selected_entry_index,
-                path = ?self.tree_model.selected_path(),
-                "navigate right"
-            );
-            self.open_tree_item_with_leaf_open(false);
+            if let Some(journal_node) = self.selected_journal_node() {
+                match journal_node {
+                    JournalNavNode::History => {
+                        if !self.journal_is_expanded(&[]) {
+                            self.expand_history();
+                        }
+                    }
+                    JournalNavNode::Header(path) => {
+                        if !self.journal_is_expanded(&path) {
+                            self.expand_journal_item(&path);
+                        }
+                    }
+                    JournalNavNode::Today
+                    | JournalNavNode::Entry(_)
+                    | JournalNavNode::OtherAction => {
+                        // Right on journal leaves/actions with no children is a no-op.
+                    }
+                }
+                return;
+            }
+
+            let idx = self.navigation_state.selected_entry_index;
+            if idx < self.navigation_state.sidebar_items.len() {
+                tracing::debug!(
+                    selected_index = self.navigation_state.selected_entry_index,
+                    path = ?self.navigation_state.sidebar_tree.selected_path(),
+                    "navigate right"
+                );
+                self.open_tree_item_with_leaf_open(false);
+            }
+        }
+    }
+
+    /// Expands the History item: loads journal entries if needed, expands the tree,
+    /// reloads program data, rebuilds sidebar with programs + journal tree, and selects the first child.
+    fn expand_history(&mut self) {
+        self.ensure_journal_entries_loaded();
+
+        self.journal_expand_path(&[]);
+        self.load_tree_view_data();
+        self.select_first_journal_child(&[]);
+    }
+
+    fn ensure_journal_entries_loaded(&mut self) {
+        if self.journal_entries.is_empty() {
+            self.refresh_journal_entries_cache();
+        }
+    }
+
+    fn refresh_journal_entries_cache(&mut self) {
+        if let Ok(entries) = self.config.workspace.list_journal_entries() {
+            self.journal_entries = entries.clone();
+            self.journal_tree_state.set_entries(entries);
         }
     }
 
@@ -396,9 +1350,50 @@ impl App {
             return;
         }
 
-        let Some(item) = self.sidebar_items.get(self.selected_entry_index) else {
+        let idx = self.navigation_state.selected_entry_index;
+        if idx >= self.navigation_state.sidebar_items.len() {
             return;
-        };
+        }
+
+        let item = &self.navigation_state.sidebar_items[idx];
+        if let Some(journal_node) = self.selected_journal_node() {
+            match journal_node {
+                JournalNavNode::History | JournalNavNode::Today | JournalNavNode::OtherAction => {
+                    // Root-level journal actions cannot be collapsed.
+                }
+                JournalNavNode::Header(path) => {
+                    let parent_path = path[..path.len().saturating_sub(1)].to_vec();
+                    if parent_path.is_empty() {
+                        // Year selected: collapse history level (all years/months/entries).
+                        self.collapse_journal_item(&[]);
+                    } else {
+                        // Month selected: collapse year level (all months/entries for that year).
+                        self.collapse_journal_item(&parent_path);
+                    }
+                    self.load_tree_view_data();
+
+                    if parent_path.is_empty() {
+                        self.select_history();
+                    } else {
+                        self.select_journal_item_by_path(&parent_path);
+                    }
+                }
+                JournalNavNode::Entry(path) => {
+                    let parent_path = path[..path.len().saturating_sub(1)].to_vec();
+                    if parent_path.is_empty() {
+                        self.select_history();
+                    } else {
+                        self.collapse_journal_item(&path);
+                        self.collapse_journal_item(&parent_path);
+                        self.load_tree_view_data();
+                        self.select_journal_item_by_path(&parent_path);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Program tree navigation
         let Some(selected_path) = item.tree_path.clone() else {
             return;
         };
@@ -408,12 +1403,188 @@ impl App {
             return;
         }
 
-        self.collapse_path(&selected_path);
-        let mut parent = selected_path;
+        // For root-level items (programs), only collapse if they have children
+        if selected_path.len() == 1 && !item.has_children {
+            return;
+        }
+
+        let mut parent = selected_path.clone();
         parent.pop();
-        self.collapse_path(&parent);
+
+        if parent.is_empty() {
+            if item.has_children {
+                self.collapse_path(&selected_path);
+                self.load_tree_view_data();
+            }
+            return;
+        }
+
+        if item.has_children && self.navigation_state.is_expanded(&selected_path) {
+            self.collapse_path(&selected_path);
+        } else {
+            self.collapse_path(&parent);
+        }
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
+    }
+
+    fn add_journal_months_and_entries(&mut self, year: &str) {
+        use crate::tui::cache::JournalNode;
+
+        let months = self.journal_tree_state.months_for_year(year);
+
+        for month in &months {
+            let month_path = vec![year.to_string(), month.clone()];
+            let node = JournalNode::Month {
+                year: year.to_string(),
+                month: month.clone(),
+            };
+            let mut item = SidebarItem::journal(node, month_path.clone());
+            item.indent = 2;
+            self.navigation_state.sidebar_items.push(item);
+
+            if self.journal_is_expanded(&month_path) {
+                self.add_journal_entries_for_month(year, month);
+            }
+        }
+    }
+
+    fn add_journal_entries_for_month(&mut self, year: &str, month: &str) {
+        self.add_journal_entries_with_indent(year, month, 3);
+    }
+
+    fn add_journal_entries_with_indent(&mut self, year: &str, month: &str, indent_level: usize) {
+        use crate::tui::cache::JournalNode;
+
+        let entries = self.journal_tree_state.entries_for_month(year, month);
+        for entry in entries {
+            let label = entry.filename.trim_end_matches(".md").to_string();
+            let entry_path = if month.is_empty() {
+                vec![year.to_string(), label.clone()]
+            } else {
+                vec![year.to_string(), month.to_string(), label.clone()]
+            };
+            let node = JournalNode::Entry {
+                year: year.to_string(),
+                month: month.to_string(),
+                entry: entry.clone(),
+            };
+            let mut item = SidebarItem::journal(node, entry_path);
+            item.indent = indent_level;
+            self.navigation_state.sidebar_items.push(item);
+        }
+    }
+
+    fn expand_journal_item(&mut self, path: &[String]) {
+        self.journal_expand_path(path);
+        self.load_tree_view_data();
+        self.select_first_journal_child(path);
+    }
+
+    fn collapse_journal_item(&mut self, path: &[String]) {
+        self.journal_collapse_path(path);
+    }
+
+    fn journal_model_path(path: &[String]) -> Vec<String> {
+        let mut model_path = Vec::with_capacity(path.len() + 1);
+        model_path.push(Self::JOURNAL_EXPANSION_ROOT.to_string());
+        model_path.extend(path.iter().cloned());
+        model_path
+    }
+
+    fn journal_is_expanded(&self, path: &[String]) -> bool {
+        self.navigation_state
+            .is_expanded(&Self::journal_model_path(path))
+    }
+
+    fn journal_expand_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .expand_path(&Self::journal_model_path(path));
+    }
+
+    fn journal_collapse_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .collapse_path(&Self::journal_model_path(path));
+    }
+
+    fn collapse_all_journal(&mut self) {
+        self.journal_collapse_path(&[]);
+    }
+
+    fn selected_journal_node(&self) -> Option<JournalNavNode> {
+        let item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)?;
+        if item.section != SidebarSection::Journal {
+            return None;
+        }
+
+        if let Some(action) = item.is_journal_item.as_deref() {
+            return Some(match action {
+                "Today" => JournalNavNode::Today,
+                "History" => JournalNavNode::History,
+                _ => JournalNavNode::OtherAction,
+            });
+        }
+
+        item.journal_path
+            .as_ref()
+            .map(|path| {
+                if item.is_journal_header {
+                    JournalNavNode::Header(path.clone())
+                } else {
+                    JournalNavNode::Entry(path.clone())
+                }
+            })
+            .or(Some(JournalNavNode::OtherAction))
+    }
+
+    fn select_first_journal_child(&mut self, parent_path: &[String]) {
+        let child_depth = parent_path.len() + 1;
+
+        // First try to find children at the expected depth
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+            item.journal_path
+                .as_ref()
+                .is_some_and(|p| p.len() == child_depth && p.starts_with(parent_path))
+        }) {
+            self.navigation_state.selected_entry_index = idx;
+            return;
+        }
+
+        // For single-year case: when expanding root (empty parent_path),
+        // years aren't created, so look for months at depth 2 instead
+        if parent_path.is_empty() {
+            let month_depth = 2;
+            if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+                item.journal_path
+                    .as_ref()
+                    .is_some_and(|p| p.len() == month_depth && p.starts_with(parent_path))
+            }) {
+                self.navigation_state.selected_entry_index = idx;
+            }
+        }
+    }
+
+    fn select_journal_item_by_path(&mut self, path: &[String]) {
+        if let Some(idx) = self
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|item| item.journal_path.as_ref() == Some(&path.to_vec()))
+        {
+            self.navigation_state.selected_entry_index = idx;
+        }
+    }
+
+    fn select_history(&mut self) {
+        self.navigation_state.selected_entry_index = self
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "History" && i.is_journal_item.is_some())
+            .unwrap_or(0);
     }
 
     fn return_from_view(&mut self) {
@@ -427,8 +1598,13 @@ impl App {
                 self.current_content_text = None;
             }
             ViewType::TreeView => {
-                if !self.tree_model.selected_path().is_empty() {
-                    let mut parent = self.tree_model.selected_path_vec();
+                if !self
+                    .navigation_state
+                    .sidebar_tree
+                    .selected_path()
+                    .is_empty()
+                {
+                    let mut parent = self.navigation_state.sidebar_tree.selected_path_vec();
                     parent.pop();
                     self.set_selected_tree_path(parent);
                     self.load_tree_view_data();
@@ -446,14 +1622,166 @@ impl App {
         }
     }
 
+    fn current_plan_sidebar_index(&self) -> Option<usize> {
+        self.navigation_state.sidebar_items.iter().position(|item| {
+            item.name == "Current Plan"
+                && item.is_planning_item.as_deref() == Some("WeeklyPlanning")
+        })
+    }
+
+    pub fn active_planning_report(&self) -> Option<PlanningReportKind> {
+        self.navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .and_then(|item| item.is_planning_item.as_deref())
+            .and_then(PlanningReportKind::from_sidebar_tag)
+    }
+
+    fn show_current_plan_report(&mut self) {
+        if let Some(idx) = self.current_plan_sidebar_index() {
+            self.navigation_state.selected_entry_index = idx;
+        }
+        self.current_view = ViewType::TreeView;
+        self.review_state.selection_index = 0;
+        self.mode = if self.planning_session.has_tasks() {
+            Mode::CurrentPlanNavigation
+        } else {
+            Mode::Normal
+        };
+    }
+
     fn navigate_up(&mut self) {
-        self.selected_entry_index =
-            navigation::navigate_up(&self.sidebar_items, self.selected_entry_index);
+        let prev_section = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .map(|i| i.section.clone());
+
+        self.navigation_state.navigate_up();
+        self.sync_scope_from_sidebar_selection();
+        self.clear_backlog_staging_if_needed();
+
+        // Cross-section navigation: collapse previous section
+        if let Some(prev_section) = prev_section {
+            let new_idx = self.navigation_state.selected_entry_index;
+            if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_section = new_item.section.clone();
+                // If leaving Programs section, collapse all expanded programs
+                if prev_section == SidebarSection::Programs && new_section != prev_section {
+                    self.collapse_all_programs();
+                    self.load_tree_view_data();
+                    // After rebuild, select the LAST selectable item in the NEW section
+                    // (for upward navigation, we want to land at the end of the section)
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .rposition(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
+                // If leaving Journal section, clear journal expansion
+                else if prev_section == SidebarSection::Journal && new_section != prev_section {
+                    self.collapse_all_journal();
+                    self.load_tree_view_data();
+                    // After rebuild, select the LAST selectable item in the NEW section
+                    // (for upward navigation, we want to land at the end of the section)
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .rposition(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
+            }
+        }
     }
 
     fn navigate_down(&mut self) {
-        self.selected_entry_index =
-            navigation::navigate_down(&self.sidebar_items, self.selected_entry_index);
+        let prev_section = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+            .map(|i| i.section.clone());
+
+        self.navigation_state.navigate_down();
+        self.sync_scope_from_sidebar_selection();
+        self.clear_backlog_staging_if_needed();
+
+        // Cross-section navigation: collapse previous section
+        if let Some(prev_section) = prev_section {
+            let new_idx = self.navigation_state.selected_entry_index;
+            if let Some(new_item) = self.navigation_state.sidebar_items.get(new_idx) {
+                let new_section = new_item.section.clone();
+                // If leaving Programs section, collapse all expanded programs
+                if prev_section == SidebarSection::Programs && new_section != prev_section {
+                    self.collapse_all_programs();
+                    self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the NEW section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
+                // If leaving Journal section, clear journal expansion
+                else if prev_section == SidebarSection::Journal && new_section != prev_section {
+                    self.collapse_all_journal();
+                    self.load_tree_view_data();
+                    // After rebuild, select the first selectable item in the NEW section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
+            }
+        }
+    }
+
+    fn collapse_all_programs(&mut self) {
+        let paths_to_remove: Vec<Vec<String>> = self
+            .navigation_state
+            .sidebar_tree
+            .expanded_paths()
+            .iter()
+            .cloned()
+            .collect();
+        for path in paths_to_remove {
+            self.navigation_state.sidebar_tree.collapse_path(&path);
+        }
+    }
+
+    pub fn sync_scope_from_sidebar_selection(&mut self) {
+        let idx = self.navigation_state.selected_entry_index;
+        if idx >= self.navigation_state.sidebar_items.len() {
+            return;
+        }
+        let item = &self.navigation_state.sidebar_items[idx];
+
+        // Don't sync scope for spacer items - they have no tree_path and shouldn't
+        // trigger fallback behavior that would override navigation
+        if item.name.is_empty() {
+            return;
+        }
+
+        let Some(path) = item.tree_path.clone() else {
+            return;
+        };
+        if path != self.navigation_state.sidebar_tree.selected_path() {
+            self.set_selected_tree_path(path.clone());
+        }
+        // Also update current_* fields so wizard scope is accurate
+        self.navigation_state.set_scope_from_path(&path);
     }
 
     fn open_tree_item(&mut self) {
@@ -461,13 +1789,13 @@ impl App {
     }
 
     fn open_tree_item_with_leaf_open(&mut self, open_leaf_content: bool) {
-        let idx = self.selected_entry_index;
+        let idx = self.navigation_state.selected_entry_index;
 
-        if idx >= self.sidebar_items.len() {
+        if idx >= self.navigation_state.sidebar_items.len() {
             return;
         }
 
-        let item = &self.sidebar_items[idx];
+        let item = &self.navigation_state.sidebar_items[idx];
 
         if item.is_header || item.name.is_empty() {
             return;
@@ -480,8 +1808,37 @@ impl App {
         }
 
         if let Some(plan_type) = &item.is_planning_item {
-            let _ = plan_type;
-            // Planning entries are placeholders for now; Enter should do nothing.
+            match plan_type.as_str() {
+                "WeeklyPlanning" => {
+                    if !self.planning_session.active {
+                        self.start_planning_session();
+                        return;
+                    }
+                    self.current_view = ViewType::TreeView;
+                    if self.planning_session.has_tasks() {
+                        if self.review_state.selection_index >= self.planning_session.tasks.len() {
+                            self.review_state.selection_index = 0;
+                        }
+                        self.mode = Mode::CurrentPlanNavigation;
+                    } else {
+                        self.mode = Mode::Normal;
+                    }
+                }
+                "MyTasks" => {
+                    self.current_view = ViewType::TreeView;
+                    self.mode = Mode::CurrentPlanNavigation;
+                    self.review_state.selection_index = 0;
+                }
+                "Backlog" => {
+                    self.current_view = ViewType::TreeView;
+                    self.mode = Mode::CurrentPlanNavigation;
+                    if self.backlog_staged_uuids.is_none() {
+                        self.backlog_staged_uuids = Some(self.backlog_task_uuids());
+                    }
+                    self.review_state.selection_index = 0;
+                }
+                _ => {}
+            }
             return;
         }
 
@@ -490,8 +1847,7 @@ impl App {
                 "Today" => {
                     let today_path = self.config.workspace.today_journal_path();
                     if today_path.exists() {
-                        // Content preview is already rendered inline in TreeView.
-                        self.current_view = ViewType::TreeView;
+                        self.launch_editor(&today_path);
                     } else {
                         match self.create_today_journal_from_template() {
                             Ok(path) => self.launch_editor(&path),
@@ -500,16 +1856,29 @@ impl App {
                     }
                 }
                 "History" => {
-                    match self.config.workspace.list_journal_entries() {
-                        Ok(entries) => self.journal_entries = entries,
-                        Err(e) => {
-                            eprintln!("Failed to list journal entries: {}", e);
-                            self.journal_entries.clear();
-                        }
-                    }
-                    self.current_view = ViewType::JournalArchiveList;
+                    self.expand_history();
                 }
                 _ => {}
+            }
+            return;
+        }
+
+        // Handle journal history entries (when journal_path is set but not a header)
+        if let Some(ref jpath) = item.journal_path
+            && !item.is_journal_header
+        {
+            if !open_leaf_content {
+                return;
+            }
+            // This is a journal entry - open it in viewer
+            let label = navigation::journal_entry_label(jpath).unwrap_or(&item.name);
+            if let Some(entry) = self
+                .journal_entries
+                .iter()
+                .find(|e| *e.filename.trim_end_matches(".md") == *label)
+            {
+                let path = entry.path.clone();
+                self.launch_editor(&path);
             }
             return;
         }
@@ -531,20 +1900,21 @@ impl App {
                 indent = item.indent,
                 selected_index = idx,
                 node_path = ?node_path,
-                current_path = ?self.tree_model.selected_path(),
+                current_path = ?self.navigation_state.sidebar_tree.selected_path(),
                 has_children,
                 "open tree item"
             );
-            if has_children || self.tree_model.selected_path() != node_path {
-                if has_children {
-                    self.tree_model.expand_path(&node_path);
-                    self.set_selected_tree_path(node_path.clone());
-                    self.load_tree_view_data();
-                    self.select_first_child_for_path(&node_path);
-                } else {
-                    self.set_selected_tree_path(node_path.clone());
-                    self.load_tree_view_data();
+            if has_children {
+                if self.navigation_state.sidebar_tree.is_expanded(&node_path) {
+                    return;
                 }
+                self.navigation_state.sidebar_tree.expand_path(&node_path);
+                self.set_selected_tree_path(node_path.clone());
+                self.load_tree_view_data();
+                self.select_first_child_for_path(&node_path);
+            } else if self.navigation_state.sidebar_tree.selected_path() != node_path {
+                self.set_selected_tree_path(node_path.clone());
+                self.load_tree_view_data();
             } else if open_leaf_content {
                 self.set_selected_tree_path(node_path);
                 self.open_content(&entry);
@@ -561,32 +1931,136 @@ impl App {
     }
 
     fn load_tree_view_data(&mut self) {
-        self.programs = self.load_tree_level(&[]);
-        self.current_program = self.tree_model.selected_path().first().cloned();
-        self.current_project = self.tree_model.selected_path().get(1).cloned();
-        self.current_milestone = self.tree_model.selected_path().get(2).cloned();
-        self.current_task = self.tree_model.selected_path().get(3).cloned();
+        self.tree_data.programs = self.load_tree_level(&[]);
+        self.navigation_state.update_scope_from_tree();
 
-        self.projects = self.load_tree_level_for_selected_depth(1);
-        self.milestones = self.load_tree_level_for_selected_depth(2);
-        self.tasks = self.load_tree_level_for_selected_depth(3);
-        self.subtasks = self.load_tree_level_for_selected_depth(4);
+        self.tree_data.projects = self.load_tree_level_for_selected_depth(1);
+        self.tree_data.milestones = self.load_tree_level_for_selected_depth(2);
+        self.tree_data.tasks = self.load_tree_level_for_selected_depth(3);
+        self.tree_data.subtasks = self.load_tree_level_for_selected_depth(4);
 
         tracing::debug!(
-            path = ?self.tree_model.selected_path(),
-            programs = self.programs.len(),
-            projects = self.projects.len(),
-            milestones = self.milestones.len(),
-            tasks = self.tasks.len(),
-            subtasks = self.subtasks.len(),
+            path = ?self.navigation_state.sidebar_tree.selected_path(),
+            programs = self.tree_data.programs.len(),
+            projects = self.tree_data.projects.len(),
+            milestones = self.tree_data.milestones.len(),
+            tasks = self.tree_data.tasks.len(),
+            subtasks = self.tree_data.subtasks.len(),
             "loaded tree view data"
         );
         self.build_sidebar_items();
         self.sync_selection_with_tree_path();
     }
 
+    pub fn selected_element_view(&self) -> Option<SelectedElementView> {
+        let idx = self.navigation_state.selected_entry_index;
+        let item = self.navigation_state.sidebar_items.get(idx)?;
+        if item.section != SidebarSection::Programs || item.is_header {
+            return None;
+        }
+
+        let path = if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
+            self.navigation_state.sidebar_tree.selected_path().to_vec()
+        } else {
+            item.tree_path.clone()?
+        };
+        if path.is_empty() {
+            return None;
+        }
+
+        let depth = path.len();
+        let def = Self::report_definition_for_depth(depth)?;
+        let selected_entry = self.resolve_entry_at_path(&path)?;
+        let content = self
+            .config
+            .workspace
+            .read_md_file(&selected_entry.path)
+            .unwrap_or_else(|_| "".to_string());
+        let selected_status = self.status_for_entry(&selected_entry);
+
+        let children = self.load_tree_level(&path);
+        let rows = children
+            .into_iter()
+            .map(|child| {
+                let child_name = child.name.clone();
+                let status = self.status_for_entry(&child);
+                let mut child_path = path.clone();
+                child_path.push(child_name.clone());
+                let grandchild_count = self.load_tree_level(&child_path).len();
+                ElementReportRow {
+                    name: child_name,
+                    status,
+                    grandchild_count,
+                }
+            })
+            .collect();
+
+        let report = ElementReport {
+            child_plural: def.child_plural,
+            grandchild_singular: def.grandchild_singular,
+            grandchild_plural: def.grandchild_plural,
+            rows,
+        };
+
+        Some(SelectedElementView {
+            title: selected_entry.name.clone(),
+            status: selected_status,
+            content,
+            report,
+        })
+    }
+
+    fn report_definition_for_depth(depth: usize) -> Option<ReportDefinition> {
+        match depth {
+            1 => Some(ReportDefinition {
+                child_plural: "Projects",
+                grandchild_singular: "Milestone",
+                grandchild_plural: "Milestones",
+            }),
+            2 => Some(ReportDefinition {
+                child_plural: "Milestones",
+                grandchild_singular: "Task",
+                grandchild_plural: "Tasks",
+            }),
+            3 => Some(ReportDefinition {
+                child_plural: "Tasks",
+                grandchild_singular: "Subtask",
+                grandchild_plural: "Subtasks",
+            }),
+            4 => Some(ReportDefinition {
+                child_plural: "Subtasks",
+                grandchild_singular: "Grandchild",
+                grandchild_plural: "Grandchildren",
+            }),
+            _ => None,
+        }
+    }
+
+    fn status_for_entry(&self, entry: &DirectoryEntry) -> String {
+        self.config
+            .workspace
+            .read_md_file(&entry.path)
+            .ok()
+            .and_then(|content| parse_element(&content).ok().flatten())
+            .map(|element| {
+                let status = element.status().trim();
+                let status_text = if status.is_empty() {
+                    "unspecified"
+                } else {
+                    status
+                };
+                status_text.to_string()
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     fn path_for_sidebar_item(&self, item: &SidebarItem) -> Vec<String> {
-        let mut node_path = self.tree_model.selected_path_vec();
+        let mut node_path = self.navigation_state.sidebar_tree.selected_path_vec();
         let truncate_to = item.indent.min(node_path.len());
         node_path.truncate(truncate_to);
         node_path.push(item.name.clone());
@@ -594,19 +2068,21 @@ impl App {
     }
 
     fn set_selected_tree_path(&mut self, path: Vec<String>) {
-        self.tree_model.set_selected_path(path.clone());
-        self.tree_model.expand_ancestors(&path);
+        self.navigation_state
+            .sidebar_tree
+            .set_selected_path(path.clone());
+        self.navigation_state.sidebar_tree.expand_ancestors(&path);
     }
 
     fn collapse_path(&mut self, path: &[String]) {
-        self.tree_model.collapse_path(path);
+        self.navigation_state.sidebar_tree.collapse_path(path);
     }
 
     fn load_tree_level_for_selected_depth(&self, depth: usize) -> Vec<DirectoryEntry> {
-        if self.tree_model.selected_depth() < depth {
+        if self.navigation_state.sidebar_tree.selected_depth() < depth {
             return Vec::new();
         }
-        self.load_tree_level(&self.tree_model.selected_path()[..depth])
+        self.load_tree_level(&self.navigation_state.sidebar_tree.selected_path()[..depth])
     }
 
     fn load_tree_level(&self, path: &[String]) -> Vec<DirectoryEntry> {
@@ -784,53 +2260,61 @@ impl App {
     }
 
     fn first_selectable_sidebar_index(&self) -> usize {
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .iter()
             .position(|item| !item.is_header && !item.name.is_empty())
             .unwrap_or(0)
     }
 
     fn sync_selection_with_tree_path(&mut self) {
-        let mut candidate = self.tree_model.selected_path_vec();
+        let mut candidate = self.navigation_state.sidebar_tree.selected_path_vec();
         while !candidate.is_empty() {
             if let Some(idx) = self
+                .navigation_state
                 .sidebar_items
                 .iter()
                 .position(|item| item.tree_path.as_ref() == Some(&candidate))
             {
-                self.selected_entry_index = idx;
-                if candidate != self.tree_model.selected_path() {
+                self.navigation_state.selected_entry_index = idx;
+                if candidate != self.navigation_state.sidebar_tree.selected_path() {
                     self.set_selected_tree_path(candidate.clone());
                 }
                 tracing::debug!(
                     selected_index = idx,
-                    selected_name = ?self.tree_model.selected_path().last(),
+                    selected_name = ?self.navigation_state.sidebar_tree.selected_path().last(),
                     "selection synced to tree path"
                 );
                 return;
             }
             candidate.pop();
         }
-        tracing::warn!(
-            path = ?self.tree_model.selected_path(),
-            "selection sync fallback to first selectable item"
-        );
-        self.selected_entry_index = self.first_selectable_sidebar_index();
-        if !self.tree_model.selected_path().is_empty() {
+
+        // Fall back to first selectable
+        self.navigation_state.selected_entry_index = self.first_selectable_sidebar_index();
+        if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
             if let Some(path) = self
+                .navigation_state
                 .sidebar_items
-                .get(self.selected_entry_index)
+                .get(self.navigation_state.selected_entry_index)
                 .and_then(|item| item.tree_path.clone())
             {
                 self.set_selected_tree_path(path);
             } else {
-                self.tree_model.set_selected_path(Vec::new());
+                self.navigation_state
+                    .sidebar_tree
+                    .set_selected_path(Vec::new());
             }
         }
     }
 
     fn select_first_child_for_path(&mut self, parent_path: &[String]) {
-        if let Some(idx) = self.sidebar_items.iter().position(|item| {
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
             if item.is_header || item.name.is_empty() {
                 return false;
             }
@@ -839,8 +2323,8 @@ impl App {
             };
             path.len() == parent_path.len() + 1 && path.starts_with(parent_path)
         }) {
-            self.selected_entry_index = idx;
-            if let Some(path) = self.sidebar_items[idx].tree_path.clone() {
+            self.navigation_state.selected_entry_index = idx;
+            if let Some(path) = self.navigation_state.sidebar_items[idx].tree_path.clone() {
                 self.set_selected_tree_path(path);
                 self.load_tree_view_data();
             }
@@ -848,44 +2332,88 @@ impl App {
     }
 
     fn build_sidebar_items(&mut self) {
-        self.sidebar_items.clear();
-        self.sidebar_items
+        self.navigation_state.sidebar_items.clear();
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
 
-        if self.programs.is_empty() {
-            self.sidebar_items.push(
+        if self.tree_data.programs.is_empty() {
+            self.navigation_state.sidebar_items.push(
                 SidebarItem::new("+ Create Program...", SidebarSection::Programs)
                     .indent(1)
-                    .create_action(),
+                    .create_action()
+                    .node_data(SidebarNodeData::Action),
             );
         } else {
             self.push_tree_level_items(&[], 0);
         }
 
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("", SidebarSection::Planning));
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Planning", SidebarSection::Planning).header());
-        self.sidebar_items.push(
-            SidebarItem::new("Weekly Planning", SidebarSection::Planning)
-                .planning_item("WeeklyPlanning"),
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Current Plan", SidebarSection::Planning)
+                .planning_item("WeeklyPlanning")
+                .node_data(SidebarNodeData::Planning),
         );
-        self.sidebar_items
-            .push(SidebarItem::new("Backlog", SidebarSection::Planning).planning_item("Backlog"));
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("My Tasks", SidebarSection::Planning)
+                .planning_item("MyTasks")
+                .node_data(SidebarNodeData::Planning),
+        );
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Backlog", SidebarSection::Planning)
+                .planning_item("Backlog")
+                .node_data(SidebarNodeData::Planning),
+        );
 
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("", SidebarSection::Journal));
-        self.sidebar_items
+        self.navigation_state
+            .sidebar_items
             .push(SidebarItem::new("Journal", SidebarSection::Journal).header());
-        self.sidebar_items
-            .push(SidebarItem::new("Today", SidebarSection::Journal).journal_item("Today"));
-        self.sidebar_items
-            .push(SidebarItem::new("History", SidebarSection::Journal).journal_item("History"));
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("Today", SidebarSection::Journal)
+                .journal_item("Today")
+                .node_data(SidebarNodeData::JournalAction),
+        );
+        self.navigation_state.sidebar_items.push(
+            SidebarItem::new("History", SidebarSection::Journal)
+                .journal_item("History")
+                .node_data(SidebarNodeData::JournalAction),
+        );
+
+        // If journal history is expanded, add the tree structure
+        if self.journal_is_expanded(&[]) {
+            self.add_journal_tree_items();
+        }
+    }
+
+    fn add_journal_tree_items(&mut self) {
+        use crate::tui::cache::JournalNode;
+
+        let years = self.journal_tree_state.years();
+
+        for year in &years {
+            let year_path = vec![year.clone()];
+            let node = JournalNode::Year { year: year.clone() };
+            let mut item = SidebarItem::journal(node, year_path.clone());
+            item.indent = 1;
+            self.navigation_state.sidebar_items.push(item);
+
+            if self.journal_is_expanded(&year_path) {
+                self.add_journal_months_and_entries(year);
+            }
+        }
     }
 
     fn push_tree_level_items(&mut self, parent_path: &[String], depth: usize) {
         let entries = if depth == 0 {
-            self.programs.clone()
+            self.tree_data.programs.clone()
         } else {
             self.load_tree_level(parent_path)
         };
@@ -893,7 +2421,7 @@ impl App {
             let mut node_path = parent_path.to_vec();
             node_path.push(entry.name.clone());
             let has_children = !self.load_tree_level(&node_path).is_empty();
-            self.sidebar_items.push(SidebarItem {
+            self.navigation_state.sidebar_items.push(SidebarItem {
                 name: entry.name.clone(),
                 section: SidebarSection::Programs,
                 is_header: false,
@@ -904,21 +2432,66 @@ impl App {
                 tree_path: Some(node_path.clone()),
                 has_children,
                 is_create_action: false,
+                journal_path: None,
+                is_journal_header: false,
+                node_data: SidebarNodeData::Program(entry),
             });
 
-            if self.tree_model.is_expanded(&node_path) {
+            if self.navigation_state.sidebar_tree.is_expanded(&node_path) {
                 self.push_tree_level_items(&node_path, depth + 1);
             }
         }
     }
 
     fn handle_enter(&mut self) {
+        // Handle input mode for review session task metadata
+        if self.mode == Mode::Input {
+            if let Some(focus) = self.review_state.input_focus {
+                match focus {
+                    Self::FOCUS_ASSIGNED_TO => {
+                        // assigned_to
+                        let name = self.input_buffer.clone();
+                        self.set_task_assigned_to(name);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    Self::FOCUS_START_DATE => {
+                        // start_date
+                        let date = self.input_buffer.clone();
+                        self.set_task_start_date(date);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    Self::FOCUS_DUE_DATE => {
+                        // due_date
+                        let date = self.input_buffer.clone();
+                        self.set_task_due_date(date);
+                        self.input_buffer.clear();
+                        self.mode = Mode::ReviewSession;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         match &self.current_view {
             ViewType::TreeView => {
                 self.open_tree_item();
             }
             ViewType::JournalArchiveList => {
                 self.open_selected_archive_entry();
+            }
+            ViewType::Backlog => {
+                self.mode = Mode::CurrentPlanNavigation;
+                self.review_state.selection_index = 0;
+                if self.backlog_staged_uuids.is_none() {
+                    self.backlog_staged_uuids = Some(self.backlog_task_uuids());
+                }
+            }
+            ViewType::MyTasks => {
+                self.mode = Mode::CurrentPlanNavigation;
+                self.review_state.selection_index = 0;
             }
             ViewType::InputProgram => {
                 self.confirm_create_program();
@@ -935,6 +2508,15 @@ impl App {
             ViewType::InputTemplateField => {
                 self.confirm_template_field();
             }
+            ViewType::InputPlanningSessionDates => {
+                self.confirm_planning_dates();
+            }
+            ViewType::PlanningTaskPicker => {
+                self.confirm_planning_tasks();
+            }
+            ViewType::InputTaskDetailField => {
+                self.confirm_task_detail_field_input();
+            }
             _ => {}
         }
     }
@@ -949,7 +2531,7 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state
+                if let Some(ref mut state) = self.wizard_state.template
                     && let WizardFocus::Field(idx) = state.focus
                     && let Some(field) = state.fields.get_mut(idx)
                     && field.is_editable
@@ -957,6 +2539,32 @@ impl App {
                     // Update both input_buffer and field.value for inline editing
                     self.input_buffer.push(c);
                     field.value.push(c);
+                    field.was_edited = true;
+                }
+            }
+            ViewType::InputTaskDetailField => {
+                self.input_buffer.push(c);
+            }
+            ViewType::InputPlanningSessionDates => {
+                // Use input_buffer for date fields (0=start_date, 2=end_date)
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    let focus_idx = wizard.focus.index();
+                    if focus_idx == 0 || focus_idx == 2 {
+                        wizard.date_error = None;
+                        self.input_buffer.push(c);
+                        wizard.input_buffer.push(c); // Sync to wizard's field immediately
+                        if focus_idx == 0 {
+                            wizard.start_date_edited = true;
+                        } else {
+                            wizard.end_date_edited = true;
+                        }
+                    }
+                }
+            }
+            ViewType::PlanningTaskPicker => {
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.task_filter.push(c);
+                    wizard.task_index = 0;
                 }
             }
             _ => {}
@@ -973,7 +2581,7 @@ impl App {
             }
             ViewType::InputTemplateField => {
                 // Only allow input when focused on an editable field
-                if let Some(ref mut state) = self.template_field_state
+                if let Some(ref mut state) = self.wizard_state.template
                     && let WizardFocus::Field(idx) = state.focus
                     && let Some(field) = state.fields.get_mut(idx)
                     && field.is_editable
@@ -981,6 +2589,30 @@ impl App {
                     // Update both input_buffer and field.value for inline editing
                     self.input_buffer.pop();
                     field.value.pop();
+                    field.was_edited = true;
+                }
+            }
+            ViewType::InputTaskDetailField => {
+                self.input_buffer.pop();
+            }
+            ViewType::InputPlanningSessionDates => {
+                // Use input_buffer for date fields (0=start_date, 2=end_date)
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    let focus_idx = wizard.focus.index();
+                    if focus_idx == 0 || focus_idx == 2 {
+                        wizard.date_error = None;
+                        self.input_buffer.pop();
+                        if focus_idx == 0 {
+                            wizard.start_date_edited = true;
+                        } else {
+                            wizard.end_date_edited = true;
+                        }
+                    }
+                }
+            }
+            ViewType::PlanningTaskPicker => {
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.task_filter.pop();
                 }
             }
             _ => {}
@@ -990,40 +2622,52 @@ impl App {
     fn handle_command_input(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char(c) => {
-                self.command_input.push(c);
-                self.command_selection_index = 0;
+                self.command_palette.input.push(c);
+                self.command_palette.selection_index = 0;
                 self.filter_commands();
             }
             KeyCode::Backspace => {
-                self.command_input.pop();
-                self.command_selection_index = 0;
+                self.command_palette.input.pop();
+                self.command_palette.selection_index = 0;
                 self.filter_commands();
             }
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.command_input.clear();
-                self.command_selection_index = 0;
+                self.command_palette.input.clear();
+                self.command_palette.selection_index = 0;
             }
             KeyCode::Enter => {
                 if let Some(cmd) = self
-                    .command_matches
-                    .get(self.command_selection_index)
+                    .command_palette
+                    .matches
+                    .get(self.command_palette.selection_index)
                     .cloned()
                 {
                     self.execute_command(&cmd);
                 }
-                self.mode = Mode::Normal;
-                self.command_input.clear();
-                self.command_selection_index = 0;
+                // Only reset mode if we're not entering a special mode that should persist
+                if !matches!(
+                    self.mode,
+                    Mode::TaskSelection
+                        | Mode::ReviewSession
+                        | Mode::HierarchicalSelection
+                        | Mode::ThemeSelection
+                ) {
+                    self.mode = Mode::Normal;
+                }
+                self.command_palette.input.clear();
+                self.command_palette.selection_index = 0;
             }
             KeyCode::Up => {
-                if self.command_selection_index > 0 {
-                    self.command_selection_index -= 1;
+                if self.command_palette.selection_index > 0 {
+                    self.command_palette.selection_index -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.command_selection_index < self.command_matches.len().saturating_sub(1) {
-                    self.command_selection_index += 1;
+                if self.command_palette.selection_index
+                    < self.command_palette.matches.len().saturating_sub(1)
+                {
+                    self.command_palette.selection_index += 1;
                 }
             }
             _ => {}
@@ -1070,6 +2714,18 @@ impl App {
             Some(CommandAction::Refresh) => {
                 self.load_tree_view_data();
             }
+            Some(CommandAction::StartPlanningSession) => {
+                self.start_planning_session();
+            }
+            Some(CommandAction::ClosePlanningSession) => {
+                self.close_planning_session();
+            }
+            Some(CommandAction::ReviewSession) => {
+                self.start_review_session();
+            }
+            Some(CommandAction::SwitchTheme) => {
+                self.start_theme_selection();
+            }
             None => {
                 self.current_view = cmd.view.clone();
             }
@@ -1105,8 +2761,9 @@ impl App {
         let workspace = &self.config.workspace;
         match workspace.list_journal_entries() {
             Ok(entries) => {
+                self.journal_tree_state.set_entries(entries.clone());
                 self.journal_entries = entries;
-                self.selected_entry_index = 0;
+                self.navigation_state.selected_entry_index = 0;
                 self.current_view = ViewType::JournalArchiveList;
             }
             Err(e) => {
@@ -1115,15 +2772,17 @@ impl App {
         }
     }
 
-    fn open_archive_entry(&mut self, index: usize) {
-        if let Some(entry) = self.journal_entries.get(index) {
+    fn open_archive_entry(&mut self, tree_index: usize) {
+        if let Some(Some(entry_idx)) = self.archive_tree_mapping.get(tree_index)
+            && let Some(entry) = self.journal_entries.get(*entry_idx)
+        {
             let path = entry.path.clone();
             self.launch_editor(&path);
         }
     }
 
     fn open_selected_archive_entry(&mut self) {
-        self.open_archive_entry(self.selected_entry_index);
+        self.open_archive_entry(self.navigation_state.selected_entry_index);
     }
 
     fn launch_editor(&mut self, path: &std::path::Path) {
@@ -1163,7 +2822,12 @@ impl App {
     }
 
     fn show_projects_list(&mut self) {
-        if !self.tree_model.selected_path().is_empty() {
+        if !self
+            .navigation_state
+            .sidebar_tree
+            .selected_path()
+            .is_empty()
+        {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1174,7 +2838,7 @@ impl App {
     }
 
     fn show_milestones_list(&mut self) {
-        if self.tree_model.selected_depth() >= 2 {
+        if self.navigation_state.sidebar_tree.selected_depth() >= 2 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1185,7 +2849,7 @@ impl App {
     }
 
     fn show_tasks_list(&mut self) {
-        if self.tree_model.selected_depth() >= 3 {
+        if self.navigation_state.sidebar_tree.selected_depth() >= 3 {
             self.load_tree_view_data();
             self.current_view = ViewType::TreeView;
         } else {
@@ -1221,12 +2885,1090 @@ impl App {
         self.open_template_wizard("task", None);
     }
 
-    fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
-        if self.tree_model.selected_depth() >= target_depth {
+    fn start_planning_session(&mut self) {
+        // If a session already exists, go directly to the task picker to edit it
+        if self.planning_session.active {
+            self.open_hierarchical_task_picker_for_existing_session();
+            return;
+        }
+        self.open_planning_wizard();
+    }
+
+    fn open_hierarchical_task_picker_for_existing_session(&mut self) {
+        // Open task picker for an existing session
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn open_planning_wizard(&mut self) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        // Initialize new state struct
+        let mut wizard_state =
+            planning_wizard::PlanningWizardState::new(&self.config.planning_duration);
+        wizard_state.tasks = self.load_all_tasks();
+        wizard_state.input_buffer = today.clone();
+        self.planning_wizard = Some(wizard_state);
+
+        // Initialize input_buffer with the start date so user can edit it
+        self.input_buffer = today;
+        self.current_view = ViewType::InputPlanningSessionDates;
+    }
+
+    fn load_all_tasks(&self) -> Vec<TaskMetadata> {
+        let mut tasks = Vec::new();
+
+        if let Ok(programs) = self.config.workspace.list_programs() {
+            for program_entry in programs {
+                let program = &program_entry.name;
+                if let Ok(projects) = self.config.workspace.list_projects(program) {
+                    for project_entry in projects {
+                        let project = &project_entry.name;
+                        if let Ok(milestones) =
+                            self.config.workspace.list_milestones(program, project)
+                        {
+                            for milestone_entry in milestones {
+                                let milestone = &milestone_entry.name;
+                                if let Ok(task_entries) = self
+                                    .config
+                                    .workspace
+                                    .list_tasks(program, project, milestone)
+                                {
+                                    for task_entry in task_entries {
+                                        let task_path = task_entry.path.clone();
+                                        if let Ok(content) = std::fs::read_to_string(&task_path)
+                                            && let Some(parsed) =
+                                                parse_element(&content).ok().flatten()
+                                            && let crate::model::Element::Task(t) = parsed
+                                        {
+                                            tasks.push(TaskMetadata {
+                                                uuid: t.uuid,
+                                                path: task_path,
+                                                program: program.clone(),
+                                                project: project.clone(),
+                                                milestone: milestone.clone(),
+                                                task_name: t.title,
+                                                status: t.status,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        tasks
+    }
+
+    pub fn get_filtered_tasks(&self) -> Vec<&TaskMetadata> {
+        let Some(ref wizard) = self.planning_wizard else {
+            return Vec::new();
+        };
+
+        let filter_lower = wizard.task_filter.to_lowercase();
+
+        let mut tasks: Vec<_> = if filter_lower.is_empty() {
+            wizard.tasks.iter().collect()
+        } else {
+            wizard
+                .tasks
+                .iter()
+                .filter(|t| {
+                    t.task_name.to_lowercase().contains(&filter_lower)
+                        || t.program.to_lowercase().contains(&filter_lower)
+                        || t.project.to_lowercase().contains(&filter_lower)
+                        || t.milestone.to_lowercase().contains(&filter_lower)
+                })
+                .collect()
+        };
+
+        tasks.sort_by(|a, b| {
+            a.program
+                .cmp(&b.program)
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.milestone.cmp(&b.milestone))
+                .then_with(|| a.task_name.cmp(&b.task_name))
+        });
+
+        tasks
+    }
+
+    fn finalize_planning_wizard_dates(&mut self) {
+        // Use wizard state for dates
+        let Some(ref mut wizard) = self.planning_wizard else {
+            return;
+        };
+
+        // Validate start date using wizard state
+        let start_date = match chrono::NaiveDate::parse_from_str(&wizard.start_date, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(_) => {
+                wizard.date_error = Some("Invalid date format. Use YYYY-MM-DD".to_string());
+                return;
+            }
+        };
+
+        // Calculate due date from wizard state
+        let due_date = if !wizard.end_date.is_empty() {
+            match chrono::NaiveDate::parse_from_str(&wizard.end_date, "%Y-%m-%d") {
+                Ok(d) => d.format("%Y-%m-%d").to_string(),
+                Err(_) => {
+                    wizard.date_error = Some("Invalid end date format. Use YYYY-MM-DD".to_string());
+                    return;
+                }
+            }
+        } else {
+            let days = match wizard.duration.as_str() {
+                "biweekly" => 14,
+                "6weekly" => 42,
+                _ => 7,
+            };
+            start_date
+                .checked_add_days(chrono::Days::new(days))
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| start_date.format("%Y-%m-%d").to_string())
+        };
+
+        // Clear any errors
+        wizard.date_error = None;
+
+        // Set session dates
+        self.planning_session.start_date = Some(start_date.format("%Y-%m-%d").to_string());
+        self.planning_session.due_date = Some(due_date);
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn finalize_planning_session(&mut self) {
+        let uuid = generate_session_uuid();
+        self.planning_session.uuid = Some(uuid.clone());
+        self.planning_session.active = true;
+
+        // If tasks are already loaded (from picker flow), use them; otherwise load from UUIDs
+        if !self.planning_session.has_tasks() {
+            self.planning_session.rolled_over_tasks.clear();
+            let all_tasks = self.load_all_tasks();
+            // Get selected tasks from wizard state
+            let selected_uuids: Vec<String> = self
+                .planning_wizard
+                .as_ref()
+                .map(|w| w.selected_tasks.clone())
+                .unwrap_or_default();
+
+            for task_uuid in selected_uuids {
+                if let Some(meta) = all_tasks.iter().find(|t| t.uuid == task_uuid) {
+                    self.planning_session.tasks.push(SelectedTask {
+                        uuid: meta.uuid.clone(),
+                        path: meta.path.clone(),
+                        program: meta.program.clone(),
+                        project: meta.project.clone(),
+                        milestone: meta.milestone.clone(),
+                        task_name: meta.task_name.clone(),
+                        status: meta.status.clone(),
+                        assigned_to: None,
+                        start_date: None,
+                        due_date: None,
+                        importance: None,
+                        description: None,
+                    });
+                }
+            }
+        } else {
+            // Tasks already loaded with metadata from picker - just clear wizard state
+            if let Some(ref mut wizard) = self.planning_wizard {
+                wizard.selected_tasks.clear();
+            }
+            self.planning_session.rolled_over_tasks.clear();
+        }
+
+        if let Err(e) = create_planning_session(
+            &self.config.workspace,
+            &uuid,
+            &format!(
+                "Plan for {}",
+                self.planning_session.start_date.as_ref().unwrap()
+            ),
+            &chrono::Local::now().format("%Y-%m-%d").to_string(),
+            self.planning_session.start_date.as_ref().unwrap(),
+            self.planning_session.due_date.as_ref().unwrap(),
+            self.planning_wizard
+                .as_ref()
+                .map(|w| w.duration.as_str())
+                .unwrap_or("weekly"),
+        ) {
+            eprintln!("Failed to create planning session file: {e}");
+        }
+
+        // Return to TreeView (navigator) after finalizing
+        self.current_view = ViewType::TreeView;
+        self.mode = Mode::Normal;
+    }
+
+    fn finalize_planning_session_from_picker(&mut self) {
+        use crate::model::Element;
+        use crate::storage::md::parse_element;
+
+        let existing_uuids: std::collections::HashSet<String> = self
+            .planning_session
+            .tasks
+            .iter()
+            .map(|t| t.uuid.clone())
+            .collect();
+
+        for path_str in self.hierarchical_picker.selected_tasks.iter() {
+            let path = std::path::PathBuf::from(&path_str);
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && let Ok(parsed) = parse_element(&content)
+                && let Some(Element::Task(t)) = parsed
+            {
+                let uuid = t.uuid.clone();
+                if existing_uuids.contains(&uuid) {
+                    continue; // Already in session, skip
+                }
+
+                self.planning_session.tasks.push(SelectedTask {
+                    uuid: uuid.clone(),
+                    path: path.clone(),
+                    program: self
+                        .hierarchical_picker
+                        .selected_program
+                        .clone()
+                        .unwrap_or_default(),
+                    project: self
+                        .hierarchical_picker
+                        .selected_project
+                        .clone()
+                        .unwrap_or_default(),
+                    milestone: self
+                        .hierarchical_picker
+                        .selected_milestone
+                        .clone()
+                        .unwrap_or_default(),
+                    task_name: t.title.clone(),
+                    status: t.status.clone(),
+                    assigned_to: t.assigned_to.clone(),
+                    start_date: t.start_date.clone(),
+                    due_date: t.due_date.clone(),
+                    importance: t.importance.clone(),
+                    description: None,
+                });
+
+                // Also add to wizard's selected tasks
+                if let Some(ref mut wizard) = self.planning_wizard {
+                    wizard.selected_tasks.push(uuid);
+                }
+            }
+        }
+
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
+
+        // Generate UUID for the session if not already set (needed for preview)
+        if self.planning_session.uuid.is_none() {
+            self.planning_session.uuid = Some(generate_session_uuid());
+        }
+
+        // Transition to PlanningPreview to show tasks and allow user to confirm/add more/cancel
+        // (not yet saved - will be saved on user confirmation)
+        self.mode = Mode::PlanningPreview;
+        self.current_view = ViewType::PlanningPreview;
+        self.review_state.preview_focus = 1; // Default to CONFIRM button
+    }
+
+    fn close_planning_session(&mut self) {
+        if !self.planning_session.active {
+            println!("No active planning session to close.");
             return;
         }
 
-        let mut selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+        let rolled_tasks = std::mem::take(&mut self.planning_session.rolled_over_tasks);
+
+        if let Some(start_date) = &self.planning_session.start_date
+            && let Err(e) = archive_planning_session(&self.config.workspace, start_date)
+        {
+            eprintln!("Failed to archive planning session: {e}");
+        }
+
+        self.planning_session.active = false;
+        self.planning_session.uuid = None;
+        self.planning_session.start_date = None;
+        self.planning_session.due_date = None;
+        self.planning_session.tasks.clear();
+
+        if !rolled_tasks.is_empty() {
+            self.start_planning_session_with_rolled_tasks(rolled_tasks);
+        } else {
+            self.current_view = ViewType::TreeView;
+        }
+    }
+
+    fn start_planning_session_with_rolled_tasks(&mut self, task_uuids: Vec<String>) {
+        // Resolve task UUIDs to SelectedTask by loading tasks on-demand
+        let all_tasks = self.load_all_tasks();
+        let tasks: Vec<_> = task_uuids
+            .iter()
+            .filter_map(|uuid| {
+                all_tasks
+                    .iter()
+                    .find(|t| &t.uuid == uuid)
+                    .cloned()
+                    .map(SelectedTask::from)
+            })
+            .collect();
+
+        // Start a fresh session and add the rolled tasks
+        self.start_planning_session();
+        self.planning_session.tasks = tasks;
+        self.planning_session.rolled_over_tasks = task_uuids;
+        self.save_current_planning_session();
+        self.mode = Mode::Normal;
+        self.current_view = ViewType::WeeklyPlanning;
+    }
+
+    fn save_current_planning_session(&mut self) {
+        let Some(uuid) = &self.planning_session.uuid else {
+            return;
+        };
+        let Some(start_date) = &self.planning_session.start_date else {
+            return;
+        };
+        let Some(due_date) = &self.planning_session.due_date else {
+            return;
+        };
+
+        let session = PlanningSession {
+            element_type: "planning".to_string(),
+            uuid: uuid.clone(),
+            title: format!("Plan for {}", start_date),
+            creation_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            created_by: None,
+            start_date: start_date.clone(),
+            end_date: due_date.clone(),
+            duration: self.config.planning_duration.clone(),
+            status: SessionStatus::Active,
+            tasks: self
+                .planning_session
+                .tasks
+                .iter()
+                .map(|t| t.uuid.clone())
+                .collect(),
+        };
+
+        if let Err(e) = save_planning_session(&self.config.workspace, &session) {
+            eprintln!("Failed to save planning session: {e}");
+        }
+    }
+
+    fn toggle_task_selection(&mut self) {
+        if self.mode != Mode::TaskSelection {
+            return;
+        }
+
+        let Some(item) = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        else {
+            return;
+        };
+        if item.is_header || item.indent < 3 {
+            return;
+        }
+        let Some(path) = &item.path else { return };
+
+        let all_tasks = self.load_all_tasks();
+        let selected_task = all_tasks
+            .iter()
+            .find(|t| &t.path == path)
+            .cloned()
+            .map(SelectedTask::from)
+            .or_else(|| self.read_task_from_file(path, item));
+
+        let Some(task) = selected_task else { return };
+
+        if let Some(pos) = self
+            .planning_session
+            .tasks
+            .iter()
+            .position(|t| t.uuid == task.uuid)
+        {
+            self.planning_session.tasks.remove(pos);
+        } else {
+            self.planning_session.tasks.push(task);
+        }
+
+        // Save session to file
+        self.save_current_planning_session();
+    }
+
+    fn read_task_from_file(
+        &self,
+        path: &std::path::Path,
+        item: &SidebarItem,
+    ) -> Option<SelectedTask> {
+        let content = self.config.workspace.read_md_file(path).ok()?;
+        let parsed = parse_element(&content).ok().flatten()?;
+        let crate::model::Element::Task(task) = parsed else {
+            return None;
+        };
+
+        let tree_path = item.tree_path.clone().unwrap_or_default();
+        let program = tree_path.first()?.clone();
+        let project = tree_path.get(1)?.clone();
+        let milestone = tree_path.get(2)?.clone();
+
+        Some(SelectedTask {
+            uuid: task.uuid,
+            path: path.to_path_buf(),
+            program,
+            project,
+            milestone,
+            task_name: task.title,
+            status: task.status,
+            assigned_to: task.assigned_to.clone(),
+            start_date: task.start_date.clone(),
+            due_date: task.due_date.clone(),
+            importance: task.importance.clone(),
+            description: Some(task.description.clone()),
+        })
+    }
+
+    fn cancel_task_selection(&mut self) {
+        // Delete the planning session file if it exists
+        if let Some(start_date) = &self.planning_session.start_date {
+            let path = self
+                .config
+                .workspace
+                .join("planning")
+                .join("current")
+                .join(format!("{}-planning.md", start_date));
+            if path.exists()
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                eprintln!("Failed to delete planning session file: {e}");
+            }
+        }
+
+        self.planning_session.active = false;
+        self.planning_session.uuid = None;
+        self.planning_session.tasks.clear();
+        self.planning_session.start_date = None;
+        self.planning_session.due_date = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn load_hierarchical_picker_level(&mut self, level: hierarchical_picker::PickerLevel) {
+        use hierarchical_picker::PickerLevel;
+
+        let entries = match level {
+            PickerLevel::Programs => self.config.workspace.list_programs().unwrap_or_default(),
+            PickerLevel::Projects => {
+                let Some(program) = &self.hierarchical_picker.selected_program else {
+                    return;
+                };
+                self.config
+                    .workspace
+                    .list_projects(program)
+                    .unwrap_or_default()
+            }
+            PickerLevel::Milestones => {
+                let Some(program) = &self.hierarchical_picker.selected_program else {
+                    return;
+                };
+                let Some(project) = &self.hierarchical_picker.selected_project else {
+                    return;
+                };
+                self.config
+                    .workspace
+                    .list_milestones(program, project)
+                    .unwrap_or_default()
+            }
+            PickerLevel::Tasks => {
+                let Some(program) = &self.hierarchical_picker.selected_program else {
+                    return;
+                };
+                let Some(project) = &self.hierarchical_picker.selected_project else {
+                    return;
+                };
+                let Some(milestone) = &self.hierarchical_picker.selected_milestone else {
+                    return;
+                };
+                self.config
+                    .workspace
+                    .list_tasks(program, project, milestone)
+                    .unwrap_or_default()
+            }
+        };
+        self.hierarchical_picker.set_items(entries);
+    }
+
+    fn start_review_session(&mut self) {
+        if !self.planning_session.active || !self.planning_session.has_tasks() {
+            return;
+        }
+        self.review_state.reset();
+        self.planning_session.rolled_over_tasks.clear();
+        self.mode = Mode::ReviewSession;
+    }
+
+    fn start_theme_selection(&mut self) {
+        self.available_themes = crate::theme::loader::list_available_themes();
+        tracing::debug!("Available themes: {:?}", self.available_themes);
+        if let Some(current) = self
+            .available_themes
+            .iter()
+            .position(|t| t == &self.config.theme)
+        {
+            self.theme_selection_index = current;
+        } else {
+            self.theme_selection_index = 0;
+        }
+        self.previous_theme = Some(self.theme.clone());
+        self.mode = Mode::ThemeSelection;
+    }
+
+    fn preview_theme(&mut self) {
+        if let Some(name) = self
+            .available_themes
+            .get(self.theme_selection_index)
+            .cloned()
+        {
+            match crate::theme::loader::load_theme(&name) {
+                Ok(t) => self.theme = t,
+                Err(e) => tracing::warn!("Failed to preview theme '{}': {}", name, e),
+            }
+        }
+    }
+
+    fn confirm_theme_selection(&mut self) {
+        if let Some(theme_name) = self
+            .available_themes
+            .get(self.theme_selection_index)
+            .cloned()
+        {
+            self.config.theme = theme_name.clone();
+            if let Err(e) = self.config.save() {
+                tracing::error!("Failed to save config: {}", e);
+            } else {
+                tracing::info!("Confirmed theme: {}", theme_name);
+            }
+        }
+        self.previous_theme = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn cancel_theme_selection(&mut self) {
+        if let Some(prev) = self.previous_theme.take() {
+            self.theme = prev;
+        }
+        self.mode = Mode::Normal;
+    }
+
+    fn navigate_review(&mut self, direction: isize) {
+        if !self.planning_session.has_tasks() {
+            return;
+        }
+        let new_idx = if direction < 0 {
+            self.review_state.selection_index.saturating_sub(1)
+        } else {
+            (self.review_state.selection_index + 1).min(self.planning_session.tasks.len() - 1)
+        };
+        self.review_state.selection_index = new_idx;
+    }
+
+    pub fn backlog_report_tasks(&self) -> Vec<SelectedTask> {
+        let snapshots = self.report_task_snapshots();
+        let uuids = self
+            .backlog_staged_uuids
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.backlog_task_uuids());
+        uuids
+            .into_iter()
+            .filter_map(|uuid| snapshots.iter().find(|task| task.uuid == uuid).cloned())
+            .collect()
+    }
+
+    pub fn my_assigned_plan_tasks(&self) -> Vec<SelectedTask> {
+        let owner = self.current_user_name().to_ascii_lowercase();
+        self.report_task_snapshots()
+            .iter()
+            .filter(|task| {
+                task.assigned_to
+                    .as_deref()
+                    .is_some_and(|assigned| assigned.trim().to_ascii_lowercase() == owner)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn today_todo_items(&self) -> Vec<DailyTodoItem> {
+        let path = self.config.workspace.today_journal_path();
+        let Ok(content) = self.config.workspace.read_md_file(&path) else {
+            return Vec::new();
+        };
+        Self::parse_todo_items(&content)
+    }
+
+    fn current_user_name(&self) -> String {
+        let owner = self.config.owner.trim();
+        if !owner.is_empty() {
+            owner.to_string()
+        } else {
+            std::env::var("USER")
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "me".to_string())
+        }
+    }
+
+    fn report_task_snapshots(&self) -> Vec<SelectedTask> {
+        self.planning_session
+            .tasks
+            .iter()
+            .map(|task| self.task_snapshot_from_file(task))
+            .collect()
+    }
+
+    fn task_snapshot_from_file(&self, task: &SelectedTask) -> SelectedTask {
+        let mut snapshot = task.clone();
+        let Ok(content) = self.config.workspace.read_md_file(&task.path) else {
+            return snapshot;
+        };
+        let Ok(Some(element)) = parse_element(&content) else {
+            return snapshot;
+        };
+        let crate::model::Element::Task(parsed_task) = element else {
+            return snapshot;
+        };
+        snapshot.task_name = parsed_task.title;
+        snapshot.status = parsed_task.status;
+        snapshot.assigned_to = parsed_task.assigned_to.clone();
+        snapshot.start_date = parsed_task.start_date.clone();
+        snapshot.due_date = parsed_task.due_date.clone();
+        snapshot.importance = parsed_task.importance.clone();
+        snapshot.description = Some(parsed_task.description.clone());
+        snapshot
+    }
+
+    fn backlog_task_uuids(&self) -> Vec<String> {
+        self.planning_session
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.assigned_to
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+            })
+            .map(|task| task.uuid.clone())
+            .collect()
+    }
+
+    fn backlog_task_indices_in_session(&self) -> Vec<usize> {
+        let uuids = self
+            .backlog_staged_uuids
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| self.backlog_task_uuids());
+        uuids
+            .into_iter()
+            .filter_map(|uuid| {
+                self.planning_session
+                    .tasks
+                    .iter()
+                    .position(|task| task.uuid == uuid)
+            })
+            .collect()
+    }
+
+    fn my_plan_task_indices_in_session(&self) -> Vec<usize> {
+        let owner = self.current_user_name().to_ascii_lowercase();
+        self.planning_session
+            .tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, task)| {
+                task.assigned_to
+                    .as_deref()
+                    .is_some_and(|assigned| assigned.trim().to_ascii_lowercase() == owner)
+                    .then_some(idx)
+            })
+            .collect()
+    }
+
+    fn navigate_report_rows(&mut self, direction: isize) {
+        let count = match self.active_planning_report() {
+            Some(PlanningReportKind::Backlog) => self.backlog_task_indices_in_session().len(),
+            Some(PlanningReportKind::MyTasks) => {
+                self.my_plan_task_indices_in_session().len() + self.today_todo_items().len()
+            }
+            _ => 0,
+        };
+        if count == 0 {
+            self.review_state.selection_index = 0;
+            return;
+        }
+
+        let current = self.review_state.selection_index.min(count - 1);
+        let new_idx = if direction < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(count - 1)
+        };
+        self.review_state.selection_index = new_idx;
+    }
+
+    fn assign_selected_backlog_task_to_owner(&mut self) {
+        let report_idx = self.review_state.selection_index;
+        let indices = self.backlog_task_indices_in_session();
+        let Some(&task_idx) = indices.get(self.review_state.selection_index) else {
+            return;
+        };
+        self.review_state.selection_index = task_idx;
+        self.set_task_assigned_to(self.current_user_name());
+        self.save_current_planning_session();
+        self.review_state.selection_index = report_idx.min(indices.len().saturating_sub(1));
+    }
+
+    fn cycle_selected_my_task_status(&mut self) {
+        let report_idx = self.review_state.selection_index;
+        let task_indices = self.my_plan_task_indices_in_session();
+        let Some(&task_idx) = task_indices.get(self.review_state.selection_index) else {
+            return;
+        };
+        self.review_state.selection_index = task_idx;
+        self.cycle_task_status();
+        self.review_state.selection_index = report_idx.min(task_indices.len().saturating_sub(1));
+    }
+
+    fn toggle_selected_my_todo(&mut self) {
+        let task_count = self.my_plan_task_indices_in_session().len();
+        if self.review_state.selection_index < task_count {
+            return;
+        }
+        let todo_idx = self.review_state.selection_index - task_count;
+        let mut lines;
+        let path = self.config.workspace.today_journal_path();
+        let Ok(content) = self.config.workspace.read_md_file(&path) else {
+            return;
+        };
+        lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
+        let ends_with_newline = content.ends_with('\n');
+
+        let todos = Self::parse_todo_items(&content);
+        let Some(todo) = todos.get(todo_idx) else {
+            return;
+        };
+        if todo.line_index >= lines.len() {
+            return;
+        }
+
+        let marker = if todo.checked { ' ' } else { 'x' };
+        lines[todo.line_index] = format!("- [{}] {}", marker, todo.text);
+        let mut updated = lines.join("\n");
+        if ends_with_newline {
+            updated.push('\n');
+        }
+        if let Err(e) = self.config.workspace.save_journal_entry(&path, &updated) {
+            eprintln!("Failed to update today's To Do item: {e}");
+        }
+    }
+
+    fn clear_backlog_staging_if_needed(&mut self) {
+        if self.active_planning_report() != Some(PlanningReportKind::Backlog) {
+            self.backlog_staged_uuids = None;
+        }
+    }
+
+    fn parse_todo_items(content: &str) -> Vec<DailyTodoItem> {
+        let mut items = Vec::new();
+        let mut in_todo = false;
+
+        for (idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let heading = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
+                if heading == "to do" || heading == "todo" || heading == "to-do" {
+                    in_todo = true;
+                    continue;
+                }
+                if in_todo {
+                    break;
+                }
+                continue;
+            }
+
+            if !in_todo {
+                continue;
+            }
+
+            if let Some(text) = trimmed
+                .strip_prefix("- [ ] ")
+                .or(trimmed.strip_prefix("* [ ] "))
+            {
+                items.push(DailyTodoItem {
+                    line_index: idx,
+                    checked: false,
+                    text: text.trim().to_string(),
+                });
+            } else if let Some(text) = trimmed
+                .strip_prefix("- [x] ")
+                .or(trimmed.strip_prefix("* [x] "))
+                .or(trimmed.strip_prefix("- [X] "))
+                .or(trimmed.strip_prefix("* [X] "))
+            {
+                items.push(DailyTodoItem {
+                    line_index: idx,
+                    checked: true,
+                    text: text.trim().to_string(),
+                });
+            }
+        }
+
+        items
+    }
+
+    fn open_current_plan_task_in_editor(&mut self) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get(self.review_state.selection_index)
+            .cloned()
+        else {
+            return;
+        };
+        self.launch_editor(&task.path);
+    }
+
+    fn cycle_task_status(&mut self) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get(self.review_state.selection_index)
+        else {
+            return;
+        };
+        let workflow = &self.config.workflow;
+        if workflow.is_empty() {
+            return;
+        }
+        let current_idx = workflow.iter().position(|s| s == &task.status).unwrap_or(0);
+        let next_idx = (current_idx + 1) % workflow.len();
+        let new_status = workflow[next_idx].clone();
+        self.update_review_task_status(&new_status);
+    }
+
+    fn set_task_start_date(&mut self, date: String) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get_mut(self.review_state.selection_index)
+        else {
+            return;
+        };
+        task.start_date = Some(date.clone());
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task.path,
+            [("start_date", Some(date))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task start date: {e}");
+        }
+    }
+
+    fn set_task_due_date(&mut self, date: String) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get_mut(self.review_state.selection_index)
+        else {
+            return;
+        };
+        task.due_date = Some(date.clone());
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task.path,
+            [("due_date", Some(date))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task due date: {e}");
+        }
+    }
+
+    fn set_task_assigned_to(&mut self, name: String) {
+        let idx = self.review_state.selection_index;
+        let Some(task_path) = self
+            .planning_session
+            .tasks
+            .get(idx)
+            .map(|task| task.path.clone())
+        else {
+            return;
+        };
+        let assigned_value = name.clone();
+        if let Err(e) = crate::storage::md::update_task_fields(
+            &task_path,
+            [("assigned_to", Some(name))].into_iter().collect(),
+        ) {
+            eprintln!("Failed to update task assigned_to: {e}");
+            return;
+        }
+        if let Some(task) = self.planning_session.tasks.get_mut(idx) {
+            task.assigned_to = Some(assigned_value);
+        }
+    }
+
+    fn mark_task_done(&mut self) {
+        self.update_review_task_status("done");
+    }
+
+    fn update_review_task_status(&mut self, new_status: &str) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get_mut(self.review_state.selection_index)
+        else {
+            return;
+        };
+        let old_status = task.status.clone();
+        if old_status == new_status {
+            return;
+        }
+
+        // Update task file
+        if let Err(e) = crate::storage::md::update_task_status(&task.path, new_status) {
+            eprintln!("Failed to update task status: {e}");
+            return;
+        }
+
+        // Update in-memory state
+        task.status = new_status.to_string();
+
+        // Save session file
+        self.save_current_planning_session();
+    }
+
+    fn toggle_rollover(&mut self) {
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get(self.review_state.selection_index)
+        else {
+            return;
+        };
+        let uuid = &task.uuid;
+
+        if let Some(pos) = self
+            .planning_session
+            .rolled_over_tasks
+            .iter()
+            .position(|u| u == uuid)
+        {
+            self.planning_session.rolled_over_tasks.remove(pos);
+        } else {
+            self.planning_session.rolled_over_tasks.push(uuid.clone());
+        }
+    }
+
+    fn remove_task_from_session(&mut self) {
+        if !self.planning_session.has_tasks() {
+            return;
+        }
+        let Some(task) = self
+            .planning_session
+            .tasks
+            .get(self.review_state.selection_index)
+        else {
+            return;
+        };
+
+        // Remove from rolled_over if present
+        if let Some(pos) = self
+            .planning_session
+            .rolled_over_tasks
+            .iter()
+            .position(|u| u == &task.uuid)
+        {
+            self.planning_session.rolled_over_tasks.remove(pos);
+        }
+
+        // Remove from planning session tasks
+        self.planning_session
+            .tasks
+            .remove(self.review_state.selection_index);
+
+        // Adjust selection index
+        if self.review_state.selection_index >= self.planning_session.tasks.len()
+            && self.review_state.selection_index > 0
+        {
+            self.review_state.selection_index -= 1;
+        }
+
+        // Save session file
+        self.save_current_planning_session();
+    }
+
+    fn add_more_tasks_to_session(&mut self) {
+        // Save current session state before adding more tasks
+        self.save_current_planning_session();
+
+        // Go back to hierarchical picker to add more tasks
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new_wizard();
+        // Sync selected_tasks from planning_session so previously added tasks show as checked
+        for task in &self.planning_session.tasks {
+            self.hierarchical_picker
+                .selected_tasks
+                .insert(task.path.to_string_lossy().to_string());
+        }
+        self.load_hierarchical_picker_level(hierarchical_picker::PickerLevel::Programs);
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    pub fn resume_planning_session(&mut self) {
+        let Ok(sessions) = list_active_sessions(&self.config.workspace) else {
+            return;
+        };
+        let Some(session_path) = sessions.first() else {
+            return;
+        };
+
+        let Ok(session) = load_planning_session(session_path) else {
+            eprintln!(
+                "Failed to load planning session from {}",
+                session_path.display()
+            );
+            return;
+        };
+
+        // Restore session state
+        self.planning_session.active = true;
+        self.planning_session.uuid = Some(session.uuid);
+        self.planning_session.start_date = Some(session.start_date);
+        self.planning_session.due_date = Some(session.end_date);
+
+        // Rebuild task list from UUIDs by loading tasks on-demand
+        let all_tasks = self.load_all_tasks();
+        for uuid in &session.tasks {
+            if let Some(meta) = all_tasks.iter().find(|t| &t.uuid == uuid).cloned() {
+                self.planning_session.tasks.push(SelectedTask::from(meta));
+            }
+        }
+    }
+
+    fn promote_selection_to_path_depth(&mut self, target_depth: usize) {
+        if self.navigation_state.sidebar_tree.selected_depth() >= target_depth {
+            return;
+        }
+
+        let mut selected_path = match self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        {
             Some(item) if !item.is_header && !item.name.is_empty() => {
                 self.path_for_sidebar_item(item)
             }
@@ -1234,9 +3976,13 @@ impl App {
         };
 
         if selected_path.len() < target_depth {
-            let parent = self.tree_model.selected_path_vec();
+            let parent = self.navigation_state.sidebar_tree.selected_path_vec();
             self.select_first_child_for_path(&parent);
-            selected_path = match self.sidebar_items.get(self.selected_entry_index) {
+            selected_path = match self
+                .navigation_state
+                .sidebar_items
+                .get(self.navigation_state.selected_entry_index)
+            {
                 Some(item) if !item.is_header && !item.name.is_empty() => item
                     .tree_path
                     .clone()
@@ -1325,36 +4071,99 @@ impl App {
             }
         }
 
+        if let Some(default_importance) = self.config.importance.first() {
+            values.insert("IMPORTANCE".to_string(), default_importance.clone());
+        }
+        values.insert("UUID".to_string(), uuid::Uuid::new_v4().to_string());
+
         let strip_labels: std::collections::HashSet<String> = all_fields
             .iter()
-            .filter(|(_, _, strip)| *strip)
-            .map(|(_, p, _)| p.clone())
+            .filter(|f| f.strip_label)
+            .filter_map(|f| f.placeholder.clone())
             .collect();
 
-        let seeded_keywords = ["NAME", "TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
-        let base_keywords = ["TODAY", "DEFAULT_STATUS", "OWNER", "UUID"];
+        let seeded_keywords = ["NAME", "TODAY", "OWNER", "UUID"];
+        let base_keywords = ["TODAY", "OWNER", "UUID"];
         let keywords: &[&str] = if seeded_name.is_some() {
             &seeded_keywords
         } else {
             &base_keywords
         };
 
+        let path_hint = match template_name {
+            "program" => "Programs -> new program".to_string(),
+            "project" => self
+                .navigation_state
+                .current_program
+                .clone()
+                .map(|p| format!("{p} -> new project"))
+                .unwrap_or_else(|| "Programs -> new project".to_string()),
+            "milestone" | "task" => {
+                let mut parts = Vec::new();
+                if let Some(ref p) = self.navigation_state.current_program {
+                    parts.push(p.clone());
+                }
+                if let Some(ref p) = self.navigation_state.current_project {
+                    parts.push(p.clone());
+                }
+                if template_name == "task"
+                    && let Some(ref p) = self.navigation_state.current_milestone
+                {
+                    parts.push(p.clone());
+                }
+                parts.push(format!("new {template_name}"));
+                parts.join(" -> ")
+            }
+            "journal" => "Journal -> new entry".to_string(),
+            _ => "new element".to_string(),
+        };
+
         let fields: Vec<FieldInfo> = all_fields
             .into_iter()
             .enumerate()
-            .map(|(i, (label, placeholder, _))| {
-                let is_keyword = keywords.contains(&placeholder.as_str());
-                let value = if is_keyword {
-                    values.get(&placeholder).cloned().unwrap_or_default()
+            .map(|(i, def)| {
+                let placeholder = def.placeholder.clone();
+                let key = def.key.clone();
+                let is_keyword = placeholder
+                    .as_ref()
+                    .is_some_and(|p| keywords.contains(&p.as_str()));
+                let is_choice =
+                    key.eq_ignore_ascii_case("status") || key.eq_ignore_ascii_case("importance");
+                let choices = if key.eq_ignore_ascii_case("status") {
+                    self.config.workflow.clone()
+                } else if key.eq_ignore_ascii_case("importance") {
+                    self.config.importance.clone()
                 } else {
-                    String::new()
+                    Vec::new()
+                };
+
+                let value = if let Some(ph) = placeholder.as_ref() {
+                    values.get(ph).cloned().unwrap_or_default()
+                } else {
+                    def.fixed_value.clone().unwrap_or_default()
+                };
+
+                let is_editable = !is_keyword && (placeholder.is_some() || is_choice);
+                let kind = if is_choice {
+                    FieldKind::Choice
+                } else if !is_editable && placeholder.is_some() {
+                    FieldKind::AutoFilled
+                } else if !is_editable {
+                    FieldKind::Fixed
+                } else if value.is_empty() {
+                    FieldKind::Empty
+                } else {
+                    FieldKind::Suggested
                 };
                 FieldInfo {
-                    label,
+                    key,
+                    label: def.label,
                     placeholder,
                     value,
-                    is_focused: i == 0 && !is_keyword,
-                    is_editable: !is_keyword,
+                    is_editable,
+                    was_edited: false,
+                    kind,
+                    choices,
                     display_order: i,
                 }
             })
@@ -1366,8 +4175,9 @@ impl App {
             .map(WizardFocus::Field)
             .unwrap_or(WizardFocus::ConfirmButton);
 
-        self.template_field_state = Some(TemplateFieldState {
+        self.wizard_state.template = Some(TemplateFieldState {
             template_name: template_name.to_string(),
+            path_hint,
             fields,
             focus: initial_focus,
             values,
@@ -1376,7 +4186,8 @@ impl App {
 
         if let WizardFocus::Field(idx) = initial_focus {
             if let Some(field) = self
-                .template_field_state
+                .wizard_state
+                .template
                 .as_ref()
                 .and_then(|s| s.fields.get(idx))
             {
@@ -1402,7 +4213,7 @@ impl App {
                     .join(format!("{}.md", program_name))
             }),
             "project" => name.and_then(|project_name| {
-                self.current_program.as_ref().map(|prog| {
+                self.navigation_state.current_program.as_ref().map(|prog| {
                     self.config
                         .workspace
                         .programs_dir()
@@ -1413,9 +4224,10 @@ impl App {
                 })
             }),
             "milestone" => self
+                .navigation_state
                 .current_program
                 .as_ref()
-                .zip(self.current_project.as_ref())
+                .zip(self.navigation_state.current_project.as_ref())
                 .and_then(|(prog, proj)| {
                     name.map(|milestone_name| {
                         self.config
@@ -1430,10 +4242,11 @@ impl App {
                     })
                 }),
             "task" => self
+                .navigation_state
                 .current_program
                 .as_ref()
-                .zip(self.current_project.as_ref())
-                .zip(self.current_milestone.as_ref())
+                .zip(self.navigation_state.current_project.as_ref())
+                .zip(self.navigation_state.current_milestone.as_ref())
                 .and_then(|((prog, proj), milestone)| {
                     name.map(|task_name| {
                         self.config
@@ -1455,20 +4268,25 @@ impl App {
     }
 
     fn confirm_template_field(&mut self) {
-        if let Some(ref mut state) = self.template_field_state {
+        if let Some(ref mut state) = self.wizard_state.template {
             match state.focus {
                 WizardFocus::CancelButton => {
                     // Cancel - return to tree view without creating
-                    self.template_field_state = None;
+                    self.wizard_state.template = None;
                     self.current_view = ViewType::TreeView;
                 }
                 WizardFocus::ConfirmButton => {
                     // Confirm - collect all field values and create the element
                     // Save any current field value first
                     for field in &state.fields {
-                        state
-                            .values
-                            .insert(field.placeholder.clone(), field.value.clone());
+                        if let Some(placeholder) = field.placeholder.as_ref() {
+                            if field.is_editable && field.value.trim().is_empty() {
+                                continue;
+                            }
+                            state
+                                .values
+                                .insert(placeholder.clone(), field.value.clone());
+                        }
                     }
 
                     let template_name = state.template_name.clone();
@@ -1511,7 +4329,7 @@ impl App {
                     let new_element_name = name.clone();
 
                     // Clear template state before calling load_tree_view_data
-                    self.template_field_state = None;
+                    self.wizard_state.template = None;
 
                     // Refresh the tree view to show the newly created element at current level
                     self.load_tree_view_data();
@@ -1521,11 +4339,20 @@ impl App {
                     if let Some(ref element_name) = new_element_name {
                         // Find the newly created element in sidebar_items
                         if let Some(pos) = self
+                            .navigation_state
                             .sidebar_items
                             .iter()
                             .position(|item| !item.is_header && item.name == *element_name)
                         {
-                            self.selected_entry_index = pos;
+                            self.navigation_state.selected_entry_index = pos;
+                            // Also update sidebar_tree.selected_path to sync the breadcrumb
+                            if let Some(ref tree_path) =
+                                self.navigation_state.sidebar_items[pos].tree_path
+                            {
+                                self.navigation_state
+                                    .sidebar_tree
+                                    .set_selected_path(tree_path.clone());
+                            }
                         }
                     }
 
@@ -1535,6 +4362,7 @@ impl App {
                     // Save current field value
                     if let Some(field) = state.fields.get_mut(idx) {
                         field.value = self.input_buffer.clone();
+                        field.was_edited = true;
                     }
 
                     // Find next editable field or move to CONFIRM button
@@ -1558,18 +4386,316 @@ impl App {
     }
 
     fn filter_commands(&mut self) {
-        self.command_matches = command::filter_commands(
-            &self.command_input,
-            self.current_program.as_deref(),
-            self.current_project.as_deref(),
-            self.current_milestone.as_deref(),
-            !self.programs.is_empty(),
+        self.command_palette.filter_with_context(
+            self.navigation_state.current_program.as_deref(),
+            self.navigation_state.current_project.as_deref(),
+            self.navigation_state.current_milestone.as_deref(),
+            !self.tree_data.programs.is_empty(),
         );
-        self.command_selection_index = 0;
     }
 
     fn draw(&self, f: &mut Frame) {
         layout::render(f, self);
+    }
+
+    fn navigate_planning_dates_up(&mut self) {
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            // Save current input_buffer value to the appropriate field before moving
+            wizard.sync_input_to_field();
+            // Navigate using the wizard's focus enum
+            wizard.focus = wizard.focus.prev();
+            // Load the newly focused field's value into input_buffer
+            wizard.sync_field_to_input();
+            self.input_buffer = wizard.input_buffer.clone();
+        }
+    }
+
+    fn navigate_planning_dates_down(&mut self) {
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            // Save current input_buffer value to the appropriate field before moving
+            wizard.sync_input_to_field();
+            // Navigate using the wizard's focus enum
+            wizard.focus = wizard.focus.next();
+            // Load the newly focused field's value into input_buffer
+            wizard.sync_field_to_input();
+            self.input_buffer = wizard.input_buffer.clone();
+        }
+    }
+
+    fn cycle_duration_left(&mut self) {
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.cycle_duration(-1);
+            wizard.duration_edited = true;
+        }
+    }
+
+    fn cycle_duration_right(&mut self) {
+        // Use wizard state
+        if let Some(ref mut wizard) = self.planning_wizard {
+            wizard.cycle_duration(1);
+            wizard.duration_edited = true;
+        }
+    }
+
+    fn navigate_planning_tasks_up(&mut self) {
+        let task_index = self
+            .planning_wizard
+            .as_ref()
+            .map(|w| w.task_index)
+            .unwrap_or(0);
+        let filtered = self.get_filtered_tasks();
+        if !filtered.is_empty()
+            && task_index > 0
+            && let Some(ref mut wizard) = self.planning_wizard
+        {
+            wizard.task_index -= 1;
+        }
+    }
+
+    fn navigate_planning_tasks_down(&mut self) {
+        let task_index = self
+            .planning_wizard
+            .as_ref()
+            .map(|w| w.task_index)
+            .unwrap_or(0);
+        let filtered = self.get_filtered_tasks();
+        let max_idx = filtered.len().saturating_sub(1);
+        if task_index < max_idx
+            && let Some(ref mut wizard) = self.planning_wizard
+        {
+            wizard.task_index += 1;
+        }
+    }
+
+    fn toggle_planning_task_selection(&mut self) {
+        let task_index = self
+            .planning_wizard
+            .as_ref()
+            .map(|w| w.task_index)
+            .unwrap_or(0);
+        let filtered_tasks = self.get_filtered_tasks();
+        let Some(task) = filtered_tasks.get(task_index) else {
+            return;
+        };
+        let uuid = task.uuid.clone();
+        if let Some(ref mut wizard) = self.planning_wizard {
+            if let Some(pos) = wizard.selected_tasks.iter().position(|u| *u == uuid) {
+                wizard.selected_tasks.remove(pos);
+            } else {
+                wizard.selected_tasks.push(uuid);
+            }
+        }
+    }
+
+    fn confirm_planning_dates(&mut self) {
+        if let Some(ref mut wizard) = self.planning_wizard {
+            let focus_idx = wizard.focus.index();
+            match focus_idx {
+                0..=2 => {
+                    self.navigate_planning_dates_down();
+                }
+                3 => {
+                    // Confirm button - validate dates
+                    if chrono::NaiveDate::parse_from_str(&wizard.start_date, "%Y-%m-%d").is_err() {
+                        wizard.date_error =
+                            Some("Invalid start date format. Use YYYY-MM-DD".to_string());
+                        return;
+                    }
+                    if !wizard.end_date.is_empty() {
+                        if chrono::NaiveDate::parse_from_str(&wizard.end_date, "%Y-%m-%d").is_err()
+                        {
+                            wizard.date_error =
+                                Some("Invalid end date format. Use YYYY-MM-DD".to_string());
+                            return;
+                        }
+                        let start =
+                            chrono::NaiveDate::parse_from_str(&wizard.start_date, "%Y-%m-%d").ok();
+                        let end =
+                            chrono::NaiveDate::parse_from_str(&wizard.end_date, "%Y-%m-%d").ok();
+                        if let (Some(s), Some(e)) = (start, end)
+                            && e < s
+                        {
+                            wizard.date_error =
+                                Some("End date must be on or after start date".to_string());
+                            return;
+                        }
+                    }
+                    wizard.date_error = None;
+                    self.finalize_planning_wizard_dates();
+                }
+                4 => {
+                    self.cancel_planning_wizard();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn confirm_planning_tasks(&mut self) {
+        if self
+            .planning_wizard
+            .as_ref()
+            .map(|w| !w.selected_tasks.is_empty())
+            .unwrap_or(false)
+        {
+            self.finalize_planning_session();
+        }
+    }
+
+    fn open_task_detail_wizard(&mut self) {
+        use crate::model::Element;
+        use crate::storage::md::parse_element;
+
+        let Some(item) = self
+            .hierarchical_picker
+            .items
+            .get(self.hierarchical_picker.cursor_index)
+            .cloned()
+        else {
+            tracing::debug!("open_task_detail_wizard: no item at cursor index");
+            return;
+        };
+
+        // Load task from file
+        let content = match std::fs::read_to_string(&item.path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(path = ?item.path, error = %e, "open_task_detail_wizard: failed to read task file");
+                return;
+            }
+        };
+
+        let parsed = match parse_element(&content) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                tracing::debug!(path = ?item.path, "open_task_detail_wizard: no YAML frontmatter found");
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(path = ?item.path, error = %e, "open_task_detail_wizard: failed to parse task file");
+                return;
+            }
+        };
+
+        let task = match parsed {
+            Element::Task(t) => SelectedTask {
+                uuid: t.uuid.clone(),
+                path: item.path.clone(),
+                program: self
+                    .hierarchical_picker
+                    .selected_program
+                    .clone()
+                    .unwrap_or_default(),
+                project: self
+                    .hierarchical_picker
+                    .selected_project
+                    .clone()
+                    .unwrap_or_default(),
+                milestone: self
+                    .hierarchical_picker
+                    .selected_milestone
+                    .clone()
+                    .unwrap_or_default(),
+                task_name: t.title.clone(),
+                status: t.status.clone(),
+                // Dynamically load existing values from task, or None if not present
+                assigned_to: t.assigned_to.clone(),
+                start_date: t.start_date.clone(),
+                due_date: t.due_date.clone(),
+                importance: t.importance.clone(),
+                description: Some(t.description.clone()),
+            },
+            _ => {
+                tracing::debug!(path = ?item.path, "open_task_detail_wizard: parsed element is not a Task");
+                return;
+            }
+        };
+
+        self.task_wizard = Some(task_wizard::TaskWizardState::with_task(task));
+        self.mode = Mode::TaskDetailWizard;
+        self.current_view = ViewType::TaskDetailWizard;
+    }
+
+    fn cycle_task_wizard_field_or_next(&mut self) {
+        if let Some(ref mut wizard) = self.task_wizard {
+            task_wizard::cycle_task_wizard_field_or_next(wizard, &self.config.workflow);
+        }
+    }
+
+    fn handle_task_wizard_char(&mut self, c: char) {
+        if let Some(ref mut wizard) = self.task_wizard {
+            task_wizard::handle_task_wizard_char(wizard, c);
+        }
+    }
+
+    fn handle_task_wizard_backspace(&mut self) {
+        if let Some(ref mut wizard) = self.task_wizard {
+            task_wizard::handle_task_wizard_backspace(wizard);
+        }
+    }
+
+    fn confirm_task_detail_wizard(&mut self) {
+        if let Some(ref mut wizard) = self.task_wizard
+            && let Some(task) = task_wizard::confirm_task_detail_wizard(wizard)
+        {
+            // Update task file on disk with any changes
+            let task_path = task.path.clone();
+            let updates = [
+                ("status", Some(task.status.clone())),
+                ("assigned_to", task.assigned_to.clone()),
+                ("start_date", task.start_date.clone()),
+                ("due_date", task.due_date.clone()),
+                ("importance", task.importance.clone()),
+            ];
+            let updates_map: std::collections::HashMap<&str, Option<String>> =
+                updates.iter().map(|(k, v)| (*k, v.clone())).collect();
+            if let Err(e) = crate::storage::md::update_task_fields(&task_path, updates_map) {
+                tracing::warn!("Failed to update task file: {}", e);
+            }
+
+            // Add task to planning session
+            self.planning_session.tasks.push(task);
+
+            // Mark task as selected in picker so checkbox shows [x]
+            let path_str = task_path.to_string_lossy().to_string();
+            self.hierarchical_picker.selected_tasks.insert(path_str);
+
+            // Save session if UUID exists (finalized state)
+            if self.planning_session.uuid.is_some() {
+                self.save_current_planning_session();
+            }
+        }
+
+        // Return to picker
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn cancel_task_detail_wizard(&mut self) {
+        // Clear the wizard state
+        self.task_wizard = None;
+        self.mode = Mode::HierarchicalSelection;
+        self.current_view = ViewType::HierarchicalTaskPicker;
+    }
+
+    fn confirm_task_detail_field_input(&mut self) {
+        if let Some(ref mut wizard) = self.task_wizard {
+            task_wizard::confirm_task_detail_field_input(wizard, &self.input_buffer);
+        }
+        self.input_buffer.clear();
+        self.mode = Mode::TaskDetailWizard;
+        self.current_view = ViewType::TaskDetailWizard;
+    }
+
+    fn cancel_planning_wizard(&mut self) {
+        // Clear wizard state
+        self.planning_wizard = None;
+        self.hierarchical_picker = hierarchical_picker::HierarchicalPickerState::new();
+        self.current_view = ViewType::TreeView;
+        self.mode = Mode::Normal;
     }
 }
 
@@ -1637,13 +4763,13 @@ mod tests {
 
         // Verify programs list is empty
         assert!(
-            app.programs.is_empty(),
+            app.tree_data.programs.is_empty(),
             "Programs should be empty in new workspace"
         );
 
         // Verify sidebar has items (Planning and Journal sections should exist)
         assert!(
-            !app.sidebar_items.is_empty(),
+            !app.navigation_state.sidebar_items.is_empty(),
             "Sidebar should have items even with empty programs"
         );
 
@@ -1653,19 +4779,23 @@ mod tests {
 
         // Verify "New Program" is in the command list
         assert!(
-            app.command_matches.iter().any(|c| c.label == "New Program"),
+            app.command_palette
+                .matches
+                .iter()
+                .any(|c| c.label == "New Program"),
             "New Program command should be available even with empty workspace"
         );
 
         // Verify we can navigate the command list
         assert!(
-            !app.command_matches.is_empty(),
+            !app.command_palette.matches.is_empty(),
             "Command list should not be empty"
         );
 
         // Verify we can select "New Program" command
         let new_program_idx = app
-            .command_matches
+            .command_palette
+            .matches
             .iter()
             .position(|c| c.label == "New Program");
         assert!(
@@ -1675,8 +4805,8 @@ mod tests {
 
         // Navigate to New program command
         if let Some(idx) = new_program_idx {
-            app.command_selection_index = idx;
-            assert_eq!(app.command_matches[idx].label, "New Program");
+            app.command_palette.selection_index = idx;
+            assert_eq!(app.command_palette.matches[idx].label, "New Program");
         }
     }
 
@@ -1688,25 +4818,32 @@ mod tests {
         // Set up template field state for testing
         let fields = vec![
             FieldInfo {
+                key: "title".to_string(),
                 label: "Title".to_string(),
-                placeholder: "TITLE".to_string(),
+                placeholder: Some("TITLE".to_string()),
                 value: String::new(),
-                is_focused: true,
                 is_editable: true,
+                was_edited: false,
+                kind: FieldKind::Empty,
+                choices: Vec::new(),
                 display_order: 0,
             },
             FieldInfo {
+                key: "status".to_string(),
                 label: "Status".to_string(),
-                placeholder: "DEFAULT_STATUS".to_string(),
+                placeholder: Some("DEFAULT_STATUS".to_string()),
                 value: "New".to_string(),
-                is_focused: false,
                 is_editable: false,
+                was_edited: false,
+                kind: FieldKind::AutoFilled,
+                choices: Vec::new(),
                 display_order: 1,
             },
         ];
 
-        app.template_field_state = Some(TemplateFieldState {
+        app.wizard_state.template = Some(TemplateFieldState {
             template_name: "test".to_string(),
+            path_hint: "Programs -> new program".to_string(),
             fields,
             focus: WizardFocus::Field(0),
             values: std::collections::HashMap::new(),
@@ -1724,14 +4861,14 @@ mod tests {
 
         // Verify both input_buffer and field.value are updated
         assert_eq!(app.input_buffer, "Hello");
-        if let Some(state) = &app.template_field_state {
+        if let Some(state) = &app.wizard_state.template {
             assert_eq!(state.fields[0].value, "Hello");
         }
 
         // Test backspace
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.input_buffer, "Hell");
-        if let Some(state) = &app.template_field_state {
+        if let Some(state) = &app.wizard_state.template {
             assert_eq!(state.fields[0].value, "Hell");
         }
     }
@@ -1769,25 +4906,28 @@ Test description
         let mut app = App::new(config);
 
         // Verify we're at root level with programs loaded
-        assert!(!app.programs.is_empty(), "Programs should be loaded");
+        assert!(
+            !app.tree_data.programs.is_empty(),
+            "Programs should be loaded"
+        );
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             0,
             "Should be at root level"
         );
 
         // Navigate into the program (select index 1 because index 0 is "Programs" header)
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Verify we're now inside the program
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             1,
             "Should be inside program"
         );
         assert!(
-            app.current_program.is_some(),
+            app.navigation_state.current_program.is_some(),
             "Current program should be set"
         );
 
@@ -1797,10 +4937,10 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Fill in the project name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             // Find first editable field and set its value
             for field in &mut state.fields {
                 if field.is_editable {
@@ -1820,12 +4960,12 @@ Test description
         // NEW BEHAVIOR: Stay at parent level (don't auto-navigate into new element)
         // The user can manually navigate into it with arrow key
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             1,
             "Should stay at parent level (program) after creation"
         );
         assert!(
-            app.current_project.is_none(),
+            app.navigation_state.current_project.is_none(),
             "Should NOT auto-navigate into project - current_project should be None"
         );
 
@@ -1835,12 +4975,13 @@ Test description
         // The key test: verify that sidebar_items reflects the current state
         // After creating a project, we should still be in the program, showing projects
         assert!(
-            !app.sidebar_items.is_empty(),
+            !app.navigation_state.sidebar_items.is_empty(),
             "Sidebar should have items after creation"
         );
 
         // Selected nodes keep children collapsed, so project children are not shown here.
         let has_new_project = app
+            .navigation_state
             .sidebar_items
             .iter()
             .any(|item| !item.is_header && item.name == "NewProject");
@@ -1869,10 +5010,10 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Fill in the program name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             // Find first editable field and set its value
             for field in &mut state.fields {
                 if field.is_editable {
@@ -1940,14 +5081,14 @@ Test description
         let mut app = App::new(config);
 
         // Navigate into the program
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Start the new project wizard
         app.start_new_project();
 
         // Fill in the project name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewProject".to_string();
@@ -2020,16 +5161,16 @@ Test description
         let mut app = App::new(config);
 
         // Navigate into program, then project
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Start the new milestone wizard
         app.start_new_milestone();
 
         // Fill in the milestone name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewMilestone".to_string();
@@ -2122,21 +5263,22 @@ Test description
         // Navigate into program, then project.
         // Right-navigation auto-selects first child, so after entering project
         // selection is already on the milestone.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "NewProject" && i.indent == 1)
             .expect("NewProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         // Start the new task wizard
         app.start_new_task();
 
         // Fill in the task name
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
                 if field.is_editable {
                     field.value = "NewTask".to_string();
@@ -2211,18 +5353,21 @@ Test description
         let mut app = App::new(config);
 
         // We're at root level - verify there are programs
-        assert!(!app.programs.is_empty(), "Programs should be loaded");
+        assert!(
+            !app.tree_data.programs.is_empty(),
+            "Programs should be loaded"
+        );
 
         // Record the initial selection position (before creating new element)
-        let _initial_selected_index = app.selected_entry_index;
+        let _initial_selected_index = app.navigation_state.selected_entry_index;
 
         // Start the new program wizard
         app.start_new_program();
 
         // Fill in the program name in the first editable field
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
-                if field.is_editable && field.placeholder == "NAME" {
+                if field.is_editable && field.placeholder.as_deref() == Some("NAME") {
                     field.value = "NewProgram".to_string();
                     break;
                 }
@@ -2237,6 +5382,7 @@ Test description
         // Now verify selection is on the newly created element, NOT reset to first item
         // The new element should be in the sidebar
         let new_element_in_sidebar = app
+            .navigation_state
             .sidebar_items
             .iter()
             .any(|item| item.name == "NewProgram");
@@ -2247,11 +5393,12 @@ Test description
         );
 
         // The key assertion: selected_entry_index should point to the new element
-        let selected_item = &app.sidebar_items[app.selected_entry_index];
+        let selected_item =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert_eq!(
             selected_item.name, "NewProgram",
             "Selected item should be the newly created program, but got '{}' (index {})",
-            selected_item.name, app.selected_entry_index
+            selected_item.name, app.navigation_state.selected_entry_index
         );
 
         // Also verify we didn't just reset to initial position (index 1)
@@ -2280,13 +5427,19 @@ Test description
 
         // Verify we're in template field input mode
         assert_eq!(app.current_view, ViewType::InputTemplateField);
-        assert!(app.template_field_state.is_some());
+        assert!(app.wizard_state.template.is_some());
 
         // Check that DESCRIPTION is in the wizard fields
         let has_description_field = app
-            .template_field_state
+            .wizard_state
+            .template
             .as_ref()
-            .map(|state| state.fields.iter().any(|f| f.placeholder == "DESCRIPTION"))
+            .map(|state| {
+                state
+                    .fields
+                    .iter()
+                    .any(|f| f.placeholder.as_deref() == Some("DESCRIPTION"))
+            })
             .unwrap_or(false);
 
         assert!(
@@ -2295,11 +5448,11 @@ Test description
         );
 
         // Fill in the program name and description
-        if let Some(ref mut state) = app.template_field_state {
+        if let Some(ref mut state) = app.wizard_state.template {
             for field in &mut state.fields {
-                if field.placeholder == "NAME" {
+                if field.placeholder.as_deref() == Some("NAME") {
                     field.value = "TestProgram".to_string();
-                } else if field.placeholder == "DESCRIPTION" {
+                } else if field.placeholder.as_deref() == Some("DESCRIPTION") {
                     field.value = "This is a test description".to_string();
                 }
             }
@@ -2388,21 +5541,22 @@ title: TestMilestone
         let mut app = App::new(config);
 
         // Navigate into Program (select index 1 because index 0 is "Programs" header)
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Navigate into Project
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject")
             .expect("TestProject should be in sidebar");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         // Single right from project now expands and moves selection into milestone.
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             3,
             "Should be inside milestone after second navigation"
         );
@@ -2413,7 +5567,7 @@ title: TestMilestone
         // BUG: This should go to project level (path = ["TestProgram", "TestProject"])
         // but it jumps to program level (path = ["TestProgram"])
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             2,
             "Should go back to project level (depth 2), not program level (depth 1)"
         );
@@ -2471,19 +5625,20 @@ title: TestMilestone
 
         // Navigate into Program.
         // Right now expands and moves selection to the first project in one step.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
-        assert_eq!(app.tree_model.selected_depth(), 2);
+        assert_eq!(app.navigation_state.sidebar_tree.selected_depth(), 2);
 
         // Navigate into Project
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject")
             .expect("TestProject should be in sidebar");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
-        assert_eq!(app.tree_model.selected_depth(), 3);
+        assert_eq!(app.navigation_state.sidebar_tree.selected_depth(), 3);
 
         // Now navigate LEFT - this should collapse back to project level
         app.navigate_left();
@@ -2491,13 +5646,17 @@ title: TestMilestone
         // After collapsing, we should be at project level (depth 2)
         // path should be ["TestProgram", "TestProject"], not ["TestProgram"]
         assert_eq!(
-            app.tree_model.selected_depth(),
+            app.navigation_state.sidebar_tree.selected_depth(),
             2,
             "After collapsing milestone, should be at project level (depth 2), not program level (depth 1)"
         );
 
         // The sidebar should keep milestones collapsed while project is selected.
-        let has_milestones = app.sidebar_items.iter().any(|i| i.name == "TestMilestone");
+        let has_milestones = app
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .any(|i| i.name == "TestMilestone");
         assert!(
             !has_milestones,
             "Sidebar should keep selected project's children collapsed"
@@ -2505,10 +5664,11 @@ title: TestMilestone
 
         // Selection should remain valid and on the project node after collapsing back.
         assert!(
-            app.selected_entry_index < app.sidebar_items.len(),
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len(),
             "Selected index should remain in bounds"
         );
-        let selected = &app.sidebar_items[app.selected_entry_index];
+        let selected =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert!(!selected.is_header, "Selection should not land on a header");
         assert_eq!(selected.name, "TestProject");
         assert_eq!(selected.indent, 1);
@@ -2554,15 +5714,16 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "AlphaProject".to_string()]
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|item| item.name == "M1" && item.indent == 2),
             "Milestones should not auto-expand when entering program level"
@@ -2601,18 +5762,19 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item_with_leaf_open(false);
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject" && i.indent == 1)
             .expect("TestProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item_with_leaf_open(false);
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec![
                 "TestProgram".to_string(),
                 "TestProject".to_string(),
@@ -2623,11 +5785,12 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram".to_string(), "TestProject".to_string()]
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|item| item.name == "M1" && item.indent == 2),
             "Milestones should be collapsed when project is selected after left navigation"
@@ -2688,37 +5851,45 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item_with_leaf_open(false);
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "TestProject" && i.indent == 1)
             .expect("TestProject should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item_with_leaf_open(false);
         let milestone_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "M1" && i.indent == 2)
             .expect("M1 should be selectable");
-        app.selected_entry_index = milestone_idx;
+        app.navigation_state.selected_entry_index = milestone_idx;
         app.open_tree_item_with_leaf_open(false);
         let task_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "LeafTask" && i.indent == 3)
             .expect("LeafTask should be selectable after entering milestone");
-        app.selected_entry_index = task_idx;
+        app.navigation_state.selected_entry_index = task_idx;
         app.open_tree_item_with_leaf_open(false);
 
-        let selected_before = app.tree_model.selected_path().to_vec();
+        let selected_before = app.navigation_state.sidebar_tree.selected_path().to_vec();
         app.navigate_right();
         app.navigate_right();
 
         assert_eq!(app.current_view, ViewType::TreeView);
-        assert_eq!(app.tree_model.selected_path().to_vec(), selected_before);
-        assert!(app.selected_entry_index < app.sidebar_items.len());
+        assert_eq!(
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
+            selected_before
+        );
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
     }
 
     #[test]
@@ -2766,15 +5937,16 @@ title: TestMilestone
         std::fs::write(&today_path, "---\ntitle: today\n---\n").expect("Failed to create file");
 
         let today_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|item| item.is_journal_item.as_deref() == Some("Today"))
             .expect("Today entry should exist");
-        app.selected_entry_index = today_idx;
+        app.navigation_state.selected_entry_index = today_idx;
         app.open_tree_item();
 
         assert_eq!(app.current_view, ViewType::TreeView);
-        assert!(app.template_field_state.is_none());
+        assert!(app.wizard_state.template.is_none());
     }
 
     #[test]
@@ -2813,16 +5985,17 @@ title: TestMilestone
         let mut app = App::new(config);
 
         // Enter the top program.
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         // Move selection in project list and enter BetaProject.
         if let Some(beta_idx) = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "BetaProject" && i.indent == 1)
         {
-            app.selected_entry_index = beta_idx;
+            app.navigation_state.selected_entry_index = beta_idx;
         } else {
             panic!("BetaProject should be selectable");
         }
@@ -2830,7 +6003,7 @@ title: TestMilestone
 
         // Single right from project expands and moves to milestone.
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject", "M1"]
         );
 
@@ -2838,11 +6011,14 @@ title: TestMilestone
         app.navigate_left();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "BetaProject"]
         );
-        assert!(app.selected_entry_index < app.sidebar_items.len());
-        let selected = &app.sidebar_items[app.selected_entry_index];
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
+        let selected =
+            &app.navigation_state.sidebar_items[app.navigation_state.selected_entry_index];
         assert_eq!(selected.name, "BetaProject");
         assert_eq!(selected.indent, 1);
         assert!(!selected.is_header);
@@ -2873,16 +6049,21 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "DirectTask"]
         );
 
         app.navigate_left();
-        assert_eq!(app.tree_model.selected_path().to_vec(), vec!["TestProgram"]);
-        assert!(app.selected_entry_index < app.sidebar_items.len());
+        assert_eq!(
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
+            vec!["TestProgram"]
+        );
+        assert!(
+            app.navigation_state.selected_entry_index < app.navigation_state.sidebar_items.len()
+        );
     }
 
     #[test]
@@ -2926,22 +6107,24 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
         let common_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "Common" && i.indent == 1)
             .expect("Common should be selectable under program");
-        app.selected_entry_index = common_idx;
+        app.navigation_state.selected_entry_index = common_idx;
         app.open_tree_item();
 
         assert_eq!(
-            app.tree_model.selected_path().to_vec(),
+            app.navigation_state.sidebar_tree.selected_path().to_vec(),
             vec!["TestProgram", "Common", "M1"]
         );
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "M1" && i.indent == 2),
             "Expandable duplicate variant should be used, exposing milestones"
@@ -2983,38 +6166,43 @@ title: TestMilestone
         };
         let mut app = App::new(config);
 
-        app.selected_entry_index = 1;
+        app.navigation_state.selected_entry_index = 1;
         app.open_tree_item();
 
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "project 1" && i.indent == 1),
             "project 1 should exist as a project under program"
         );
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "project 2" && i.indent == 1),
             "project 2 should exist as a project under program"
         );
         assert!(
-            !app.sidebar_items
+            !app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "milestone 1" && i.indent == 1),
             "milestone 1 must not leak into program level"
         );
 
         let project_idx = app
+            .navigation_state
             .sidebar_items
             .iter()
             .position(|i| i.name == "project 1" && i.indent == 1)
             .expect("project 1 should be selectable");
-        app.selected_entry_index = project_idx;
+        app.navigation_state.selected_entry_index = project_idx;
         app.open_tree_item();
 
         assert!(
-            app.sidebar_items
+            app.navigation_state
+                .sidebar_items
                 .iter()
                 .any(|i| i.name == "milestone 1" && i.indent == 2),
             "milestone 1 should appear only under project 1"

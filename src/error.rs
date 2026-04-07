@@ -15,6 +15,8 @@ pub enum Error {
     Storage(#[from] StorageError),
     #[error("Model error: {0}")]
     Model(#[from] ModelError),
+    #[error("Planning error: {0}")]
+    Planning(#[from] PlanningError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("YAML parsing error: {0}")]
@@ -35,6 +37,8 @@ pub enum ConfigError {
     NotFound(PathBuf),
     #[error("Invalid configuration: {0}")]
     Invalid(String),
+    #[error("Invalid planning duration: {0}. Expected one of: {1}")]
+    InvalidPlanningDuration(String, String),
 }
 
 /// Storage-related errors.
@@ -59,4 +63,15 @@ pub enum ModelError {
     NotFound(String),
     #[error("Parse error: {0}")]
     Parse(String),
+}
+
+/// Planning-related errors.
+#[derive(Error, Debug)]
+pub enum PlanningError {
+    #[error("Session not found: {0}")]
+    NotFound(String),
+    #[error("Invalid session file: {0}")]
+    InvalidFile(String),
+    #[error("Session locked by another process")]
+    Locked,
 }

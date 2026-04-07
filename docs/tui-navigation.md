@@ -35,3 +35,18 @@ Sidebar always includes:
 - Programs tree
 - Planning (`Weekly Planning`, `Backlog`)
 - Journal (`Today`, `History`)
+
+## Main Window
+
+The main window is a **viewport into the current selection**. Whenever the selected entry in the navigator changes, the main window updates to show the content of that selection. It is a passive viewer — it simply reflects what is selected in the sidebar. This applies to all sidebar sections: Programs, Planning, and Journal.
+
+## Journal History Navigation
+
+History expands inline in the sidebar:
+- `Right` on History: expands to show years (with entry counts)
+- `Right` on year: expands to show months (with entry counts)
+- `Right` on month: shows entries
+- `Enter` on entry: opens content in main window viewer
+- `Left`: collapses current level, selects parent
+
+Tree simplification: month level is only created when multiple months exist in a year. Entry level only created when multiple entries in a month.

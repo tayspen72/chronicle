@@ -1,10 +1,6 @@
 //! Command palette module.
 //!
 //! Handles command palette state, filtering, and execution.
-//!
-//! NOTE: This module contains extracted types and logic for the command palette.
-//! The App struct in mod.rs still has inline implementations that duplicate this logic.
-//! TODO: Wire up CommandPalette to replace inline command handling in App.
 
 use crossterm::event::KeyCode;
 
@@ -24,6 +20,10 @@ pub enum CommandAction {
     NewMilestone,
     NewTask,
     Refresh,
+    StartPlanningSession,
+    ClosePlanningSession,
+    ReviewSession,
+    SwitchTheme,
 }
 
 /// A matched command with its label, target view, and optional action.
@@ -37,7 +37,6 @@ pub struct CommandMatch {
 
 /// State for the command palette.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct CommandPalette {
     pub input: String,
     pub matches: Vec<CommandMatch>,
@@ -46,7 +45,6 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     /// Creates a new command palette with all commands loaded.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             input: String::new(),
@@ -59,7 +57,6 @@ impl CommandPalette {
     ///
     /// Returns `Some(CommandMatch)` when a command is executed,
     /// `None` otherwise.
-    #[allow(dead_code)]
     pub fn handle_input(&mut self, code: KeyCode) -> Option<CommandMatch> {
         match code {
             KeyCode::Char(c) => {
@@ -98,18 +95,45 @@ impl CommandPalette {
     }
 
     /// Closes the command palette and resets its state.
-    #[allow(dead_code)]
     pub fn close(&mut self) {
         self.input.clear();
         self.selection_index = 0;
     }
 
     /// Opens the command palette and resets the input.
-    #[allow(dead_code)]
     pub fn open(&mut self) {
         self.input.clear();
         self.selection_index = 0;
         self.matches = get_command_list();
+    }
+
+    /// Filters commands based on current input (simple filter without context).
+    pub fn filter(&mut self) {
+        self.matches = filter_commands(&self.input, None, None, None, true);
+        self.selection_index = 0;
+    }
+
+    /// Filters commands based on input and navigation context.
+    pub fn filter_with_context(
+        &mut self,
+        current_program: Option<&str>,
+        current_project: Option<&str>,
+        current_milestone: Option<&str>,
+        has_programs: bool,
+    ) {
+        self.matches = filter_commands(
+            &self.input,
+            current_program,
+            current_project,
+            current_milestone,
+            has_programs,
+        );
+        self.selection_index = 0;
+    }
+
+    /// Returns the display text for the command bar/palette.
+    pub fn display_text(&self) -> String {
+        format!("/{}", self.input)
     }
 }
 
@@ -153,7 +177,13 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             action: None,
         },
         CommandMatch {
-            label: "Weekly Planning".to_string(),
+            label: "My Tasks".to_string(),
+            view: ViewType::MyTasks,
+            exit: false,
+            action: None,
+        },
+        CommandMatch {
+            label: "Current Plan".to_string(),
             view: ViewType::WeeklyPlanning,
             exit: false,
             action: None,
@@ -199,6 +229,30 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             view: ViewType::TreeView,
             exit: false,
             action: Some(CommandAction::Refresh),
+        },
+        CommandMatch {
+            label: "Start Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::StartPlanningSession),
+        },
+        CommandMatch {
+            label: "Close Planning Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::ClosePlanningSession),
+        },
+        CommandMatch {
+            label: "Review Session".to_string(),
+            view: ViewType::WeeklyPlanning,
+            exit: false,
+            action: Some(CommandAction::ReviewSession),
+        },
+        CommandMatch {
+            label: "Theme".to_string(),
+            view: ViewType::TreeView,
+            exit: false,
+            action: Some(CommandAction::SwitchTheme),
         },
         CommandMatch {
             label: "Exit".to_string(),
@@ -283,7 +337,8 @@ pub fn filter_commands(
                     "Programs"
                     | "Journal"
                     | "Backlog"
-                    | "Weekly Planning"
+                    | "My Tasks"
+                    | "Current Plan"
                     | "Open Today's Journal"
                     | "Journal History"
                     | "Exit" => true,

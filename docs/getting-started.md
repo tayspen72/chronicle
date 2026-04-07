@@ -24,6 +24,8 @@ You will be prompted for:
 - Use arrow keys to navigate.
 - Press `Enter` to activate selected item.
 - Use `Right`/`Left` to move down/up the tree.
+- Access today's journal via the History sidebar section
+- View and interact with todo items in the "My Tasks" planning report
 
 ## Quality Checks
 
