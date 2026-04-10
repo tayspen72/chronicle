@@ -3,7 +3,7 @@
 //! Provides tree building and data structures for the sidebar.
 
 use crate::model::SelectedTask;
-use crate::storage::{DirectoryEntry, JournalEntry};
+use crate::storage::{DirectoryEntry, JournalEntry, NoteEntry};
 use std::path::PathBuf;
 
 /// Maps month tokens (abbrev/full) to numeric month strings.
@@ -152,6 +152,65 @@ impl JournalNode {
             month,
             entry: entry.clone(),
         })
+    }
+}
+
+/// Represents a node in the notes tree.
+#[derive(Debug, Clone)]
+pub enum NoteNode {
+    /// A PARA category folder (e.g. "Projects", "Areas")
+    Category { name: String },
+    /// A subfolder within a category
+    Folder { category: String, name: String },
+    /// A leaf note file
+    Entry {
+        category: String,
+        folder: Option<String>,
+        filename: String,
+        path: PathBuf,
+    },
+}
+
+impl NoteNode {
+    pub fn path_components(&self) -> Vec<String> {
+        match self {
+            NoteNode::Category { name } => vec![name.clone()],
+            NoteNode::Folder { category, name } => vec![category.clone(), name.clone()],
+            NoteNode::Entry {
+                category,
+                folder,
+                filename,
+                ..
+            } => {
+                let stem = filename.trim_end_matches(".md").to_string();
+                if let Some(f) = folder {
+                    vec![category.clone(), f.clone(), stem]
+                } else {
+                    vec![category.clone(), stem]
+                }
+            }
+        }
+    }
+
+    pub fn is_container(&self) -> bool {
+        matches!(self, NoteNode::Category { .. } | NoteNode::Folder { .. })
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            NoteNode::Category { name } => name,
+            NoteNode::Folder { name, .. } => name,
+            NoteNode::Entry { filename, .. } => filename.trim_end_matches(".md"),
+        }
+    }
+
+    pub fn from_entry(entry: &NoteEntry) -> Self {
+        NoteNode::Entry {
+            category: entry.category.clone(),
+            folder: entry.folder.clone(),
+            filename: entry.filename.clone(),
+            path: entry.path.clone(),
+        }
     }
 }
 

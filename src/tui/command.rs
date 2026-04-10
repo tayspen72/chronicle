@@ -19,6 +19,8 @@ pub enum CommandAction {
     NewProject,
     NewMilestone,
     NewTask,
+    NewNote,
+    MoveNote,
     Refresh,
     StartPlanningSession,
     ClosePlanningSession,
@@ -213,6 +215,18 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             action: Some(CommandAction::NewTask),
         },
         CommandMatch {
+            label: "New Note".to_string(),
+            view: ViewType::InputNote,
+            exit: false,
+            action: Some(CommandAction::NewNote),
+        },
+        CommandMatch {
+            label: "Move Note".to_string(),
+            view: ViewType::MoveNote,
+            exit: false,
+            action: Some(CommandAction::MoveNote),
+        },
+        CommandMatch {
             label: "Open Today's Journal".to_string(),
             view: ViewType::Journal,
             exit: false,
@@ -341,6 +355,8 @@ pub fn filter_commands(
                     | "Current Plan"
                     | "Open Today's Journal"
                     | "Journal History"
+                    | "New Note"
+                    | "Move Note"
                     | "Exit" => true,
                     // Tier-specific navigation - context-based
                     "Projects" => current_program.is_some() || has_programs,

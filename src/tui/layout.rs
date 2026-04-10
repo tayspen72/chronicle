@@ -304,6 +304,12 @@ fn render_content(f: &mut Frame, app: &App, area: Rect) {
         ViewType::TaskDetailWizard | ViewType::InputTaskDetailField => {
             views::render_task_detail_wizard(f, app, area);
         }
+        ViewType::InputNote => {
+            views::render_note_wizard(f, app, area);
+        }
+        ViewType::MoveNote => {
+            views::render_move_note_picker(f, app, area);
+        }
     }
 }
 

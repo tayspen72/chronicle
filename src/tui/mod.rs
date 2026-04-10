@@ -34,14 +34,17 @@ use crate::storage::planning::{
     load_planning_session, save_planning_session,
 };
 use crate::storage::{
-    DirectoryEntry, JournalEntry, JournalStorage, WorkspaceStorage, validate_element_name,
+    DirectoryEntry, JournalEntry, JournalStorage, NotesStorage, WorkspaceStorage,
+    validate_element_name,
 };
 use crate::theme::Theme;
 use cache::{TaskMetadata, TreeData};
 use chrono::Local;
 use command::{CommandAction, CommandMatch, CommandPalette};
 use hierarchical_picker::HierarchicalPickerState;
-use navigation::{JournalTreeState, NavigationState, SidebarItem, SidebarNodeData, SidebarSection};
+use navigation::{
+    JournalTreeState, NavigationState, NotesTreeState, SidebarItem, SidebarNodeData, SidebarSection,
+};
 use planning_session::PlanningSessionState;
 use planning_wizard::PlanningDateFocus;
 use review::ReviewState;
@@ -97,6 +100,8 @@ pub enum ViewType {
     PlanningPreview,
     TaskDetailWizard,
     InputTaskDetailField,
+    InputNote,
+    MoveNote,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +167,43 @@ pub struct DailyTodoItem {
     pub text: String,
 }
 
+/// Step in the two-step new-note wizard (category → folder → template).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NoteWizardStep {
+    Category,
+    Folder,
+}
+
+/// State for the new-note wizard before the main template wizard opens.
+#[derive(Debug, Clone)]
+pub struct NoteCreationState {
+    pub step: NoteWizardStep,
+    pub categories: Vec<String>,
+    pub selected_category_index: usize,
+    pub folder_input: String,
+}
+
+/// State for the move-note picker.
+#[derive(Debug, Clone)]
+pub struct MoveNoteState {
+    pub source_path: std::path::PathBuf,
+    pub destinations: Vec<String>,
+    pub selected_index: usize,
+    pub filter: String,
+}
+
+impl MoveNoteState {
+    pub fn filtered_destinations(&self) -> Vec<(usize, &str)> {
+        let f = self.filter.to_lowercase();
+        self.destinations
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| f.is_empty() || d.to_lowercase().contains(&f))
+            .map(|(i, d)| (i, d.as_str()))
+            .collect()
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub theme: Theme,
@@ -191,6 +233,12 @@ pub struct App {
     pub archive_tree_mapping: Vec<Option<usize>>,
     // Journal tree state for sidebar expansion
     pub journal_tree_state: JournalTreeState,
+    // Notes tree state for sidebar expansion
+    pub notes_tree_state: NotesTreeState,
+    // Note creation wizard (category → folder step before template wizard)
+    pub note_creation_state: Option<NoteCreationState>,
+    // Move note picker state
+    pub move_note_state: Option<MoveNoteState>,
     // Theme selection state
     pub available_themes: Vec<String>,
     pub theme_selection_index: usize,
@@ -202,6 +250,7 @@ impl App {
     const FOCUS_START_DATE: usize = 101;
     const FOCUS_DUE_DATE: usize = 102;
     const JOURNAL_EXPANSION_ROOT: &'static str = "__journal__";
+    const NOTES_EXPANSION_ROOT: &'static str = "__notes__";
 
     pub fn new(config: Config) -> Self {
         let theme = config.load_theme().unwrap_or_else(|e| {
@@ -236,6 +285,9 @@ impl App {
             backlog_staged_uuids: None,
             archive_tree_mapping: Vec::new(),
             journal_tree_state: JournalTreeState::new(),
+            notes_tree_state: NotesTreeState::new(),
+            note_creation_state: None,
+            move_note_state: None,
             available_themes: crate::theme::loader::list_available_themes(),
             theme_selection_index: 0,
             previous_theme: None,
@@ -243,6 +295,7 @@ impl App {
 
         app.load_tree_view_data();
         app.ensure_journal_entries_loaded();
+        app.ensure_notes_loaded();
         app.resume_planning_session();
         app
     }
@@ -979,6 +1032,81 @@ impl App {
             return;
         }
 
+        // Handle InputNote view (two-step: category then folder)
+        if self.current_view == ViewType::InputNote {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(ref mut state) = self.note_creation_state
+                        && state.step == NoteWizardStep::Category
+                        && state.selected_category_index > 0
+                    {
+                        state.selected_category_index -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(ref mut state) = self.note_creation_state
+                        && state.step == NoteWizardStep::Category
+                    {
+                        let max = state.categories.len().saturating_sub(1);
+                        if state.selected_category_index < max {
+                            state.selected_category_index += 1;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    self.handle_note_wizard_enter();
+                }
+                KeyCode::Backspace => {
+                    self.handle_input_backspace();
+                }
+                KeyCode::Char(c) => {
+                    self.handle_input_char(c);
+                }
+                KeyCode::Esc => {
+                    self.note_creation_state = None;
+                    self.current_view = ViewType::TreeView;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle MoveNote view (filterable destination picker)
+        if self.current_view == ViewType::MoveNote {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(ref mut state) = self.move_note_state
+                        && state.selected_index > 0
+                    {
+                        state.selected_index -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(ref mut state) = self.move_note_state {
+                        let max = state.filtered_destinations().len().saturating_sub(1);
+                        if state.selected_index < max {
+                            state.selected_index += 1;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    self.confirm_move_note();
+                }
+                KeyCode::Backspace => {
+                    self.handle_input_backspace();
+                }
+                KeyCode::Char(c) => {
+                    self.handle_input_char(c);
+                }
+                KeyCode::Esc => {
+                    self.move_note_state = None;
+                    self.current_view = ViewType::TreeView;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('/') => {
                 self.mode = Mode::CommandPalette;
@@ -1289,6 +1417,26 @@ impl App {
 
     fn navigate_right(&mut self) {
         if self.current_view == ViewType::TreeView {
+            // Notes tree navigation
+            if let Some(note_path) = self.selected_note_tree_path() {
+                if let Some(SidebarNodeData::Note(node)) = self.selected_note_node() {
+                    use crate::tui::cache::NoteNode;
+                    match node {
+                        NoteNode::Category { .. } | NoteNode::Folder { .. } => {
+                            if !self.notes_is_expanded(&note_path) {
+                                self.notes_expand_path(&note_path);
+                                self.load_tree_view_data();
+                                self.select_first_notes_child(&note_path);
+                            }
+                        }
+                        NoteNode::Entry { .. } => {
+                            // Leaf note — right is a no-op
+                        }
+                    }
+                }
+                return;
+            }
+
             if let Some(journal_node) = self.selected_journal_node() {
                 match journal_node {
                     JournalNavNode::History => {
@@ -1340,8 +1488,8 @@ impl App {
 
     fn refresh_journal_entries_cache(&mut self) {
         if let Ok(entries) = self.config.workspace.list_journal_entries() {
-            self.journal_entries = entries.clone();
-            self.journal_tree_state.set_entries(entries);
+            self.journal_tree_state.set_entries(entries.clone());
+            self.journal_entries = entries;
         }
     }
 
@@ -1356,6 +1504,43 @@ impl App {
         }
 
         let item = &self.navigation_state.sidebar_items[idx];
+
+        // Notes tree left navigation
+        if let Some(note_path) = self.selected_note_tree_path() {
+            use crate::tui::cache::NoteNode;
+            if let Some(SidebarNodeData::Note(node)) = self.selected_note_node() {
+                match node {
+                    NoteNode::Category { .. } => {
+                        // Category is root-level — collapse if expanded, otherwise no-op
+                        if self.notes_is_expanded(&note_path) {
+                            self.notes_collapse_path(&note_path);
+                            self.load_tree_view_data();
+                            self.select_notes_item_by_path(&note_path);
+                        }
+                    }
+                    NoteNode::Folder { .. } => {
+                        // Collapse the folder and select the parent category
+                        let parent = note_path[..note_path.len().saturating_sub(1)].to_vec();
+                        if self.notes_is_expanded(&note_path) {
+                            self.notes_collapse_path(&note_path);
+                        } else {
+                            self.notes_collapse_path(&parent);
+                        }
+                        self.load_tree_view_data();
+                        self.select_notes_item_by_path(&parent);
+                    }
+                    NoteNode::Entry { .. } => {
+                        // Collapse parent (folder or category) and select it
+                        let parent = note_path[..note_path.len().saturating_sub(1)].to_vec();
+                        self.notes_collapse_path(&parent);
+                        self.load_tree_view_data();
+                        self.select_notes_item_by_path(&parent);
+                    }
+                }
+            }
+            return;
+        }
+
         if let Some(journal_node) = self.selected_journal_node() {
             match journal_node {
                 JournalNavNode::History | JournalNavNode::Today | JournalNavNode::OtherAction => {
@@ -1509,6 +1694,158 @@ impl App {
 
     fn collapse_all_journal(&mut self) {
         self.journal_collapse_path(&[]);
+    }
+
+    // ── Notes expansion helpers ──────────────────────────────────────────────
+
+    fn notes_model_path(path: &[String]) -> Vec<String> {
+        let mut model_path = Vec::with_capacity(path.len() + 1);
+        model_path.push(Self::NOTES_EXPANSION_ROOT.to_string());
+        model_path.extend(path.iter().cloned());
+        model_path
+    }
+
+    fn notes_is_expanded(&self, path: &[String]) -> bool {
+        self.navigation_state
+            .is_expanded(&Self::notes_model_path(path))
+    }
+
+    fn notes_expand_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .expand_path(&Self::notes_model_path(path));
+    }
+
+    fn notes_collapse_path(&mut self, path: &[String]) {
+        self.navigation_state
+            .collapse_path(&Self::notes_model_path(path));
+    }
+
+    fn collapse_all_notes(&mut self) {
+        let paths_to_remove: Vec<Vec<String>> = self
+            .navigation_state
+            .sidebar_tree
+            .expanded_paths()
+            .iter()
+            .filter(|p| p.first().map(|s| s.as_str()) == Some(Self::NOTES_EXPANSION_ROOT))
+            .cloned()
+            .collect();
+        for path in paths_to_remove {
+            self.navigation_state.sidebar_tree.collapse_path(&path);
+        }
+    }
+
+    fn ensure_notes_loaded(&mut self) {
+        if self.notes_tree_state.entries().is_empty() {
+            self.refresh_notes_cache();
+        }
+    }
+
+    fn refresh_notes_cache(&mut self) {
+        if let Ok(entries) = self.config.workspace.scan_notes() {
+            self.notes_tree_state.set_entries(entries);
+        }
+    }
+
+    fn add_notes_tree_items(&mut self) {
+        use crate::tui::cache::NoteNode;
+
+        let categories = self
+            .notes_tree_state
+            .categories(&self.config.notes.categories);
+
+        for category in &categories {
+            let cat_path = vec![category.clone()];
+            let node = NoteNode::Category {
+                name: category.clone(),
+            };
+            let mut item = SidebarItem::note(node);
+            item.indent = 0;
+            self.navigation_state.sidebar_items.push(item);
+
+            if self.notes_is_expanded(&cat_path) {
+                self.add_notes_children_for_category(category);
+            }
+        }
+    }
+
+    fn add_notes_children_for_category(&mut self, category: &str) {
+        use crate::tui::cache::NoteNode;
+
+        // Direct notes (no subfolder) at indent 1
+        let direct = self.notes_tree_state.entries_in_category(category);
+        for entry in &direct {
+            let node = NoteNode::from_entry(entry);
+            let mut item = SidebarItem::note(node);
+            item.indent = 1;
+            self.navigation_state.sidebar_items.push(item);
+        }
+
+        // Subfolders at indent 1; their entries at indent 2
+        let folders = self.notes_tree_state.folders_for_category(category);
+        for folder in &folders {
+            let folder_path = vec![category.to_string(), folder.clone()];
+            let node = NoteNode::Folder {
+                category: category.to_string(),
+                name: folder.clone(),
+            };
+            let mut item = SidebarItem::note(node);
+            item.indent = 1;
+            self.navigation_state.sidebar_items.push(item);
+
+            if self.notes_is_expanded(&folder_path) {
+                let folder_entries = self.notes_tree_state.entries_in_folder(category, folder);
+                for entry in &folder_entries {
+                    let node = NoteNode::from_entry(entry);
+                    let mut item = SidebarItem::note(node);
+                    item.indent = 2;
+                    self.navigation_state.sidebar_items.push(item);
+                }
+            }
+        }
+    }
+
+    fn select_first_notes_child(&mut self, parent_path: &[String]) {
+        let child_depth = parent_path.len() + 1;
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+            item.section == SidebarSection::Notes
+                && !item.is_header
+                && item
+                    .tree_path
+                    .as_ref()
+                    .is_some_and(|p| p.len() == child_depth && p.starts_with(parent_path))
+        }) {
+            self.navigation_state.selected_entry_index = idx;
+        }
+    }
+
+    fn select_notes_item_by_path(&mut self, path: &[String]) {
+        if let Some(idx) = self.navigation_state.sidebar_items.iter().position(|item| {
+            item.section == SidebarSection::Notes && item.tree_path.as_deref() == Some(path)
+        }) {
+            self.navigation_state.selected_entry_index = idx;
+        }
+    }
+
+    fn selected_note_node(&self) -> Option<SidebarNodeData> {
+        let item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)?;
+        if item.section != SidebarSection::Notes {
+            return None;
+        }
+        Some(item.node_data.clone())
+    }
+
+    fn selected_note_tree_path(&self) -> Option<Vec<String>> {
+        let item = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)?;
+        if item.section != SidebarSection::Notes {
+            return None;
+        }
+        item.tree_path.clone()
     }
 
     fn selected_journal_node(&self) -> Option<JournalNavNode> {
@@ -1696,6 +2033,19 @@ impl App {
                         })
                         .unwrap_or(0);
                 }
+                // If leaving Notes section, collapse all notes tree
+                else if prev_section == SidebarSection::Notes && new_section != prev_section {
+                    self.collapse_all_notes();
+                    self.load_tree_view_data();
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .rposition(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
             }
         }
     }
@@ -1735,6 +2085,19 @@ impl App {
                     self.collapse_all_journal();
                     self.load_tree_view_data();
                     // After rebuild, select the first selectable item in the NEW section
+                    self.navigation_state.selected_entry_index = self
+                        .navigation_state
+                        .sidebar_items
+                        .iter()
+                        .position(|i| {
+                            !i.is_header && !i.name.is_empty() && i.section == new_section
+                        })
+                        .unwrap_or(0);
+                }
+                // If leaving Notes section, collapse all notes tree
+                else if prev_section == SidebarSection::Notes && new_section != prev_section {
+                    self.collapse_all_notes();
+                    self.load_tree_view_data();
                     self.navigation_state.selected_entry_index = self
                         .navigation_state
                         .sidebar_items
@@ -1804,6 +2167,30 @@ impl App {
         // Handle create action items
         if item.is_create_action && item.name == "+ Create Program..." {
             self.start_new_program();
+            return;
+        }
+
+        // Handle notes items via node_data
+        if item.section == SidebarSection::Notes {
+            if let SidebarNodeData::Note(ref node) = item.node_data.clone() {
+                use crate::tui::cache::NoteNode;
+                match node {
+                    NoteNode::Category { .. } | NoteNode::Folder { .. } => {
+                        let note_path = item.tree_path.clone().unwrap_or_default();
+                        if !self.notes_is_expanded(&note_path) {
+                            self.notes_expand_path(&note_path);
+                            self.load_tree_view_data();
+                            self.select_first_notes_child(&note_path);
+                        }
+                    }
+                    NoteNode::Entry { path, .. } => {
+                        if open_leaf_content {
+                            let path = path.clone();
+                            self.launch_editor(&path);
+                        }
+                    }
+                }
+            }
             return;
         }
 
@@ -2391,6 +2778,14 @@ impl App {
         if self.journal_is_expanded(&[]) {
             self.add_journal_tree_items();
         }
+
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("", SidebarSection::Notes));
+        self.navigation_state
+            .sidebar_items
+            .push(SidebarItem::new("Notes", SidebarSection::Notes).header());
+        self.add_notes_tree_items();
     }
 
     fn add_journal_tree_items(&mut self) {
@@ -2517,6 +2912,12 @@ impl App {
             ViewType::InputTaskDetailField => {
                 self.confirm_task_detail_field_input();
             }
+            ViewType::InputNote => {
+                self.handle_note_wizard_enter();
+            }
+            ViewType::MoveNote => {
+                self.confirm_move_note();
+            }
             _ => {}
         }
     }
@@ -2567,6 +2968,20 @@ impl App {
                     wizard.task_index = 0;
                 }
             }
+            ViewType::InputNote => {
+                if let Some(ref mut state) = self.note_creation_state
+                    && state.step == NoteWizardStep::Folder
+                {
+                    self.input_buffer.push(c);
+                    state.folder_input.push(c);
+                }
+            }
+            ViewType::MoveNote => {
+                if let Some(ref mut state) = self.move_note_state {
+                    state.filter.push(c);
+                    state.selected_index = 0;
+                }
+            }
             _ => {}
         }
     }
@@ -2613,6 +3028,20 @@ impl App {
             ViewType::PlanningTaskPicker => {
                 if let Some(ref mut wizard) = self.planning_wizard {
                     wizard.task_filter.pop();
+                }
+            }
+            ViewType::InputNote => {
+                if let Some(ref mut state) = self.note_creation_state
+                    && state.step == NoteWizardStep::Folder
+                {
+                    self.input_buffer.pop();
+                    state.folder_input.pop();
+                }
+            }
+            ViewType::MoveNote => {
+                if let Some(ref mut state) = self.move_note_state {
+                    state.filter.pop();
+                    state.selected_index = 0;
                 }
             }
             _ => {}
@@ -2710,6 +3139,12 @@ impl App {
             }
             Some(CommandAction::NewTask) => {
                 self.start_new_task();
+            }
+            Some(CommandAction::NewNote) => {
+                self.start_new_note();
+            }
+            Some(CommandAction::MoveNote) => {
+                self.start_move_note();
             }
             Some(CommandAction::Refresh) => {
                 self.load_tree_view_data();
@@ -2883,6 +3318,116 @@ impl App {
         self.promote_selection_to_path_depth(3);
         self.input_buffer.clear();
         self.open_template_wizard("task", None);
+    }
+
+    fn start_new_note(&mut self) {
+        self.ensure_notes_loaded();
+        let categories = self.config.notes.categories.clone();
+        self.note_creation_state = Some(NoteCreationState {
+            step: NoteWizardStep::Category,
+            categories,
+            selected_category_index: 0,
+            folder_input: String::new(),
+        });
+        self.input_buffer.clear();
+        self.current_view = ViewType::InputNote;
+    }
+
+    fn confirm_note_category(&mut self) {
+        if let Some(ref mut state) = self.note_creation_state {
+            // Advance to folder step
+            state.step = NoteWizardStep::Folder;
+            self.input_buffer.clear();
+        }
+    }
+
+    fn confirm_note_folder(&mut self) {
+        if let Some(ref mut state) = self.note_creation_state {
+            state.folder_input = self.input_buffer.trim().to_string();
+        }
+        self.input_buffer.clear();
+        self.open_template_wizard("note", None);
+    }
+
+    fn handle_note_wizard_enter(&mut self) {
+        match self.note_creation_state.as_ref().map(|s| s.step) {
+            Some(NoteWizardStep::Category) => self.confirm_note_category(),
+            Some(NoteWizardStep::Folder) => self.confirm_note_folder(),
+            None => {}
+        }
+    }
+
+    fn start_move_note(&mut self) {
+        // Find the currently selected note in the sidebar
+        let idx = self.navigation_state.selected_entry_index;
+        let source_path = match self.navigation_state.sidebar_items.get(idx) {
+            Some(item) if item.section == SidebarSection::Notes => match &item.node_data {
+                SidebarNodeData::Note(crate::tui::cache::NoteNode::Entry { path, .. }) => {
+                    path.clone()
+                }
+                _ => return,
+            },
+            _ => return,
+        };
+
+        self.ensure_notes_loaded();
+        let categories = self.config.notes.categories.clone();
+        let mut destinations: Vec<String> = categories.clone();
+        // Add existing subfolders as destinations
+        for cat in &categories {
+            for folder in self.notes_tree_state.folders_for_category(cat) {
+                destinations.push(format!("{}/{}", cat, folder));
+            }
+        }
+        destinations.sort();
+
+        self.move_note_state = Some(MoveNoteState {
+            source_path,
+            destinations,
+            selected_index: 0,
+            filter: String::new(),
+        });
+        self.input_buffer.clear();
+        self.current_view = ViewType::MoveNote;
+    }
+
+    fn confirm_move_note(&mut self) {
+        let Some(state) = self.move_note_state.take() else {
+            return;
+        };
+        let filtered = state.filtered_destinations();
+        let Some((_, dest_str)) = filtered.get(state.selected_index) else {
+            self.current_view = ViewType::TreeView;
+            return;
+        };
+        let dest_str = dest_str.to_string();
+        let parts: Vec<&str> = dest_str.splitn(2, '/').collect();
+        let filename = state
+            .source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("note.md")
+            .to_string();
+        let to = if parts.len() == 2 {
+            self.config
+                .workspace
+                .notes_dir()
+                .join(parts[0])
+                .join(parts[1])
+                .join(&filename)
+        } else {
+            self.config
+                .workspace
+                .notes_dir()
+                .join(parts[0])
+                .join(&filename)
+        };
+        if let Err(e) = self.config.workspace.move_note(&state.source_path, &to) {
+            tracing::error!("Failed to move note: {}", e);
+        }
+        self.refresh_notes_cache();
+        self.load_tree_view_data();
+        self.current_view = ViewType::TreeView;
     }
 
     fn start_planning_session(&mut self) {
@@ -4030,6 +4575,7 @@ impl App {
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
             "journal" => include_str!("../../templates/journal.md"),
+            "note" => include_str!("../../templates/note.md"),
             _ => {
                 tracing::warn!("Unknown template requested: {}", template_name);
                 return;
@@ -4115,6 +4661,25 @@ impl App {
                 parts.join(" -> ")
             }
             "journal" => "Journal -> new entry".to_string(),
+            "note" => {
+                if let Some(ref state) = self.note_creation_state {
+                    let cat = state
+                        .categories
+                        .get(state.selected_category_index)
+                        .cloned()
+                        .unwrap_or_default();
+                    if state.folder_input.trim().is_empty() {
+                        format!("Notes -> {cat} -> new note")
+                    } else {
+                        format!(
+                            "Notes -> {cat} -> {} -> new note",
+                            state.folder_input.trim()
+                        )
+                    }
+                } else {
+                    "Notes -> new note".to_string()
+                }
+            }
             _ => "new element".to_string(),
         };
 
@@ -4263,6 +4828,25 @@ impl App {
                     })
                 }),
             "journal" => Some(self.config.workspace.today_journal_path()),
+            "note" => name.and_then(|note_name| {
+                self.note_creation_state.as_ref().map(|state| {
+                    let cat = state
+                        .categories
+                        .get(state.selected_category_index)
+                        .cloned()
+                        .unwrap_or_default();
+                    let folder = state.folder_input.trim().to_string();
+                    let notes_dir = self.config.workspace.notes_dir();
+                    if folder.is_empty() {
+                        notes_dir.join(&cat).join(format!("{}.md", note_name))
+                    } else {
+                        notes_dir
+                            .join(&cat)
+                            .join(&folder)
+                            .join(format!("{}.md", note_name))
+                    }
+                })
+            }),
             _ => None,
         }
     }
@@ -4273,6 +4857,7 @@ impl App {
                 WizardFocus::CancelButton => {
                     // Cancel - return to tree view without creating
                     self.wizard_state.template = None;
+                    self.note_creation_state = None;
                     self.current_view = ViewType::TreeView;
                 }
                 WizardFocus::ConfirmButton => {
@@ -4330,6 +4915,12 @@ impl App {
 
                     // Clear template state before calling load_tree_view_data
                     self.wizard_state.template = None;
+
+                    // If this was a note, refresh notes cache and clear creation state
+                    if template_name == "note" {
+                        self.note_creation_state = None;
+                        self.refresh_notes_cache();
+                    }
 
                     // Refresh the tree view to show the newly created element at current level
                     self.load_tree_view_data();

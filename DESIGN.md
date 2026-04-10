@@ -2,7 +2,7 @@
 
 ## Overview
 
-Chronicle is a Markdown-native planner and journal with a terminal UI (TUI). It uses a hierarchical folder structure (`programs/ → projects/ → milestones/ → tasks/`) plus `journal/` and `planning/` directories.
+Chronicle is a Markdown-native planner, journal, and note-taking tool with a terminal UI (TUI). It uses a hierarchical folder structure (`programs/ → projects/ → milestones/ → tasks/`) plus `journal/`, `planning/`, and `notes/` directories. Notes follow the PARA methodology (Projects, Areas, Resources, Archive).
 
 ---
 
@@ -19,17 +19,20 @@ src/
 ├── model/
 │   └── mod.rs        # Domain types: Task, Program, Project, Milestone + parse_element()
 ├── storage/
-│   ├── mod.rs        # JournalStorage, WorkspaceStorage traits
+│   ├── mod.rs        # JournalStorage, WorkspaceStorage, NotesStorage traits
 │   ├── md.rs         # Markdown parsing, template resolution
 │   └── planning.rs   # Planning session persistence
 └── tui/
-    ├── mod.rs        # App state and event loop (~1500 lines)
-    ├── cache.rs      # TreeData struct (programs/projects/milestones/tasks/subtasks)
+    ├── mod.rs        # App state and event loop
+    ├── cache.rs      # TreeData, JournalNode, NoteNode structs
     ├── layout.rs     # Layout orchestration
-    ├── navigation.rs # JournalTreeState, SidebarItem, tree helpers
+    ├── navigation.rs # JournalTreeState, NotesTreeState, SidebarItem, tree helpers
     ├── command.rs    # Command palette types
     └── views/
         └── mod.rs    # All view render functions
+templates/
+├── note.md           # Note template (UUID, title, creation_date, created_by, tags)
+└── ...               # Other element templates
 ```
 
 ### Key Types
@@ -40,10 +43,17 @@ src/
 | `Mode` | tui/mod.rs | Normal, CommandPalette, Input |
 | `ViewType` | tui/mod.rs | All view variants |
 | `Config` | config.rs | Workspace, editor, workflow, keys |
+| `NotesConfig` | config.rs | PARA category names (overridable) |
 | `TreeData` | tui/cache.rs | Cached tree vectors (programs/projects/milestones/tasks/subtasks) |
+| `JournalNode` | tui/cache.rs | Journal tree node variants (Year, Month, Entry) |
+| `NoteNode` | tui/cache.rs | Notes tree node variants (Category, Folder, Entry) |
 | `JournalTreeState` | tui/navigation.rs | Tracks journal history expansion state |
+| `NotesTreeState` | tui/navigation.rs | Tracks PARA notes tree data and expansion state |
+| `SidebarNodeData` | tui/navigation.rs | Enum discriminator for sidebar item type dispatch |
 | `Task` | model/mod.rs | Task with title, status, priority, dates, description |
 | `PlanningSessionState` | tui/mod.rs | Active planning session data |
+| `NoteCreationState` | tui/mod.rs | Two-step note wizard state (category → folder → template) |
+| `MoveNoteState` | tui/mod.rs | Move-note picker state with filterable destination list |
 
 ---
 
@@ -356,6 +366,23 @@ Journal sidebar:
 
 Each depth follows the same expand/collapse/selection rules from the Tree Navigation Model.
 
+### Notes Navigation (PARA)
+
+Uses the universal **Tree Navigation Model** defined above. Notes are stored at `{workspace}/notes/{category}/{optional-folder}/{note}.md`.
+
+```
+Notes sidebar:
+  └─ Category (depth 1: Projects / Areas / Resources / Archive)
+       └─ Folder (depth 2, optional subfolder)
+            └─ Note entry (depth 3)  →  Enter opens in editor
+```
+
+- Category names are configurable via `notes.categories` in `config.toml` (defaults to PARA names).
+- Notes can be at depth 2 (directly in category) or depth 3 (inside a subfolder).
+- **New Note** command (`/new note`): wizard selects category → optionally enters folder name → template wizard fills title/description.
+- **Move Note** command (`/move note`): filterable picker lists all categories and subfolders; selecting a destination moves the file on disk.
+- Cross-section collapse: navigating away from the Notes section collapses all Notes expansions.
+
 ---
 
 ## Keyboard Reference
@@ -374,6 +401,12 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 | `f` | Task picker | Show preview screen |
 | Tab | Wizard | Next field |
 | `Shift+Tab` | Wizard | Previous field |
+| `j` / `↓` | Note category wizard | Move selection down |
+| `k` / `↑` | Note category wizard | Move selection up |
+| `Enter` | Note category wizard | Confirm selected category |
+| `j` / `↓` | Move note picker | Move selection down |
+| `k` / `↑` | Move note picker | Move selection up |
+| `Enter` | Move note picker | Confirm move destination |
 
 ---
 
@@ -381,6 +414,14 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 
 | Date | Event |
 |------|-------|
+| 2026-04-09 | Feature: Notes section with PARA methodology (Projects, Areas, Resources, Archive) — expand/collapse tree navigation consistent with Journal History |
+| 2026-04-09 | Feature: `notes.categories` config key for overriding default PARA folder names |
+| 2026-04-09 | Feature: New Note command — two-step wizard (category → folder) feeds into existing template wizard |
+| 2026-04-09 | Feature: Move Note command — filterable picker lists all category/folder destinations; moves file on disk |
+| 2026-04-09 | Feature: `NotesStorage` trait on `PathBuf` with `notes_dir()`, `scan_notes()`, `move_note()` |
+| 2026-04-09 | Refactor: `SidebarNodeData` enum added for type-safe sidebar item dispatch (Notes vs Journal vs Programs) |
+| 2026-04-09 | Refactor: `NoteNode` enum in cache.rs mirrors `JournalNode` for tree rendering |
+| 2026-04-09 | Integration tests: 190 total tests (31 navigation, 9 command palette) |
 | 2026-03-24 | Feature: Programs tree selection now renders a combined element view in the main window: YAML details table, markdown body content, and child status/count report |
 | 2026-03-24 | UX tweak: Empty child-report state now shows only "No <child> detected" without repeating selected element status |
 | 2026-03-24 | Feature: Binary now routes `init`, `jot`, `extract`, and `new-task` CLI commands through `src/commands`, removing the disconnected/dead-code path |
@@ -423,6 +464,7 @@ Each depth follows the same expand/collapse/selection rules from the Tree Naviga
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
+2. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
 
 ### Theming
 

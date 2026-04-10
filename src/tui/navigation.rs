@@ -1,13 +1,16 @@
 //! Navigation module - sidebar state and tree traversal.
 
-use crate::storage::DirectoryEntry;
-use crate::tui::cache::{JournalNode, extract_year_from_path, extract_year_month_from_path};
+use crate::storage::{DirectoryEntry, NoteEntry};
+use crate::tui::cache::{
+    JournalNode, NoteNode, extract_year_from_path, extract_year_month_from_path,
+};
 use crate::tui::sidebar_tree::SidebarTreeModel;
 
 #[derive(Debug, Clone, Default)]
 pub enum SidebarNodeData {
     Program(DirectoryEntry),
     Journal(JournalNode),
+    Note(NoteNode),
     Planning,
     JournalAction,
     Action,
@@ -91,6 +94,7 @@ pub enum SidebarSection {
     Programs,
     Planning,
     Journal,
+    Notes,
 }
 
 /// An item in the sidebar navigation tree.
@@ -222,20 +226,47 @@ impl SidebarItem {
     pub fn journal(node: JournalNode, path: Vec<String>) -> Self {
         let label = node.label().to_string();
         let is_header = node.is_header();
+        let indent = path.len();
+        let tree_path = path.clone();
         Self {
             name: label,
             section: SidebarSection::Journal,
             is_header: false,
             is_planning_item: None,
             is_journal_item: None,
-            indent: path.len(),
+            indent,
             path: None,
-            tree_path: Some(path.clone()),
+            tree_path: Some(tree_path),
             has_children: is_header,
             is_create_action: false,
-            journal_path: Some(path.clone()),
+            journal_path: Some(path),
             is_journal_header: is_header,
             node_data: SidebarNodeData::Journal(node),
+        }
+    }
+
+    pub fn note(node: NoteNode) -> Self {
+        let label = node.label().to_string();
+        let is_container = node.is_container();
+        let path_components = node.path_components();
+        let indent = path_components.len().saturating_sub(1);
+        Self {
+            name: label,
+            section: SidebarSection::Notes,
+            is_header: false,
+            is_planning_item: None,
+            is_journal_item: None,
+            indent,
+            path: match &node {
+                NoteNode::Entry { path, .. } => Some(path.clone()),
+                _ => None,
+            },
+            tree_path: Some(path_components),
+            has_children: is_container,
+            is_create_action: false,
+            journal_path: None,
+            is_journal_header: false,
+            node_data: SidebarNodeData::Note(node),
         }
     }
 }
@@ -624,6 +655,68 @@ mod tests {
     }
 }
 
+/// Tracks the notes tree data (loaded from disk).
+#[derive(Debug, Clone, Default)]
+pub struct NotesTreeState {
+    entries: Vec<NoteEntry>,
+}
+
+impl NotesTreeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<NoteEntry>) {
+        self.entries = entries;
+    }
+
+    pub fn entries(&self) -> &[NoteEntry] {
+        &self.entries
+    }
+
+    /// Returns sorted, deduplicated category names present in loaded entries.
+    pub fn categories(&self, default_categories: &[String]) -> Vec<String> {
+        // Always show all configured categories even if empty
+        let mut cats: Vec<String> = default_categories.to_vec();
+        // Also include any on-disk categories not in config (user may have added manually)
+        for entry in &self.entries {
+            if !cats.contains(&entry.category) {
+                cats.push(entry.category.clone());
+            }
+        }
+        cats
+    }
+
+    /// Returns sorted subfolder names within a given category.
+    pub fn folders_for_category(&self, category: &str) -> Vec<String> {
+        let mut folders: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if entry.category == category
+                && let Some(folder) = &entry.folder
+            {
+                folders.insert(folder.clone());
+            }
+        }
+        folders.into_iter().collect()
+    }
+
+    /// Returns entries directly in a category (no subfolder).
+    pub fn entries_in_category(&self, category: &str) -> Vec<&NoteEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.category == category && e.folder.is_none())
+            .collect()
+    }
+
+    /// Returns entries within a specific subfolder.
+    pub fn entries_in_folder(&self, category: &str, folder: &str) -> Vec<&NoteEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.category == category && e.folder.as_deref() == Some(folder))
+            .collect()
+    }
+}
+
 /// Tracks expansion state for the journal history tree
 #[derive(Debug, Clone, Default)]
 pub struct JournalTreeState {
@@ -679,10 +772,8 @@ impl JournalTreeState {
         self.entries
             .iter()
             .filter(|entry| {
-                if let Some((entry_year, entry_month)) = extract_year_month_from_path(&entry.path) {
-                    return entry_year == year && entry_month == month;
-                }
-                false
+                extract_year_month_from_path(&entry.path)
+                    .is_some_and(|(y, m)| y == year && m == month)
             })
             .collect()
     }

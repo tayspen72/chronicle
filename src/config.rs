@@ -35,6 +35,31 @@ fn default_theme() -> String {
     "default_dark".to_string()
 }
 
+fn default_notes_categories() -> Vec<String> {
+    vec![
+        "Projects".into(),
+        "Areas".into(),
+        "Resources".into(),
+        "Archive".into(),
+    ]
+}
+
+/// Notes section configuration (PARA methodology by default).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotesConfig {
+    /// PARA category folder names (overridable)
+    #[serde(default = "default_notes_categories")]
+    pub categories: Vec<String>,
+}
+
+impl Default for NotesConfig {
+    fn default() -> Self {
+        Self {
+            categories: default_notes_categories(),
+        }
+    }
+}
+
 /// Diagnostics logging configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsConfig {
@@ -77,6 +102,9 @@ pub struct Config {
     /// Theme name to use for TUI
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Notes section configuration
+    #[serde(default)]
+    pub notes: NotesConfig,
 }
 
 impl Default for Config {
@@ -94,6 +122,7 @@ impl Default for Config {
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
             theme: default_theme(),
+            notes: NotesConfig::default(),
         }
     }
 }
@@ -247,6 +276,7 @@ impl Config {
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
             theme: default_theme(),
+            notes: NotesConfig::default(),
         })
     }
 }
@@ -361,6 +391,7 @@ editor = "vim"
             planning_duration: "weekly".to_string(),
             diagnostics: DiagnosticsConfig::default(),
             theme: default_theme(),
+            notes: NotesConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize");

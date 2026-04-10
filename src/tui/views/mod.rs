@@ -334,6 +334,59 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     }
                     _ => {}
                 }
+            } else if item.section == crate::tui::navigation::SidebarSection::Notes {
+                use crate::tui::cache::NoteNode;
+                if let crate::tui::navigation::SidebarNodeData::Note(node) = &item.node_data {
+                    match node {
+                        NoteNode::Category { name } => {
+                            title = name.clone();
+                            let direct = app.notes_tree_state.entries_in_category(name);
+                            let folders = app.notes_tree_state.folders_for_category(name);
+                            let mut lines = Vec::new();
+                            for f_name in &folders {
+                                lines.push(format!("  {}/", f_name));
+                                for entry in app.notes_tree_state.entries_in_folder(name, f_name) {
+                                    lines.push(format!(
+                                        "    {}",
+                                        entry.filename.trim_end_matches(".md")
+                                    ));
+                                }
+                            }
+                            for entry in &direct {
+                                lines.push(format!("  {}", entry.filename.trim_end_matches(".md")));
+                            }
+                            content_to_show = if lines.is_empty() {
+                                format!("No notes in {}.\n\nUse /New Note to create one.", name)
+                            } else {
+                                lines.join("\n")
+                            };
+                        }
+                        NoteNode::Folder { category, name } => {
+                            title = format!("{}/{}", category, name);
+                            let entries = app.notes_tree_state.entries_in_folder(category, name);
+                            let lines: Vec<String> = entries
+                                .iter()
+                                .map(|e| format!("  {}", e.filename.trim_end_matches(".md")))
+                                .collect();
+                            content_to_show = if lines.is_empty() {
+                                format!(
+                                    "No notes in {}/{}.\n\nUse /New Note to create one.",
+                                    category, name
+                                )
+                            } else {
+                                lines.join("\n")
+                            };
+                        }
+                        NoteNode::Entry { path, .. } => {
+                            title = item.name.clone();
+                            content_to_show = app
+                                .config
+                                .workspace
+                                .read_md_file(path)
+                                .unwrap_or_else(|_| "Failed to load note.".to_string());
+                        }
+                    }
+                }
             } else if let Some(path) = &item.path {
                 title = item.name.clone();
                 content_to_show = app.config.workspace.read_md_file(path).unwrap_or_else(|_| {
@@ -2168,6 +2221,146 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
     }
     let buttons_para = Paragraph::new(Line::from(spans));
     f.render_widget(buttons_para, chunks[2]);
+}
+
+/// Renders the two-step note creation wizard (category picker → folder input).
+pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use crate::tui::NoteWizardStep;
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+
+    let Some(ref state) = app.note_creation_state else {
+        return;
+    };
+
+    let chunks = Layout::default()
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    match state.step {
+        NoteWizardStep::Category => {
+            let header = Paragraph::new(vec![
+                Line::from(vec![Span::styled(
+                    "Notes → Select Category",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                )]),
+                Line::from(Span::styled(
+                    "↑/↓: Navigate  Enter: Confirm  Esc: Cancel",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]);
+            f.render_widget(header, chunks[0]);
+
+            let items: Vec<ListItem> = state
+                .categories
+                .iter()
+                .enumerate()
+                .map(|(i, cat)| {
+                    let style = if i == state.selected_category_index {
+                        Style::default().fg(Color::Black).bg(Color::LightBlue)
+                    } else {
+                        app.text_primary()
+                    };
+                    ListItem::new(format!("  {}", cat)).style(style)
+                })
+                .collect();
+            let list = List::new(items);
+            f.render_widget(list, chunks[1]);
+        }
+        NoteWizardStep::Folder => {
+            let category = state
+                .categories
+                .get(state.selected_category_index)
+                .cloned()
+                .unwrap_or_default();
+            let header = Paragraph::new(vec![
+                Line::from(vec![Span::styled(
+                    format!("Notes → {} → Subfolder (optional)", category),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                )]),
+                Line::from(Span::styled(
+                    "Type a subfolder name (or leave blank)  Enter: Confirm  Esc: Cancel",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]);
+            f.render_widget(header, chunks[0]);
+
+            let display = if state.folder_input.is_empty() {
+                Span::styled("(none)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::styled(
+                    state.folder_input.as_str(),
+                    Style::default().fg(Color::White),
+                )
+            };
+            let body = Paragraph::new(Line::from(vec![
+                Span::styled("  Subfolder: ", app.text_primary()),
+                display,
+            ]));
+            f.render_widget(body, chunks[1]);
+        }
+    }
+}
+
+/// Renders the move-note destination picker.
+pub fn render_move_note_picker(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::text::{Line, Span};
+
+    let Some(ref state) = app.move_note_state else {
+        return;
+    };
+
+    let chunks = Layout::default()
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let source_name = state
+        .source_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+    let header = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Move: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                source_name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "↑/↓: Navigate  Type to filter  Enter: Move  Esc: Cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(vec![
+            Span::styled("Filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(state.filter.as_str(), Style::default().fg(Color::White)),
+        ]),
+    ]);
+    f.render_widget(header, chunks[0]);
+
+    let filtered = state.filtered_destinations();
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, (_, dest))| {
+            let style = if i == state.selected_index {
+                Style::default().fg(Color::Black).bg(Color::LightBlue)
+            } else {
+                app.text_primary()
+            };
+            ListItem::new(format!("  {}", dest)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[1]);
 }
 
 #[cfg(test)]

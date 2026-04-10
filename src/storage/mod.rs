@@ -17,6 +17,14 @@ pub struct JournalEntry {
 }
 
 #[derive(Clone, Debug)]
+pub struct NoteEntry {
+    pub filename: String,
+    pub path: PathBuf,
+    pub category: String,
+    pub folder: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: PathBuf,
@@ -101,6 +109,102 @@ pub trait WorkspaceStorage {
         values: &HashMap<String, String>,
         strip_labels: &HashSet<String>,
     ) -> Result<PathBuf>;
+}
+
+pub trait NotesStorage {
+    fn notes_dir(&self) -> PathBuf;
+    fn scan_notes(&self) -> Result<Vec<NoteEntry>>;
+    fn move_note(&self, from: &Path, to: &Path) -> Result<()>;
+}
+
+impl NotesStorage for PathBuf {
+    fn notes_dir(&self) -> PathBuf {
+        self.join("notes")
+    }
+
+    fn scan_notes(&self) -> Result<Vec<NoteEntry>> {
+        let notes_dir = self.notes_dir();
+        if !notes_dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut entries = Vec::new();
+        collect_notes_recursive(&notes_dir, &notes_dir, &mut entries)?;
+        entries.sort_by(|a, b| {
+            a.category
+                .cmp(&b.category)
+                .then(a.folder.cmp(&b.folder))
+                .then(a.filename.cmp(&b.filename))
+        });
+        Ok(entries)
+    }
+
+    fn move_note(&self, from: &Path, to: &Path) -> Result<()> {
+        validate_target_path(self, from)?;
+        validate_target_path(self, to)?;
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(from, to)?;
+        Ok(())
+    }
+}
+
+fn collect_notes_recursive(
+    notes_root: &Path,
+    dir: &Path,
+    entries: &mut Vec<NoteEntry>,
+) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    let relative = dir.strip_prefix(notes_root).unwrap_or(dir);
+    let depth = relative.components().count();
+
+    // Only scan up to depth 2: notes/{category}/{folder?}/
+    if depth > 2 {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() && depth < 2 {
+            collect_notes_recursive(notes_root, &path, entries)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let rel = path.strip_prefix(notes_root).unwrap_or(&path);
+            let components: Vec<&str> = rel
+                .components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(s) => s.to_str(),
+                    _ => None,
+                })
+                .collect();
+
+            let (category, folder) = match components.len() {
+                // notes/{category}/{file}.md
+                2 => (components[0].to_string(), None),
+                // notes/{category}/{folder}/{file}.md
+                3 => (components[0].to_string(), Some(components[1].to_string())),
+                _ => continue,
+            };
+
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            entries.push(NoteEntry {
+                filename,
+                path,
+                category,
+                folder,
+            });
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_element_name(name: &str) -> Result<()> {
@@ -698,6 +802,7 @@ impl WorkspaceStorage for PathBuf {
             "task" => include_str!("../../templates/task.md"),
             "subtask" => include_str!("../../templates/subtask.md"),
             "journal" => include_str!("../../templates/journal.md"),
+            "note" => include_str!("../../templates/note.md"),
             _ => return Err(StorageError::TemplateNotFound(template_name.to_string()).into()),
         };
 
