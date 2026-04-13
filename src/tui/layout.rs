@@ -346,12 +346,14 @@ fn render_command_palette(f: &mut Frame, app: &App) {
         .iter()
         .enumerate()
         .map(|(idx, cmd)| {
-            let style = if idx == app.command_palette.selection_index {
+            let style = if !cmd.selectable {
+                app.command_section_style()
+            } else if idx == app.command_palette.selection_index {
                 app.command_result_selected_style()
             } else {
                 app.command_result_style()
             };
-            ListItem::new(cmd.label.as_str()).style(style)
+            ListItem::new(cmd.display_label.as_str()).style(style)
         })
         .collect();
 

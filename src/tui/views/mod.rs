@@ -356,7 +356,10 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                                 lines.push(format!("  {}", entry.filename.trim_end_matches(".md")));
                             }
                             content_to_show = if lines.is_empty() {
-                                format!("No notes in {}.\n\nUse /New Note to create one.", name)
+                                format!(
+                                    "No notes in {}.\n\nUse /New Note or /New Note Folder.",
+                                    name
+                                )
                             } else {
                                 lines.join("\n")
                             };
@@ -370,7 +373,7 @@ pub fn render_tree_view(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                                 .collect();
                             content_to_show = if lines.is_empty() {
                                 format!(
-                                    "No notes in {}/{}.\n\nUse /New Note to create one.",
+                                    "No notes in {}/{}.\n\nUse /New Note or /New Note Folder.",
                                     category, name
                                 )
                             } else {
@@ -2068,14 +2071,25 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
         ])
         .split(area);
 
+    let title_text = if app.task_wizard_tree_edit_mode {
+        "Edit Subtask Details"
+    } else {
+        "Edit Task Details"
+    };
+    let hint_text = if app.task_wizard_tree_edit_mode {
+        "↑/↓: Navigate | ←/→: Status/Importance | Enter: Save | Esc: Cancel"
+    } else {
+        "↑/↓: Navigate | ←/→: Status/Importance | Enter: Confirm | Esc: Cancel"
+    };
+
     let title = Line::from(vec![Span::styled(
-        "Edit Task Details",
+        title_text,
         Style::default()
             .fg(Color::White)
             .add_modifier(ratatui::style::Modifier::BOLD),
     )]);
     let hint = Line::from(Span::styled(
-        "↑/↓: Navigate | ←/→: Status/Importance | Enter: Confirm | Esc: Cancel",
+        hint_text,
         Style::default().fg(Color::DarkGray),
     ));
     let header = Paragraph::new(vec![title, hint]);
@@ -2201,7 +2215,11 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
         )));
     f.render_widget(fields_para, chunks[1]);
 
-    let buttons = ["ADD TO PLAN", "CANCEL"];
+    let buttons = if app.task_wizard_tree_edit_mode {
+        ["SAVE", "CANCEL"]
+    } else {
+        ["ADD TO PLAN", "CANCEL"]
+    };
     let mut spans: Vec<Span> = Vec::new();
     let confirm_offset = fields.len();
     for (i, label) in buttons.iter().enumerate() {
@@ -2225,7 +2243,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
 
 /// Renders the two-step note creation wizard (category picker → folder input).
 pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    use crate::tui::NoteWizardStep;
+    use crate::tui::{NoteCreationMode, NoteWizardStep};
     use ratatui::layout::{Constraint, Layout};
     use ratatui::text::{Line, Span};
 
@@ -2239,9 +2257,14 @@ pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect)
 
     match state.step {
         NoteWizardStep::Category => {
+            let title = if state.mode == NoteCreationMode::FolderOnly {
+                "Notes → Select Category (New Folder)"
+            } else {
+                "Notes → Select Category"
+            };
             let header = Paragraph::new(vec![
                 Line::from(vec![Span::styled(
-                    "Notes → Select Category",
+                    title,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(ratatui::style::Modifier::BOLD),
@@ -2275,15 +2298,25 @@ pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect)
                 .get(state.selected_category_index)
                 .cloned()
                 .unwrap_or_default();
+            let folder_title = if state.mode == NoteCreationMode::FolderOnly {
+                format!("Notes → {} → New Folder", category)
+            } else {
+                format!("Notes → {} → Subfolder (optional)", category)
+            };
+            let help_text = if state.mode == NoteCreationMode::FolderOnly {
+                "Type a folder name  Enter: Create  Esc: Cancel"
+            } else {
+                "Type a subfolder name (or leave blank)  Enter: Confirm  Esc: Cancel"
+            };
             let header = Paragraph::new(vec![
                 Line::from(vec![Span::styled(
-                    format!("Notes → {} → Subfolder (optional)", category),
+                    folder_title,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 )]),
                 Line::from(Span::styled(
-                    "Type a subfolder name (or leave blank)  Enter: Confirm  Esc: Cancel",
+                    help_text,
                     Style::default().fg(Color::DarkGray),
                 )),
             ]);

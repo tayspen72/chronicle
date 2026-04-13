@@ -174,10 +174,17 @@ pub enum NoteWizardStep {
     Folder,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NoteCreationMode {
+    Note,
+    FolderOnly,
+}
+
 /// State for the new-note wizard before the main template wizard opens.
 #[derive(Debug, Clone)]
 pub struct NoteCreationState {
     pub step: NoteWizardStep,
+    pub mode: NoteCreationMode,
     pub categories: Vec<String>,
     pub selected_category_index: usize,
     pub folder_input: String,
@@ -219,6 +226,8 @@ pub struct App {
     pub selected_content: Option<DirectoryEntry>,
     pub current_content_text: Option<String>,
     pub wizard_state: WizardState,
+    pub template_edit_target_path: Option<std::path::PathBuf>,
+    pub template_edit_selected_path: Option<Vec<String>>,
     pub planning_session: PlanningSessionState,
     pub review_state: ReviewState,
     // Hierarchical task picker state
@@ -227,6 +236,8 @@ pub struct App {
     pub planning_wizard: Option<planning_wizard::PlanningWizardState>,
     // Task wizard state
     pub task_wizard: Option<task_wizard::TaskWizardState>,
+    // True when task wizard edits a subtask selected in TreeView (not add-to-plan flow).
+    pub task_wizard_tree_edit_mode: bool,
     pub backlog_staged_uuids: Option<Vec<String>>,
     // Planning preview confirmed flag
     // Archive list tree structure (maps tree index -> journal entry index)
@@ -235,7 +246,7 @@ pub struct App {
     pub journal_tree_state: JournalTreeState,
     // Notes tree state for sidebar expansion
     pub notes_tree_state: NotesTreeState,
-    // Note creation wizard (category → folder step before template wizard)
+    // Note flow state (category → folder step, then note template or folder creation)
     pub note_creation_state: Option<NoteCreationState>,
     // Move note picker state
     pub move_note_state: Option<MoveNoteState>,
@@ -277,11 +288,14 @@ impl App {
             selected_content: None,
             current_content_text: None,
             wizard_state: WizardState::new(),
+            template_edit_target_path: None,
+            template_edit_selected_path: None,
             planning_session: PlanningSessionState::new(),
             review_state: ReviewState::new(),
             hierarchical_picker: HierarchicalPickerState::new(),
             planning_wizard: None,
             task_wizard: None,
+            task_wizard_tree_edit_mode: false,
             backlog_staged_uuids: None,
             archive_tree_mapping: Vec::new(),
             journal_tree_state: JournalTreeState::new(),
@@ -455,6 +469,11 @@ impl App {
                 .bg(ratatui::style::Color::LightBlue)
                 .add_modifier(ratatui::style::Modifier::BOLD)
         })
+    }
+
+    pub fn command_section_style(&self) -> ratatui::style::Style {
+        self.text_secondary()
+            .add_modifier(ratatui::style::Modifier::BOLD)
     }
 
     pub fn command_border_style(&self) -> ratatui::style::Style {
@@ -1279,6 +1298,13 @@ impl App {
                     self.handle_input_char(' ');
                 }
             }
+            KeyCode::Char('e') => {
+                if !(self.current_view == ViewType::TreeView
+                    && self.open_metadata_editor_for_selected_item())
+                {
+                    self.handle_input_char('e');
+                }
+            }
             KeyCode::Char(c) => {
                 self.handle_input_char(c);
             }
@@ -1487,10 +1513,19 @@ impl App {
     }
 
     fn refresh_journal_entries_cache(&mut self) {
-        if let Ok(entries) = self.config.workspace.list_journal_entries() {
-            self.journal_tree_state.set_entries(entries.clone());
-            self.journal_entries = entries;
+        match self.config.workspace.list_journal_entries() {
+            Ok(entries) => {
+                self.journal_tree_state.set_entries(entries.clone());
+                self.journal_entries = entries;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list journal entries: {}", e);
+                self.journal_tree_state.set_entries(Vec::new());
+                self.journal_entries.clear();
+            }
         }
+        let (years, months) = self.scan_journal_dirs();
+        self.journal_tree_state.set_discovered_dirs(years, months);
     }
 
     fn navigate_left(&mut self) {
@@ -1744,6 +1779,106 @@ impl App {
         if let Ok(entries) = self.config.workspace.scan_notes() {
             self.notes_tree_state.set_entries(entries);
         }
+        self.notes_tree_state
+            .set_discovered_folders(self.scan_notes_folders());
+    }
+
+    fn scan_notes_folders(&self) -> Vec<(String, String)> {
+        let notes_dir = self.config.workspace.notes_dir();
+        let mut folders = Vec::new();
+        let Ok(categories) = fs::read_dir(&notes_dir) else {
+            return folders;
+        };
+
+        for category_entry in categories.flatten() {
+            let category_path = category_entry.path();
+            if !category_path.is_dir() {
+                continue;
+            }
+            let Some(category_name) = category_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+            else {
+                continue;
+            };
+
+            let Ok(children) = fs::read_dir(&category_path) else {
+                continue;
+            };
+            for child in children.flatten() {
+                let child_path = child.path();
+                if !child_path.is_dir() {
+                    continue;
+                }
+                let Some(folder_name) = child_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                else {
+                    continue;
+                };
+                folders.push((category_name.clone(), folder_name));
+            }
+        }
+
+        folders
+    }
+
+    fn scan_journal_dirs(&self) -> (Vec<String>, Vec<(String, String)>) {
+        use crate::tui::cache::canonical_month_token;
+        use std::collections::BTreeSet;
+
+        fn scan_root(
+            root: &std::path::Path,
+            years: &mut BTreeSet<String>,
+            months: &mut BTreeSet<(String, String)>,
+        ) {
+            let Ok(year_entries) = fs::read_dir(root) else {
+                return;
+            };
+            for year_entry in year_entries.flatten() {
+                let year_path = year_entry.path();
+                if !year_path.is_dir() {
+                    continue;
+                }
+                let Some(year_name) = year_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                else {
+                    continue;
+                };
+                if year_name.len() != 4 || !year_name.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                years.insert(year_name.clone());
+
+                let Ok(month_entries) = fs::read_dir(&year_path) else {
+                    continue;
+                };
+                for month_entry in month_entries.flatten() {
+                    let month_path = month_entry.path();
+                    if !month_path.is_dir() {
+                        continue;
+                    }
+                    let Some(month_name) = month_path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    if let Some(month_token) = canonical_month_token(month_name) {
+                        months.insert((year_name.clone(), month_token));
+                    }
+                }
+            }
+        }
+
+        let mut years = BTreeSet::new();
+        let mut months = BTreeSet::new();
+        let journal_dir = self.config.workspace.journal_dir();
+        scan_root(&journal_dir, &mut years, &mut months);
+        scan_root(&journal_dir.join("history"), &mut years, &mut months);
+
+        (years.into_iter().collect(), months.into_iter().collect())
     }
 
     fn add_notes_tree_items(&mut self) {
@@ -3070,6 +3205,7 @@ impl App {
                     .command_palette
                     .matches
                     .get(self.command_palette.selection_index)
+                    .filter(|cmd| cmd.selectable)
                     .cloned()
                 {
                     self.execute_command(&cmd);
@@ -3088,19 +3224,45 @@ impl App {
                 self.command_palette.selection_index = 0;
             }
             KeyCode::Up => {
-                if self.command_palette.selection_index > 0 {
-                    self.command_palette.selection_index -= 1;
+                if let Some(idx) =
+                    self.prev_selectable_command_index(self.command_palette.selection_index)
+                {
+                    self.command_palette.selection_index = idx;
                 }
             }
             KeyCode::Down => {
-                if self.command_palette.selection_index
-                    < self.command_palette.matches.len().saturating_sub(1)
+                if let Some(idx) =
+                    self.next_selectable_command_index(self.command_palette.selection_index)
                 {
-                    self.command_palette.selection_index += 1;
+                    self.command_palette.selection_index = idx;
                 }
             }
             _ => {}
         }
+    }
+
+    fn next_selectable_command_index(&self, from: usize) -> Option<usize> {
+        self.command_palette
+            .matches
+            .iter()
+            .enumerate()
+            .skip(from.saturating_add(1))
+            .find(|(_, cmd)| cmd.selectable)
+            .map(|(idx, _)| idx)
+    }
+
+    fn prev_selectable_command_index(&self, from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+        self.command_palette
+            .matches
+            .iter()
+            .enumerate()
+            .take(from)
+            .rev()
+            .find(|(_, cmd)| cmd.selectable)
+            .map(|(idx, _)| idx)
     }
 
     fn execute_command(&mut self, cmd: &CommandMatch) {
@@ -3140,8 +3302,14 @@ impl App {
             Some(CommandAction::NewTask) => {
                 self.start_new_task();
             }
+            Some(CommandAction::NewSubtask) => {
+                self.start_new_subtask();
+            }
             Some(CommandAction::NewNote) => {
                 self.start_new_note();
+            }
+            Some(CommandAction::NewNoteFolder) => {
+                self.start_new_note_folder();
             }
             Some(CommandAction::MoveNote) => {
                 self.start_move_note();
@@ -3193,18 +3361,9 @@ impl App {
     }
 
     fn show_archive_list(&mut self) {
-        let workspace = &self.config.workspace;
-        match workspace.list_journal_entries() {
-            Ok(entries) => {
-                self.journal_tree_state.set_entries(entries.clone());
-                self.journal_entries = entries;
-                self.navigation_state.selected_entry_index = 0;
-                self.current_view = ViewType::JournalArchiveList;
-            }
-            Err(e) => {
-                eprintln!("Error loading archive list: {}", e);
-            }
-        }
+        self.refresh_journal_entries_cache();
+        self.navigation_state.selected_entry_index = 0;
+        self.current_view = ViewType::JournalArchiveList;
     }
 
     fn open_archive_entry(&mut self, tree_index: usize) {
@@ -3320,11 +3479,35 @@ impl App {
         self.open_template_wizard("task", None);
     }
 
+    fn start_new_subtask(&mut self) {
+        self.promote_selection_to_path_depth(1);
+        self.promote_selection_to_path_depth(2);
+        self.promote_selection_to_path_depth(3);
+        self.promote_selection_to_path_depth(4);
+        self.input_buffer.clear();
+        self.open_template_wizard("subtask", None);
+    }
+
     fn start_new_note(&mut self) {
         self.ensure_notes_loaded();
         let categories = self.config.notes.categories.clone();
         self.note_creation_state = Some(NoteCreationState {
             step: NoteWizardStep::Category,
+            mode: NoteCreationMode::Note,
+            categories,
+            selected_category_index: 0,
+            folder_input: String::new(),
+        });
+        self.input_buffer.clear();
+        self.current_view = ViewType::InputNote;
+    }
+
+    fn start_new_note_folder(&mut self) {
+        self.ensure_notes_loaded();
+        let categories = self.config.notes.categories.clone();
+        self.note_creation_state = Some(NoteCreationState {
+            step: NoteWizardStep::Category,
+            mode: NoteCreationMode::FolderOnly,
             categories,
             selected_category_index: 0,
             folder_input: String::new(),
@@ -3342,9 +3525,53 @@ impl App {
     }
 
     fn confirm_note_folder(&mut self) {
+        let mut created_folder_path: Option<Vec<String>> = None;
+
         if let Some(ref mut state) = self.note_creation_state {
-            state.folder_input = self.input_buffer.trim().to_string();
+            let folder_name = self.input_buffer.trim().to_string();
+            state.folder_input = folder_name.clone();
+
+            if state.mode == NoteCreationMode::FolderOnly {
+                if folder_name.is_empty() {
+                    tracing::warn!("Folder name cannot be empty");
+                    return;
+                }
+                if let Err(e) = validate_element_name(&folder_name) {
+                    tracing::warn!("Invalid note folder name '{}': {}", folder_name, e);
+                    return;
+                }
+                let category = state
+                    .categories
+                    .get(state.selected_category_index)
+                    .cloned()
+                    .unwrap_or_default();
+                let target = self
+                    .config
+                    .workspace
+                    .notes_dir()
+                    .join(&category)
+                    .join(&folder_name);
+                if let Err(e) = fs::create_dir_all(&target) {
+                    tracing::error!("Failed to create note folder '{}': {}", target.display(), e);
+                    return;
+                }
+                created_folder_path = Some(vec![category, folder_name]);
+            }
         }
+
+        if let Some(folder_path) = created_folder_path {
+            self.input_buffer.clear();
+            self.note_creation_state = None;
+            self.refresh_notes_cache();
+            self.load_tree_view_data();
+            let category_path = vec![folder_path[0].clone()];
+            self.notes_expand_path(&category_path);
+            self.load_tree_view_data();
+            self.select_notes_item_by_path(&folder_path);
+            self.current_view = ViewType::TreeView;
+            return;
+        }
+
         self.input_buffer.clear();
         self.open_template_wizard("note", None);
     }
@@ -4561,7 +4788,126 @@ impl App {
         self.open_template_wizard("task", Some(self.input_buffer.clone()));
     }
 
+    fn split_frontmatter_and_body(content: &str) -> Option<(&str, &str)> {
+        let rest = content.strip_prefix("---\n")?;
+        let end = rest.find("\n---\n")?;
+        let frontmatter = &rest[..end];
+        let body = &rest[end + "\n---\n".len()..];
+        Some((frontmatter, body))
+    }
+
+    fn yaml_value_to_string(value: &serde_yaml::Value) -> String {
+        match value {
+            serde_yaml::Value::Null => String::new(),
+            serde_yaml::Value::Bool(b) => b.to_string(),
+            serde_yaml::Value::Number(n) => n.to_string(),
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Sequence(_) | serde_yaml::Value::Mapping(_) => {
+                serde_yaml::to_string(value)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn open_metadata_editor_for_selected_item(&mut self) -> bool {
+        use crate::tui::navigation::SidebarSection;
+
+        let Some(item) = self
+            .navigation_state
+            .sidebar_items
+            .get(self.navigation_state.selected_entry_index)
+        else {
+            return false;
+        };
+        if item.section != SidebarSection::Programs || item.is_header {
+            return false;
+        }
+        let Some(tree_path) = item.tree_path.clone() else {
+            return false;
+        };
+        let Some(path) = item.path.clone() else {
+            return false;
+        };
+        let template_name = match tree_path.len() {
+            1 => "program",
+            2 => "project",
+            3 => "milestone",
+            4 => "task",
+            5 => "subtask",
+            _ => return false,
+        };
+
+        let Ok(content) = self.config.workspace.read_md_file(&path) else {
+            return false;
+        };
+        let Some((frontmatter, body)) = Self::split_frontmatter_and_body(&content) else {
+            return false;
+        };
+        let mapping: serde_yaml::Mapping = serde_yaml::from_str(frontmatter).unwrap_or_default();
+
+        self.open_template_wizard(template_name, Some(item.name.clone()));
+        self.template_edit_target_path = Some(path);
+        self.template_edit_selected_path = Some(tree_path);
+
+        if let Some(ref mut state) = self.wizard_state.template {
+            let description_text = if let Some((_, after)) = body.split_once("# Description") {
+                after.trim().to_string()
+            } else {
+                String::new()
+            };
+
+            for field in &mut state.fields {
+                let Some(placeholder) = field.placeholder.clone() else {
+                    continue;
+                };
+
+                let mapped = match placeholder.as_str() {
+                    "NAME" => mapping
+                        .get(&serde_yaml::Value::String("title".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "DEFAULT_STATUS" => mapping
+                        .get(&serde_yaml::Value::String("status".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "IMPORTANCE" => mapping
+                        .get(&serde_yaml::Value::String("importance".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "TODAY" => mapping
+                        .get(&serde_yaml::Value::String("creation_date".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "OWNER" => mapping
+                        .get(&serde_yaml::Value::String("created_by".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "ASSIGNED_TO" => mapping
+                        .get(&serde_yaml::Value::String("assigned_to".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "DUE_DATE" => mapping
+                        .get(&serde_yaml::Value::String("due_date".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "UUID" => mapping
+                        .get(&serde_yaml::Value::String("uuid".to_string()))
+                        .map(Self::yaml_value_to_string),
+                    "DESCRIPTION" => Some(description_text.clone()),
+                    _ => mapping
+                        .get(&serde_yaml::Value::String(field.key.clone()))
+                        .map(Self::yaml_value_to_string),
+                };
+
+                if let Some(value) = mapped {
+                    field.value = value.clone();
+                    state.values.insert(placeholder, value);
+                }
+            }
+        }
+
+        true
+    }
+
     fn open_template_wizard(&mut self, template_name: &str, seeded_name: Option<String>) {
+        self.template_edit_target_path = None;
+        self.template_edit_selected_path = None;
         if let Some(name) = seeded_name.as_deref()
             && let Err(e) = validate_element_name(name)
         {
@@ -4574,6 +4920,7 @@ impl App {
             "project" => include_str!("../../templates/project.md"),
             "milestone" => include_str!("../../templates/milestone.md"),
             "task" => include_str!("../../templates/task.md"),
+            "subtask" => include_str!("../../templates/subtask.md"),
             "journal" => include_str!("../../templates/journal.md"),
             "note" => include_str!("../../templates/note.md"),
             _ => {
@@ -4613,6 +4960,9 @@ impl App {
                 "task" => {
                     values.insert("TASK_NAME".to_string(), name);
                 }
+                "subtask" => {
+                    values.insert("SUBTASK_NAME".to_string(), name);
+                }
                 _ => {}
             }
         }
@@ -4644,7 +4994,7 @@ impl App {
                 .clone()
                 .map(|p| format!("{p} -> new project"))
                 .unwrap_or_else(|| "Programs -> new project".to_string()),
-            "milestone" | "task" => {
+            "milestone" | "task" | "subtask" => {
                 let mut parts = Vec::new();
                 if let Some(ref p) = self.navigation_state.current_program {
                     parts.push(p.clone());
@@ -4652,8 +5002,13 @@ impl App {
                 if let Some(ref p) = self.navigation_state.current_project {
                     parts.push(p.clone());
                 }
-                if template_name == "task"
+                if matches!(template_name, "task" | "subtask")
                     && let Some(ref p) = self.navigation_state.current_milestone
+                {
+                    parts.push(p.clone());
+                }
+                if template_name == "subtask"
+                    && let Some(ref p) = self.navigation_state.current_task
                 {
                     parts.push(p.clone());
                 }
@@ -4827,6 +5182,30 @@ impl App {
                             .join(format!("{}.md", task_name))
                     })
                 }),
+            "subtask" => self
+                .navigation_state
+                .current_program
+                .as_ref()
+                .zip(self.navigation_state.current_project.as_ref())
+                .zip(self.navigation_state.current_milestone.as_ref())
+                .zip(self.navigation_state.current_task.as_ref())
+                .and_then(|(((prog, proj), milestone), task)| {
+                    name.map(|subtask_name| {
+                        self.config
+                            .workspace
+                            .programs_dir()
+                            .join(prog)
+                            .join("projects")
+                            .join(proj)
+                            .join("milestones")
+                            .join(milestone)
+                            .join("tasks")
+                            .join(task)
+                            .join("subtasks")
+                            .join(subtask_name)
+                            .join(format!("{}.md", subtask_name))
+                    })
+                }),
             "journal" => Some(self.config.workspace.today_journal_path()),
             "note" => name.and_then(|note_name| {
                 self.note_creation_state.as_ref().map(|state| {
@@ -4857,6 +5236,8 @@ impl App {
                 WizardFocus::CancelButton => {
                     // Cancel - return to tree view without creating
                     self.wizard_state.template = None;
+                    self.template_edit_target_path = None;
+                    self.template_edit_selected_path = None;
                     self.note_creation_state = None;
                     self.current_view = ViewType::TreeView;
                 }
@@ -4879,8 +5260,12 @@ impl App {
                     let strip_labels = state.strip_labels.clone();
                     let name = values.get("NAME").cloned();
                     let candidate_name = name.as_deref();
+                    let edit_target_path = self.template_edit_target_path.clone();
+                    let edit_selected_path = self.template_edit_selected_path.clone();
+                    let edit_mode = edit_target_path.is_some();
 
-                    if let Some(candidate_name) = candidate_name
+                    if !edit_mode
+                        && let Some(candidate_name) = candidate_name
                         && let Err(e) = validate_element_name(candidate_name)
                     {
                         tracing::warn!(
@@ -4892,8 +5277,11 @@ impl App {
                         return;
                     }
 
-                    let target_path =
-                        self.resolve_template_target_path(&template_name, name.as_deref());
+                    let target_path = if let Some(path) = edit_target_path {
+                        Some(path)
+                    } else {
+                        self.resolve_template_target_path(&template_name, name.as_deref())
+                    };
 
                     if let Some(target) = target_path {
                         if let Err(e) = self.config.workspace.create_from_template(
@@ -4915,6 +5303,8 @@ impl App {
 
                     // Clear template state before calling load_tree_view_data
                     self.wizard_state.template = None;
+                    self.template_edit_target_path = None;
+                    self.template_edit_selected_path = None;
 
                     // If this was a note, refresh notes cache and clear creation state
                     if template_name == "note" {
@@ -4927,7 +5317,12 @@ impl App {
 
                     // Find and select the newly created element in the sidebar
                     // Stay at parent level (don't auto-navigate into new element)
-                    if let Some(ref element_name) = new_element_name {
+                    if edit_mode {
+                        if let Some(path) = edit_selected_path {
+                            self.set_selected_tree_path(path);
+                            self.load_tree_view_data();
+                        }
+                    } else if let Some(ref element_name) = new_element_name {
                         // Find the newly created element in sidebar_items
                         if let Some(pos) = self
                             .navigation_state
@@ -4981,6 +5376,7 @@ impl App {
             self.navigation_state.current_program.as_deref(),
             self.navigation_state.current_project.as_deref(),
             self.navigation_state.current_milestone.as_deref(),
+            self.navigation_state.current_task.as_deref(),
             !self.tree_data.programs.is_empty(),
         );
     }
@@ -5206,6 +5602,7 @@ impl App {
         };
 
         self.task_wizard = Some(task_wizard::TaskWizardState::with_task(task));
+        self.task_wizard_tree_edit_mode = false;
         self.mode = Mode::TaskDetailWizard;
         self.current_view = ViewType::TaskDetailWizard;
     }
@@ -5229,47 +5626,74 @@ impl App {
     }
 
     fn confirm_task_detail_wizard(&mut self) {
-        if let Some(ref mut wizard) = self.task_wizard
-            && let Some(task) = task_wizard::confirm_task_detail_wizard(wizard)
-        {
-            // Update task file on disk with any changes
-            let task_path = task.path.clone();
-            let updates = [
-                ("status", Some(task.status.clone())),
-                ("assigned_to", task.assigned_to.clone()),
-                ("start_date", task.start_date.clone()),
-                ("due_date", task.due_date.clone()),
-                ("importance", task.importance.clone()),
-            ];
-            let updates_map: std::collections::HashMap<&str, Option<String>> =
-                updates.iter().map(|(k, v)| (*k, v.clone())).collect();
-            if let Err(e) = crate::storage::md::update_task_fields(&task_path, updates_map) {
-                tracing::warn!("Failed to update task file: {}", e);
+        let tree_edit_mode = self.task_wizard_tree_edit_mode;
+        let mut confirmed_task: Option<SelectedTask> = None;
+        if let Some(ref mut wizard) = self.task_wizard {
+            confirmed_task = task_wizard::confirm_task_detail_wizard(wizard);
+        }
+        let Some(task) = confirmed_task else {
+            return;
+        };
+
+        // Update task/subtask file on disk with any changes.
+        let task_path = task.path.clone();
+        let updates = [
+            ("status", Some(task.status.clone())),
+            ("assigned_to", task.assigned_to.clone()),
+            ("start_date", task.start_date.clone()),
+            ("due_date", task.due_date.clone()),
+            ("importance", task.importance.clone()),
+        ];
+        let updates_map: std::collections::HashMap<&str, Option<String>> =
+            updates.iter().map(|(k, v)| (*k, v.clone())).collect();
+        if let Err(e) = crate::storage::md::update_task_fields(&task_path, updates_map) {
+            tracing::warn!("Failed to update task file: {}", e);
+        }
+
+        if tree_edit_mode {
+            // Return to tree view after saving selected subtask metadata.
+            let selected_path = self.navigation_state.sidebar_tree.selected_path_vec();
+            self.task_wizard = None;
+            self.task_wizard_tree_edit_mode = false;
+            self.mode = Mode::Normal;
+            self.current_view = ViewType::TreeView;
+            if !selected_path.is_empty() {
+                self.set_selected_tree_path(selected_path);
             }
+            self.load_tree_view_data();
+            return;
+        }
 
-            // Add task to planning session
-            self.planning_session.tasks.push(task);
+        // Add task to planning session
+        self.planning_session.tasks.push(task);
 
-            // Mark task as selected in picker so checkbox shows [x]
-            let path_str = task_path.to_string_lossy().to_string();
-            self.hierarchical_picker.selected_tasks.insert(path_str);
+        // Mark task as selected in picker so checkbox shows [x]
+        let path_str = task_path.to_string_lossy().to_string();
+        self.hierarchical_picker.selected_tasks.insert(path_str);
 
-            // Save session if UUID exists (finalized state)
-            if self.planning_session.uuid.is_some() {
-                self.save_current_planning_session();
-            }
+        // Save session if UUID exists (finalized state)
+        if self.planning_session.uuid.is_some() {
+            self.save_current_planning_session();
         }
 
         // Return to picker
         self.mode = Mode::HierarchicalSelection;
         self.current_view = ViewType::HierarchicalTaskPicker;
+        self.task_wizard_tree_edit_mode = false;
     }
 
     fn cancel_task_detail_wizard(&mut self) {
         // Clear the wizard state
         self.task_wizard = None;
-        self.mode = Mode::HierarchicalSelection;
-        self.current_view = ViewType::HierarchicalTaskPicker;
+        let tree_edit_mode = self.task_wizard_tree_edit_mode;
+        self.task_wizard_tree_edit_mode = false;
+        if tree_edit_mode {
+            self.mode = Mode::Normal;
+            self.current_view = ViewType::TreeView;
+        } else {
+            self.mode = Mode::HierarchicalSelection;
+            self.current_view = ViewType::HierarchicalTaskPicker;
+        }
     }
 
     fn confirm_task_detail_field_input(&mut self) {
@@ -5906,6 +6330,309 @@ Test description
             content.contains("NewTask"),
             "Task file should contain the name"
         );
+    }
+
+    #[test]
+    fn test_wizard_creates_subtask_file_on_disk() {
+        // Create a temp workspace with program, project, milestone, and task
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let task_dir = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("projects")
+            .join("NewProject")
+            .join("milestones")
+            .join("NewMilestone")
+            .join("tasks")
+            .join("NewTask");
+        std::fs::create_dir_all(&task_dir).expect("Failed to create directories");
+
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("TestProgram.md"),
+            "---\ntitle: TestProgram\nstatus: New\n---\n",
+        )
+        .expect("Failed to create program file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("NewProject.md"),
+            "---\ntitle: NewProject\nstatus: New\n---\n",
+        )
+        .expect("Failed to create project file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("milestones")
+                .join("NewMilestone")
+                .join("NewMilestone.md"),
+            "---\ntitle: NewMilestone\nstatus: New\n---\n",
+        )
+        .expect("Failed to create milestone file");
+        std::fs::write(
+            task_dir.join("NewTask.md"),
+            "---\ntitle: NewTask\nstatus: New\n---\n",
+        )
+        .expect("Failed to create task file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        // Navigate into program, project, and milestone.
+        app.navigation_state.selected_entry_index = 1;
+        app.open_tree_item();
+        let project_idx = app
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "NewProject" && i.indent == 1)
+            .expect("NewProject should be selectable");
+        app.navigation_state.selected_entry_index = project_idx;
+        app.open_tree_item();
+
+        // Open milestone so task appears and is selected by one-step right semantics.
+        let milestone_idx = app
+            .navigation_state
+            .sidebar_items
+            .iter()
+            .position(|i| i.name == "NewMilestone" && i.indent == 2)
+            .expect("NewMilestone should be selectable");
+        app.navigation_state.selected_entry_index = milestone_idx;
+        app.open_tree_item();
+
+        // Start the subtask wizard and fill in name.
+        app.start_new_subtask();
+        if let Some(ref mut state) = app.wizard_state.template {
+            for field in &mut state.fields {
+                if field.is_editable && field.placeholder.as_deref() == Some("NAME") {
+                    field.value = "NewSubtask".to_string();
+                    break;
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.input_buffer = "NewSubtask".to_string();
+        app.confirm_template_field();
+
+        let subtask_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("projects")
+            .join("NewProject")
+            .join("milestones")
+            .join("NewMilestone")
+            .join("tasks")
+            .join("NewTask")
+            .join("subtasks")
+            .join("NewSubtask")
+            .join("NewSubtask.md");
+        assert!(
+            subtask_path.exists(),
+            "Subtask file should be created at {:?}",
+            subtask_path
+        );
+
+        let content =
+            std::fs::read_to_string(&subtask_path).expect("Should be able to read subtask file");
+        assert!(
+            content.contains("type: subtask"),
+            "Subtask file should use subtask template"
+        );
+    }
+
+    #[test]
+    fn test_e_opens_metadata_editor_for_program_and_saves() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let program_path = workspace_path
+            .join("programs")
+            .join("MyProgram")
+            .join("MyProgram.md");
+        if let Some(parent) = program_path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create directories");
+        }
+        let content = r#"---
+uuid: prog-uuid
+title: MyProgram
+importance: low
+status: New
+creation_date: 2026-04-01
+created_by: Test
+type: program
+---
+
+# Description
+Original
+"#;
+        std::fs::write(&program_path, content).expect("Failed to create program file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        // Select the program and press 'e'
+        app.navigation_state.selected_entry_index = 1;
+        app.handle_key(KeyCode::Char('e'));
+        assert_eq!(app.current_view, ViewType::InputTemplateField);
+        assert!(app.template_edit_target_path.is_some());
+
+        if let Some(ref mut state) = app.wizard_state.template {
+            for field in &mut state.fields {
+                if field.placeholder.as_deref() == Some("DEFAULT_STATUS") {
+                    field.value = "Active".to_string();
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+
+        app.confirm_template_field();
+        assert_eq!(app.current_view, ViewType::TreeView);
+
+        let updated = std::fs::read_to_string(&program_path).expect("Should read updated file");
+        assert!(
+            updated.contains("status: Active"),
+            "Expected updated status in program file"
+        );
+    }
+
+    #[test]
+    fn test_edit_subtask_metadata_in_tree_writes_file() {
+        let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let subtask_path = workspace_path
+            .join("programs")
+            .join("TestProgram")
+            .join("projects")
+            .join("NewProject")
+            .join("milestones")
+            .join("NewMilestone")
+            .join("tasks")
+            .join("NewTask")
+            .join("subtasks")
+            .join("NewSubtask")
+            .join("NewSubtask.md");
+        if let Some(parent) = subtask_path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create subtask directories");
+        }
+
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("TestProgram.md"),
+            "---\ntitle: TestProgram\nstatus: New\n---\n",
+        )
+        .expect("Failed to create program file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("NewProject.md"),
+            "---\ntitle: NewProject\nstatus: New\n---\n",
+        )
+        .expect("Failed to create project file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("milestones")
+                .join("NewMilestone")
+                .join("NewMilestone.md"),
+            "---\ntitle: NewMilestone\nstatus: New\n---\n",
+        )
+        .expect("Failed to create milestone file");
+        std::fs::write(
+            workspace_path
+                .join("programs")
+                .join("TestProgram")
+                .join("projects")
+                .join("NewProject")
+                .join("milestones")
+                .join("NewMilestone")
+                .join("tasks")
+                .join("NewTask")
+                .join("NewTask.md"),
+            "---\ntitle: NewTask\nstatus: New\ntype: task\n---\n",
+        )
+        .expect("Failed to create task file");
+
+        let subtask_content = r#"---
+uuid: test-subtask-uuid
+title: NewSubtask
+status: New
+type: subtask
+---
+
+# Description
+Original
+"#;
+        std::fs::write(&subtask_path, subtask_content).expect("Failed to create subtask file");
+
+        let config = crate::config::Config {
+            workspace: workspace_path.clone(),
+            ..crate::config::Config::default()
+        };
+        let mut app = App::new(config);
+
+        app.set_selected_tree_path(vec![
+            "TestProgram".to_string(),
+            "NewProject".to_string(),
+            "NewMilestone".to_string(),
+            "NewTask".to_string(),
+            "NewSubtask".to_string(),
+        ]);
+        app.load_tree_view_data();
+
+        app.handle_key(KeyCode::Char('e'));
+        assert_eq!(app.current_view, ViewType::InputTemplateField);
+        if let Some(ref mut state) = app.wizard_state.template {
+            for field in &mut state.fields {
+                if field.placeholder.as_deref() == Some("DEFAULT_STATUS") {
+                    field.value = "Completed".to_string();
+                } else if field.placeholder.as_deref() == Some("ASSIGNED_TO") {
+                    field.value = "Tay".to_string();
+                } else if field.placeholder.as_deref() == Some("IMPORTANCE") {
+                    field.value = "high".to_string();
+                }
+            }
+            state.focus = WizardFocus::ConfirmButton;
+        }
+        app.confirm_template_field();
+
+        assert_eq!(app.current_view, ViewType::TreeView);
+
+        let updated = std::fs::read_to_string(&subtask_path).expect("Should read updated subtask");
+        let parsed = crate::storage::md::parse_element(&updated)
+            .expect("Should parse updated subtask")
+            .expect("Should parse updated subtask element");
+        if let crate::model::Element::Task(task) = parsed {
+            assert_eq!(task.status, "Completed");
+            assert_eq!(task.assigned_to.as_deref(), Some("Tay"));
+            assert_eq!(task.importance.as_deref(), Some("high"));
+        } else {
+            panic!("Updated subtask should parse as task-like element");
+        }
     }
 
     #[test]

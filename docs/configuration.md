@@ -3,24 +3,27 @@
 Config path:
 - `~/.config/chronicle/config.toml`
 
-## Fields
+## Required Fields
 
-- `workspace` (path): workspace root
+- `workspace` (path): workspace root directory
 - `editor` (string): external editor command
-- `owner` (string): default owner value
-- `workflow` (array): status workflow list (first value is default status)
-- `navigator_width` (u16): target navigator width
-- `planning_duration` (string): planning cadence label
+- `owner` (string): owner identity for created/assigned task flows
 
-## Navigation Keys
+Chronicle validates these as non-empty when loading config.
 
-Under `[navigation_keys]`:
-- `left`
-- `right`
-- `up`
-- `down`
+## Optional Fields
 
-Defaults are `h/l/k/j` values, while arrow keys are also handled by the TUI input path.
+- `workflow` (array of strings)
+  - Default: `["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]`
+- `importance` (array of strings)
+  - Default: `["low", "medium", "high"]`
+- `planning_duration` (string)
+  - Allowed values: `weekly`, `biweekly`, `6weekly`
+  - Default: `weekly`
+- `theme` (string)
+  - Default: `default_dark`
+- `[notes].categories` (array of strings)
+  - Default: `["Projects", "Areas", "Resources", "Archive"]`
 
 ## Diagnostics
 
@@ -28,19 +31,31 @@ Under `[diagnostics]`:
 - `enabled` (bool, default `false`)
 - `level` (`trace|debug|info|warn|error`, default `debug`)
 
-Example:
+## Removed/Unused Fields
+
+- `navigator_width` and `[navigation_keys]` are no longer used.
+
+## Minimal Example
+
+```toml
+workspace = "/home/user/chronicle/workspace"
+editor = "hx"
+owner = "Tay"
+```
+
+## Full Example
 
 ```toml
 workspace = "/home/user/chronicle/workspace"
 editor = "hx"
 owner = "Tay"
 workflow = ["New", "Active", "Blocked", "Testing", "Completed", "Cancelled"]
+importance = ["low", "medium", "high"]
+planning_duration = "weekly"
+theme = "default_dark"
 
-[navigation_keys]
-left = "h"
-right = "l"
-up = "k"
-down = "j"
+[notes]
+categories = ["Projects", "Areas", "Resources", "Archive"]
 
 [diagnostics]
 enabled = true

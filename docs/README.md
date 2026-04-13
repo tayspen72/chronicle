@@ -5,6 +5,7 @@ This folder contains implementation-focused documentation for the Chronicle TUI 
 ## Documents
 
 - [Getting Started](./getting-started.md)
+- [How-To](./how-to.md)
 - [Architecture](./architecture.md)
 - [Configuration](./configuration.md)
 - [Workspace Model](./workspace-model.md)

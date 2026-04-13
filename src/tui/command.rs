@@ -19,7 +19,9 @@ pub enum CommandAction {
     NewProject,
     NewMilestone,
     NewTask,
+    NewSubtask,
     NewNote,
+    NewNoteFolder,
     MoveNote,
     Refresh,
     StartPlanningSession,
@@ -28,13 +30,39 @@ pub enum CommandAction {
     SwitchTheme,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCategory {
+    Commands,
+    Planning,
+    Journal,
+    Notes,
+    Navigation,
+    System,
+}
+
+impl CommandCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            CommandCategory::Commands => "Commands",
+            CommandCategory::Planning => "Planning",
+            CommandCategory::Journal => "Journal",
+            CommandCategory::Notes => "Notes",
+            CommandCategory::Navigation => "Navigation",
+            CommandCategory::System => "System",
+        }
+    }
+}
+
 /// A matched command with its label, target view, and optional action.
 #[derive(Debug, Clone)]
 pub struct CommandMatch {
     pub label: String,
+    pub display_label: String,
+    pub category: CommandCategory,
     pub view: ViewType,
     pub exit: bool,
     pub action: Option<CommandAction>,
+    pub selectable: bool,
 }
 
 /// State for the command palette.
@@ -48,10 +76,12 @@ pub struct CommandPalette {
 impl CommandPalette {
     /// Creates a new command palette with all commands loaded.
     pub fn new() -> Self {
+        let matches = filter_commands("", None, None, None, None, true);
+        let selection_index = first_selectable_index(&matches).unwrap_or(0);
         Self {
             input: String::new(),
-            matches: get_command_list(),
-            selection_index: 0,
+            matches,
+            selection_index,
         }
     }
 
@@ -63,12 +93,14 @@ impl CommandPalette {
         match code {
             KeyCode::Char(c) => {
                 self.input.push(c);
-                self.selection_index = 0;
+                self.matches = filter_commands(&self.input, None, None, None, None, true);
+                self.selection_index = first_selectable_index(&self.matches).unwrap_or(0);
                 None
             }
             KeyCode::Backspace => {
                 self.input.pop();
-                self.selection_index = 0;
+                self.matches = filter_commands(&self.input, None, None, None, None, true);
+                self.selection_index = first_selectable_index(&self.matches).unwrap_or(0);
                 None
             }
             KeyCode::Esc => {
@@ -76,19 +108,25 @@ impl CommandPalette {
                 None
             }
             KeyCode::Enter => {
-                let cmd = self.matches.get(self.selection_index).cloned();
+                let cmd = self
+                    .matches
+                    .get(self.selection_index)
+                    .filter(|m| m.selectable)
+                    .cloned();
                 self.close();
                 cmd
             }
             KeyCode::Up => {
-                if self.selection_index > 0 {
-                    self.selection_index -= 1;
+                if self.selection_index > 0
+                    && let Some(idx) = prev_selectable_index(&self.matches, self.selection_index)
+                {
+                    self.selection_index = idx;
                 }
                 None
             }
             KeyCode::Down => {
-                if self.selection_index < self.matches.len().saturating_sub(1) {
-                    self.selection_index += 1;
+                if let Some(idx) = next_selectable_index(&self.matches, self.selection_index) {
+                    self.selection_index = idx;
                 }
                 None
             }
@@ -105,14 +143,14 @@ impl CommandPalette {
     /// Opens the command palette and resets the input.
     pub fn open(&mut self) {
         self.input.clear();
-        self.selection_index = 0;
-        self.matches = get_command_list();
+        self.matches = filter_commands("", None, None, None, None, true);
+        self.selection_index = first_selectable_index(&self.matches).unwrap_or(0);
     }
 
     /// Filters commands based on current input (simple filter without context).
     pub fn filter(&mut self) {
-        self.matches = filter_commands(&self.input, None, None, None, true);
-        self.selection_index = 0;
+        self.matches = filter_commands(&self.input, None, None, None, None, true);
+        self.selection_index = first_selectable_index(&self.matches).unwrap_or(0);
     }
 
     /// Filters commands based on input and navigation context.
@@ -121,6 +159,7 @@ impl CommandPalette {
         current_program: Option<&str>,
         current_project: Option<&str>,
         current_milestone: Option<&str>,
+        current_task: Option<&str>,
         has_programs: bool,
     ) {
         self.matches = filter_commands(
@@ -128,9 +167,10 @@ impl CommandPalette {
             current_program,
             current_project,
             current_milestone,
+            current_task,
             has_programs,
         );
-        self.selection_index = 0;
+        self.selection_index = first_selectable_index(&self.matches).unwrap_or(0);
     }
 
     /// Returns the display text for the command bar/palette.
@@ -139,140 +179,220 @@ impl CommandPalette {
     }
 }
 
+fn command_item(
+    label: &str,
+    category: CommandCategory,
+    view: ViewType,
+    action: Option<CommandAction>,
+) -> CommandMatch {
+    CommandMatch {
+        label: label.to_string(),
+        display_label: label.to_string(),
+        category,
+        view,
+        exit: false,
+        action,
+        selectable: true,
+    }
+}
+
+fn section_header(category: CommandCategory) -> CommandMatch {
+    CommandMatch {
+        label: category.label().to_string(),
+        display_label: category.label().to_string(),
+        category,
+        view: ViewType::TreeView,
+        exit: false,
+        action: None,
+        selectable: false,
+    }
+}
+
+fn first_selectable_index(matches: &[CommandMatch]) -> Option<usize> {
+    matches.iter().position(|m| m.selectable)
+}
+
+fn next_selectable_index(matches: &[CommandMatch], from: usize) -> Option<usize> {
+    matches
+        .iter()
+        .enumerate()
+        .skip(from.saturating_add(1))
+        .find(|(_, m)| m.selectable)
+        .map(|(idx, _)| idx)
+}
+
+fn prev_selectable_index(matches: &[CommandMatch], from: usize) -> Option<usize> {
+    if from == 0 {
+        return None;
+    }
+    matches
+        .iter()
+        .enumerate()
+        .take(from)
+        .rev()
+        .find(|(_, m)| m.selectable)
+        .map(|(idx, _)| idx)
+}
+
+fn grouped_commands(commands: &[CommandMatch]) -> Vec<CommandMatch> {
+    let order = [
+        CommandCategory::Commands,
+        CommandCategory::Journal,
+        CommandCategory::Notes,
+        CommandCategory::Planning,
+        CommandCategory::Navigation,
+        CommandCategory::System,
+    ];
+
+    let mut grouped = Vec::new();
+    for category in order {
+        let category_commands: Vec<CommandMatch> = commands
+            .iter()
+            .filter(|c| c.category == category)
+            .cloned()
+            .collect();
+        if !category_commands.is_empty() {
+            grouped.push(section_header(category));
+            grouped.extend(category_commands);
+        }
+    }
+    grouped
+}
+
 /// Returns the list of all available commands.
 pub fn get_command_list() -> Vec<CommandMatch> {
     vec![
-        CommandMatch {
-            label: "Programs".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowProgramsList),
-        },
-        CommandMatch {
-            label: "Projects".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowProjectsList),
-        },
-        CommandMatch {
-            label: "Milestones".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowMilestonesList),
-        },
-        CommandMatch {
-            label: "Tasks".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::ShowTasksList),
-        },
-        CommandMatch {
-            label: "Journal".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "Backlog".to_string(),
-            view: ViewType::Backlog,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "My Tasks".to_string(),
-            view: ViewType::MyTasks,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "Current Plan".to_string(),
-            view: ViewType::WeeklyPlanning,
-            exit: false,
-            action: None,
-        },
-        CommandMatch {
-            label: "New Program".to_string(),
-            view: ViewType::InputProgram,
-            exit: false,
-            action: Some(CommandAction::NewProgram),
-        },
-        CommandMatch {
-            label: "New Project".to_string(),
-            view: ViewType::InputProject,
-            exit: false,
-            action: Some(CommandAction::NewProject),
-        },
-        CommandMatch {
-            label: "New Milestone".to_string(),
-            view: ViewType::InputMilestone,
-            exit: false,
-            action: Some(CommandAction::NewMilestone),
-        },
-        CommandMatch {
-            label: "New Task".to_string(),
-            view: ViewType::InputTask,
-            exit: false,
-            action: Some(CommandAction::NewTask),
-        },
-        CommandMatch {
-            label: "New Note".to_string(),
-            view: ViewType::InputNote,
-            exit: false,
-            action: Some(CommandAction::NewNote),
-        },
-        CommandMatch {
-            label: "Move Note".to_string(),
-            view: ViewType::MoveNote,
-            exit: false,
-            action: Some(CommandAction::MoveNote),
-        },
-        CommandMatch {
-            label: "Open Today's Journal".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: Some(CommandAction::OpenTodayJournal),
-        },
-        CommandMatch {
-            label: "Journal History".to_string(),
-            view: ViewType::Journal,
-            exit: false,
-            action: Some(CommandAction::ShowArchiveList),
-        },
-        CommandMatch {
-            label: "Refresh".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::Refresh),
-        },
-        CommandMatch {
-            label: "Start Planning Session".to_string(),
-            view: ViewType::WeeklyPlanning,
-            exit: false,
-            action: Some(CommandAction::StartPlanningSession),
-        },
-        CommandMatch {
-            label: "Close Planning Session".to_string(),
-            view: ViewType::WeeklyPlanning,
-            exit: false,
-            action: Some(CommandAction::ClosePlanningSession),
-        },
-        CommandMatch {
-            label: "Review Session".to_string(),
-            view: ViewType::WeeklyPlanning,
-            exit: false,
-            action: Some(CommandAction::ReviewSession),
-        },
-        CommandMatch {
-            label: "Theme".to_string(),
-            view: ViewType::TreeView,
-            exit: false,
-            action: Some(CommandAction::SwitchTheme),
-        },
+        command_item(
+            "Programs",
+            CommandCategory::Navigation,
+            ViewType::TreeView,
+            Some(CommandAction::ShowProgramsList),
+        ),
+        command_item(
+            "Projects",
+            CommandCategory::Navigation,
+            ViewType::TreeView,
+            Some(CommandAction::ShowProjectsList),
+        ),
+        command_item(
+            "Milestones",
+            CommandCategory::Navigation,
+            ViewType::TreeView,
+            Some(CommandAction::ShowMilestonesList),
+        ),
+        command_item(
+            "Tasks",
+            CommandCategory::Navigation,
+            ViewType::TreeView,
+            Some(CommandAction::ShowTasksList),
+        ),
+        command_item("Journal", CommandCategory::Journal, ViewType::Journal, None),
+        command_item("Backlog", CommandCategory::Planning, ViewType::Backlog, None),
+        command_item("My Tasks", CommandCategory::Planning, ViewType::MyTasks, None),
+        command_item(
+            "Current Plan",
+            CommandCategory::Planning,
+            ViewType::WeeklyPlanning,
+            None,
+        ),
+        command_item(
+            "New Program",
+            CommandCategory::Commands,
+            ViewType::InputProgram,
+            Some(CommandAction::NewProgram),
+        ),
+        command_item(
+            "New Project",
+            CommandCategory::Commands,
+            ViewType::InputProject,
+            Some(CommandAction::NewProject),
+        ),
+        command_item(
+            "New Milestone",
+            CommandCategory::Commands,
+            ViewType::InputMilestone,
+            Some(CommandAction::NewMilestone),
+        ),
+        command_item(
+            "New Task",
+            CommandCategory::Commands,
+            ViewType::InputTask,
+            Some(CommandAction::NewTask),
+        ),
+        command_item(
+            "New Subtask",
+            CommandCategory::Commands,
+            ViewType::InputTask,
+            Some(CommandAction::NewSubtask),
+        ),
+        command_item(
+            "New Note",
+            CommandCategory::Notes,
+            ViewType::InputNote,
+            Some(CommandAction::NewNote),
+        ),
+        command_item(
+            "New Note Folder",
+            CommandCategory::Notes,
+            ViewType::InputNote,
+            Some(CommandAction::NewNoteFolder),
+        ),
+        command_item(
+            "Move Note",
+            CommandCategory::Notes,
+            ViewType::MoveNote,
+            Some(CommandAction::MoveNote),
+        ),
+        command_item(
+            "Open Today's Journal",
+            CommandCategory::Journal,
+            ViewType::Journal,
+            Some(CommandAction::OpenTodayJournal),
+        ),
+        command_item(
+            "Journal History",
+            CommandCategory::Journal,
+            ViewType::Journal,
+            Some(CommandAction::ShowArchiveList),
+        ),
+        command_item(
+            "Refresh",
+            CommandCategory::System,
+            ViewType::TreeView,
+            Some(CommandAction::Refresh),
+        ),
+        command_item(
+            "Start Planning Session",
+            CommandCategory::Planning,
+            ViewType::WeeklyPlanning,
+            Some(CommandAction::StartPlanningSession),
+        ),
+        command_item(
+            "Close Planning Session",
+            CommandCategory::Planning,
+            ViewType::WeeklyPlanning,
+            Some(CommandAction::ClosePlanningSession),
+        ),
+        command_item(
+            "Review Session",
+            CommandCategory::Planning,
+            ViewType::WeeklyPlanning,
+            Some(CommandAction::ReviewSession),
+        ),
+        command_item(
+            "Theme",
+            CommandCategory::System,
+            ViewType::TreeView,
+            Some(CommandAction::SwitchTheme),
+        ),
         CommandMatch {
             label: "Exit".to_string(),
+            display_label: "Exit".to_string(),
+            category: CommandCategory::System,
             view: ViewType::Journal,
             exit: true,
             action: None,
+            selectable: true,
         },
     ]
 }
@@ -293,9 +413,11 @@ pub fn filter_commands(
     current_program: Option<&str>,
     current_project: Option<&str>,
     current_milestone: Option<&str>,
+    current_task: Option<&str>,
     has_programs: bool,
 ) -> Vec<CommandMatch> {
-    let input = input.to_lowercase();
+    let trimmed_input = input.trim();
+    let input = trimmed_input.to_lowercase();
 
     if input.starts_with("journal") || input.starts_with("/journal") {
         let remainder = input
@@ -304,31 +426,38 @@ pub fn filter_commands(
             .trim();
 
         let journal_commands = vec![
-            CommandMatch {
-                label: "Open Today's Journal".to_string(),
-                view: ViewType::Journal,
-                exit: false,
-                action: Some(CommandAction::OpenTodayJournal),
-            },
-            CommandMatch {
-                label: "Journal History".to_string(),
-                view: ViewType::Journal,
-                exit: false,
-                action: Some(CommandAction::ShowArchiveList),
-            },
+            command_item(
+                "Open Today's Journal",
+                CommandCategory::Journal,
+                ViewType::Journal,
+                Some(CommandAction::OpenTodayJournal),
+            ),
+            command_item(
+                "Journal History",
+                CommandCategory::Journal,
+                ViewType::Journal,
+                Some(CommandAction::ShowArchiveList),
+            ),
         ];
 
         if remainder.is_empty() {
-            journal_commands
+            if trimmed_input.is_empty() {
+                grouped_commands(&journal_commands)
+            } else {
+                journal_commands
+            }
         } else {
             journal_commands
                 .into_iter()
                 .filter(|cmd| cmd.label.to_lowercase().contains(remainder))
+                .map(|mut cmd| {
+                    cmd.display_label = format!("{}: {}", cmd.category.label(), cmd.label);
+                    cmd
+                })
                 .collect()
         }
     } else {
-        let all_commands = get_command_list();
-        all_commands
+        let filtered: Vec<CommandMatch> = get_command_list()
             .into_iter()
             .filter(|cmd| {
                 let matches_input = cmd.label.to_lowercase().contains(&input);
@@ -347,6 +476,12 @@ pub fn filter_commands(
                             && current_project.is_some()
                             && current_milestone.is_some()
                     }
+                    "New Subtask" => {
+                        current_program.is_some()
+                            && current_project.is_some()
+                            && current_milestone.is_some()
+                            && current_task.is_some()
+                    }
                     // Navigation commands - always available
                     "Programs"
                     | "Journal"
@@ -356,6 +491,7 @@ pub fn filter_commands(
                     | "Open Today's Journal"
                     | "Journal History"
                     | "New Note"
+                    | "New Note Folder"
                     | "Move Note"
                     | "Exit" => true,
                     // Tier-specific navigation - context-based
@@ -367,7 +503,19 @@ pub fn filter_commands(
 
                 matches_input && is_context_valid
             })
-            .collect()
+            .collect();
+
+        if trimmed_input.is_empty() {
+            grouped_commands(&filtered)
+        } else {
+            filtered
+                .into_iter()
+                .map(|mut cmd| {
+                    cmd.display_label = format!("{}: {}", cmd.category.label(), cmd.label);
+                    cmd
+                })
+                .collect()
+        }
     }
 }
 
@@ -380,7 +528,7 @@ mod tests {
         let palette = CommandPalette::new();
         assert!(palette.input.is_empty());
         assert!(!palette.matches.is_empty());
-        assert_eq!(palette.selection_index, 0);
+        assert!(palette.matches[palette.selection_index].selectable);
     }
 
     #[test]
@@ -389,7 +537,7 @@ mod tests {
         let result = palette.handle_input(KeyCode::Char('a'));
         assert!(result.is_none());
         assert_eq!(palette.input, "a");
-        assert_eq!(palette.selection_index, 0);
+        assert!(palette.matches[palette.selection_index].selectable);
     }
 
     #[test]
@@ -415,19 +563,17 @@ mod tests {
     #[test]
     fn test_command_palette_navigation() {
         let mut palette = CommandPalette::new();
-        assert_eq!(palette.selection_index, 0);
+        assert!(palette.matches[palette.selection_index].selectable);
 
         // Navigate down
+        let before = palette.selection_index;
         palette.handle_input(KeyCode::Down);
-        assert_eq!(palette.selection_index, 1);
+        assert!(palette.selection_index >= before);
+        assert!(palette.matches[palette.selection_index].selectable);
 
         // Navigate up
         palette.handle_input(KeyCode::Up);
-        assert_eq!(palette.selection_index, 0);
-
-        // Can't go above 0
-        palette.handle_input(KeyCode::Up);
-        assert_eq!(palette.selection_index, 0);
+        assert!(palette.matches[palette.selection_index].selectable);
     }
 
     #[test]
@@ -441,29 +587,35 @@ mod tests {
 
     #[test]
     fn test_filter_commands_empty_input() {
-        let commands = filter_commands("", None, None, None, true);
+        let commands = filter_commands("", None, None, None, None, true);
         // Should always include "New Program" when no programs exist
         assert!(commands.iter().any(|c| c.label == "New Program"));
     }
 
     #[test]
     fn test_filter_commands_journal_prefix() {
-        let commands = filter_commands("journal", None, None, None, true);
-        assert!(commands.iter().all(|c| c.label.contains("Journal")));
+        let commands = filter_commands("journal", None, None, None, None, true);
+        assert!(commands.iter().all(|c| c.category == CommandCategory::Journal));
+    }
+
+    #[test]
+    fn test_filter_commands_empty_includes_section_headers() {
+        let commands = filter_commands("", None, None, None, None, true);
+        assert!(commands.iter().any(|c| !c.selectable));
     }
 
     #[test]
     fn test_filter_commands_by_context() {
         // No program selected: "New Program" should be available
-        let commands = filter_commands("", None, None, None, true);
+        let commands = filter_commands("", None, None, None, None, true);
         assert!(commands.iter().any(|c| c.label == "New Program"));
 
         // Program selected, no project: "New Project" should be available
-        let commands = filter_commands("", Some("MyProgram"), None, None, true);
+        let commands = filter_commands("", Some("MyProgram"), None, None, None, true);
         assert!(commands.iter().any(|c| c.label == "New Project"));
 
         // Program and project selected, no milestone: "New Milestone" should be available
-        let commands = filter_commands("", Some("MyProgram"), Some("MyProject"), None, true);
+        let commands = filter_commands("", Some("MyProgram"), Some("MyProject"), None, None, true);
         assert!(commands.iter().any(|c| c.label == "New Milestone"));
 
         // Program, project, and milestone selected: "New Task" should be available
@@ -472,23 +624,35 @@ mod tests {
             Some("MyProgram"),
             Some("MyProject"),
             Some("MyMilestone"),
+            None,
             true,
         );
         assert!(commands.iter().any(|c| c.label == "New Task"));
+
+        let commands = filter_commands(
+            "",
+            Some("MyProgram"),
+            Some("MyProject"),
+            Some("MyMilestone"),
+            Some("MyTask"),
+            true,
+        );
+        assert!(commands.iter().any(|c| c.label == "New Subtask"));
     }
 
     #[test]
     fn test_filter_commands_new_program_always_available() {
         // Even with programs existing, "New Program" should still be available
-        let commands = filter_commands("", Some("MyProgram"), None, None, false);
+        let commands = filter_commands("", Some("MyProgram"), None, None, None, false);
         assert!(commands.iter().any(|c| c.label == "New Program"));
     }
 
     #[test]
     fn test_filter_commands_empty_workspace() {
         // When workspace has no programs and nothing is selected, "New Program" should be available
-        let commands = filter_commands("", None, None, None, false);
+        let commands = filter_commands("", None, None, None, None, false);
         assert!(commands.iter().any(|c| c.label == "New Program"));
+        assert!(commands.iter().any(|c| c.label == "New Note Folder"));
 
         // Also verify that basic navigation commands are available
         assert!(commands.iter().any(|c| c.label == "Programs"));

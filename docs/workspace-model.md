@@ -10,7 +10,8 @@ workspace/
 │   └── <program>/<program>.md
 │       └── projects/<project>/<project>.md
 │           └── milestones/<milestone>/<milestone>.md
-│               └── tasks/<name>.md
+│               └── tasks/<task>/<task>.md
+│                   └── subtasks/<subtask>/<subtask>.md
 ├── planning/
 │   ├── current/
 │   └── history/
@@ -28,7 +29,7 @@ The storage layer still discovers mixed/legacy layouts for compatibility:
 - nested directories with same-name markdown
 - container folders (`projects`, `milestones`, `tasks`, `subtasks`)
 
-This tolerance is primarily for reading existing workspaces. New wizard-created elements follow canonical paths.
+This tolerance is for discovery/reading existing workspaces. New writes from the wizard and storage APIs follow canonical paths above.
 
 ## Naming Constraints
 

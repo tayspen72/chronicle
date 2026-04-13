@@ -659,6 +659,7 @@ mod tests {
 #[derive(Debug, Clone, Default)]
 pub struct NotesTreeState {
     entries: Vec<NoteEntry>,
+    discovered_folders: std::collections::BTreeSet<(String, String)>,
 }
 
 impl NotesTreeState {
@@ -668,6 +669,10 @@ impl NotesTreeState {
 
     pub fn set_entries(&mut self, entries: Vec<NoteEntry>) {
         self.entries = entries;
+    }
+
+    pub fn set_discovered_folders(&mut self, folders: Vec<(String, String)>) {
+        self.discovered_folders = folders.into_iter().collect();
     }
 
     pub fn entries(&self) -> &[NoteEntry] {
@@ -697,6 +702,11 @@ impl NotesTreeState {
                 folders.insert(folder.clone());
             }
         }
+        for (cat, folder) in &self.discovered_folders {
+            if cat == category {
+                folders.insert(folder.clone());
+            }
+        }
         folders.into_iter().collect()
     }
 
@@ -721,6 +731,8 @@ impl NotesTreeState {
 #[derive(Debug, Clone, Default)]
 pub struct JournalTreeState {
     entries: Vec<crate::storage::JournalEntry>,
+    discovered_years: std::collections::BTreeSet<String>,
+    discovered_months: std::collections::BTreeSet<(String, String)>,
 }
 
 pub fn journal_entry_label(jpath: &[String]) -> Option<&str> {
@@ -742,6 +754,11 @@ impl JournalTreeState {
         self.entries = entries;
     }
 
+    pub fn set_discovered_dirs(&mut self, years: Vec<String>, months: Vec<(String, String)>) {
+        self.discovered_years = years.into_iter().collect();
+        self.discovered_months = months.into_iter().collect();
+    }
+
     pub fn entries(&self) -> &[crate::storage::JournalEntry] {
         &self.entries
     }
@@ -753,6 +770,7 @@ impl JournalTreeState {
                 years.insert(year);
             }
         }
+        years.extend(self.discovered_years.iter().cloned());
         years.into_iter().rev().collect()
     }
 
@@ -763,6 +781,11 @@ impl JournalTreeState {
                 && entry_year == year
             {
                 months.insert(month);
+            }
+        }
+        for (entry_year, month) in &self.discovered_months {
+            if entry_year == year {
+                months.insert(month.clone());
             }
         }
         months.into_iter().collect()
@@ -776,5 +799,42 @@ impl JournalTreeState {
                     .is_some_and(|(y, m)| y == year && m == month)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tree_state_tests {
+    use super::*;
+
+    #[test]
+    fn notes_tree_state_includes_discovered_empty_folders() {
+        let mut state = NotesTreeState::new();
+        state.set_entries(vec![]);
+        state.set_discovered_folders(vec![(
+            "Projects".to_string(),
+            "Tether-Firmware".to_string(),
+        )]);
+
+        let folders = state.folders_for_category("Projects");
+        assert_eq!(folders, vec!["Tether-Firmware".to_string()]);
+        assert!(
+            state
+                .entries_in_folder("Projects", "Tether-Firmware")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn journal_tree_state_includes_discovered_years_and_months() {
+        let mut state = JournalTreeState::new();
+        state.set_entries(vec![]);
+        state.set_discovered_dirs(
+            vec!["2026".to_string()],
+            vec![("2026".to_string(), "04".to_string())],
+        );
+
+        assert_eq!(state.years(), vec!["2026".to_string()]);
+        assert_eq!(state.months_for_year("2026"), vec!["04".to_string()]);
+        assert!(state.entries_for_month("2026", "04").is_empty());
     }
 }

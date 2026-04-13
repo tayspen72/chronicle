@@ -46,3 +46,10 @@ Log file:
 2. Add items to the "# To do" section using `- [ ] ` or `* [ ] ` syntax
 3. View and toggle todos in the "My Tasks" planning report
 4. Use `chronicle jot "note"` to add timestamped entries to the "# Notes" section
+
+## Edit Element Metadata
+
+1. Navigate to a program, project, milestone, task, or subtask in the Programs tree.
+2. Press `e` to open the metadata editor.
+3. Update fields shown by the element template (for example status, ownership, dates, importance, description).
+4. Press `Enter` on `CONFIRM` to persist changes to that element's markdown file.

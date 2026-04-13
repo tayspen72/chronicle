@@ -1016,11 +1016,11 @@ fn test_navigate_up_wraps_to_journal() {
         after_item.name, after_idx
     );
 
-    // Should be in Journal section (History)
+    // Should be in Notes section (the last section, which wrap lands on)
     assert_eq!(
         after_item.section,
-        SidebarSection::Journal,
-        "Should wrap to Journal section, got {:?}",
+        SidebarSection::Notes,
+        "Should wrap to Notes section (last section), got {:?}",
         after_item.section
     );
 }
