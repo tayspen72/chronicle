@@ -2241,7 +2241,7 @@ pub fn render_task_detail_wizard(f: &mut Frame, app: &App, area: ratatui::layout
     f.render_widget(buttons_para, chunks[2]);
 }
 
-/// Renders the two-step note creation wizard (category picker → folder input).
+/// Renders the two-step note creation wizard (category picker → folder selection/input).
 pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     use crate::tui::{NoteCreationMode, NoteWizardStep};
     use ratatui::layout::{Constraint, Layout};
@@ -2298,15 +2298,13 @@ pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect)
                 .get(state.selected_category_index)
                 .cloned()
                 .unwrap_or_default();
-            let folder_title = if state.mode == NoteCreationMode::FolderOnly {
-                format!("Notes → {} → New Folder", category)
-            } else {
-                format!("Notes → {} → Subfolder (optional)", category)
+            let folder_title = match state.mode {
+                NoteCreationMode::FolderOnly => format!("Notes → {} → New Folder", category),
+                NoteCreationMode::Note => format!("Notes → {} → Destination", category),
             };
-            let help_text = if state.mode == NoteCreationMode::FolderOnly {
-                "Type a folder name  Enter: Create  Esc: Cancel"
-            } else {
-                "Type a subfolder name (or leave blank)  Enter: Confirm  Esc: Cancel"
+            let help_text = match state.mode {
+                NoteCreationMode::FolderOnly => "Type a folder name  Enter: Create  Esc: Cancel",
+                NoteCreationMode::Note => "↑/↓: Select destination  Enter: Confirm  Esc: Cancel",
             };
             let header = Paragraph::new(vec![
                 Line::from(vec![Span::styled(
@@ -2322,19 +2320,41 @@ pub fn render_note_wizard(f: &mut Frame, app: &App, area: ratatui::layout::Rect)
             ]);
             f.render_widget(header, chunks[0]);
 
-            let display = if state.folder_input.is_empty() {
-                Span::styled("(none)", Style::default().fg(Color::DarkGray))
+            if state.mode == NoteCreationMode::FolderOnly {
+                let display = if state.folder_input.is_empty() {
+                    Span::styled("(none)", Style::default().fg(Color::DarkGray))
+                } else {
+                    Span::styled(
+                        state.folder_input.as_str(),
+                        Style::default().fg(Color::White),
+                    )
+                };
+                let body = Paragraph::new(Line::from(vec![
+                    Span::styled("  Subfolder: ", app.text_primary()),
+                    display,
+                ]));
+                f.render_widget(body, chunks[1]);
             } else {
-                Span::styled(
-                    state.folder_input.as_str(),
-                    Style::default().fg(Color::White),
-                )
-            };
-            let body = Paragraph::new(Line::from(vec![
-                Span::styled("  Subfolder: ", app.text_primary()),
-                display,
-            ]));
-            f.render_widget(body, chunks[1]);
+                let mut options: Vec<String> =
+                    Vec::with_capacity(state.available_folders.len() + 1);
+                options.push("(none)".to_string());
+                options.extend(state.available_folders.iter().cloned());
+
+                let items: Vec<ListItem> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, folder)| {
+                        let style = if i == state.selected_folder_index {
+                            Style::default().fg(Color::Black).bg(Color::LightBlue)
+                        } else {
+                            app.text_primary()
+                        };
+                        ListItem::new(format!("  {}", folder)).style(style)
+                    })
+                    .collect();
+                let list = List::new(items);
+                f.render_widget(list, chunks[1]);
+            }
         }
     }
 }

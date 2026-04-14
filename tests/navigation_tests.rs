@@ -94,7 +94,7 @@ fn test_sidebar_has_programs_header() {
     let (_, app) = app_with_empty_workspace();
 
     let first_item = &app.navigation_state.sidebar_items[0];
-    assert_eq!(first_item.name, "Programs");
+    assert_eq!(first_item.name, "Task Management");
     assert!(first_item.is_header);
 }
 
@@ -256,13 +256,16 @@ fn test_sidebar_includes_programs_when_journal_expanded() {
     // Expand History
     app.handle_key(KeyCode::Right);
 
-    // Sidebar should still have Programs section
+    // Sidebar should still have Task Management section
     let has_programs = app
         .navigation_state
         .sidebar_items
         .iter()
-        .any(|item| item.name == "Programs" && item.is_header);
-    assert!(has_programs, "Programs section should still be in sidebar");
+        .any(|item| item.name == "Task Management" && item.is_header);
+    assert!(
+        has_programs,
+        "Task Management section should still be in sidebar"
+    );
 
     // Sidebar should still have Planning section
     let has_planning = app
@@ -995,7 +998,7 @@ fn test_navigate_up_from_first_planning_to_programs() {
 fn test_navigate_up_wraps_to_journal() {
     let (_, mut app) = app_with_empty_workspace();
 
-    // Find first item (should be Programs header)
+    // Find first item (should be Task Management header)
     let first_idx = 0;
     let first_item = &app.navigation_state.sidebar_items[first_idx];
     println!(

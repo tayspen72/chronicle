@@ -79,7 +79,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let command_text = if matches!(app.mode, Mode::CommandPalette) {
         app.command_palette.display_text()
     } else {
-        "Commands: /".to_string()
+        String::new()
     };
 
     let command_bar = Paragraph::new(command_text)
@@ -170,6 +170,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                     // Pipes for levels 1..indent-1, constrained to the same section/tree.
                     let pipes: String = (1..item.indent)
                         .map(|depth| {
+                            if depth == 1 {
+                                // Never draw root-level continuation pipes.
+                                return "    ";
+                            }
                             let ancestor = &current_path[..depth];
                             let ancestor_parent = &current_path[..depth.saturating_sub(1)];
                             let has_pipe = items[i + 1..].iter().any(|candidate| {

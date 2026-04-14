@@ -188,6 +188,8 @@ pub struct NoteCreationState {
     pub categories: Vec<String>,
     pub selected_category_index: usize,
     pub folder_input: String,
+    pub available_folders: Vec<String>,
+    pub selected_folder_index: usize,
 }
 
 /// State for the move-note picker.
@@ -1054,15 +1056,45 @@ impl App {
         // Handle InputNote view (two-step: category then folder)
         if self.current_view == ViewType::InputNote {
             match code {
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Up => {
                     if let Some(ref mut state) = self.note_creation_state
                         && state.step == NoteWizardStep::Category
+                    {
+                        if state.selected_category_index > 0 {
+                            state.selected_category_index -= 1;
+                        }
+                    } else if let Some(ref mut state) = self.note_creation_state
+                        && state.step == NoteWizardStep::Folder
+                        && state.mode == NoteCreationMode::Note
+                        && state.selected_folder_index > 0
+                    {
+                        state.selected_folder_index -= 1;
+                    }
+                }
+                KeyCode::Char('k')
+                    if self
+                        .note_creation_state
+                        .as_ref()
+                        .is_some_and(|s| s.step == NoteWizardStep::Category) =>
+                {
+                    if let Some(ref mut state) = self.note_creation_state
                         && state.selected_category_index > 0
                     {
                         state.selected_category_index -= 1;
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char('k')
+                    if self.note_creation_state.as_ref().is_some_and(|s| {
+                        s.step == NoteWizardStep::Folder && s.mode == NoteCreationMode::Note
+                    }) =>
+                {
+                    if let Some(ref mut state) = self.note_creation_state
+                        && state.selected_folder_index > 0
+                    {
+                        state.selected_folder_index -= 1;
+                    }
+                }
+                KeyCode::Down => {
                     if let Some(ref mut state) = self.note_creation_state
                         && state.step == NoteWizardStep::Category
                     {
@@ -1070,16 +1102,57 @@ impl App {
                         if state.selected_category_index < max {
                             state.selected_category_index += 1;
                         }
+                    } else if let Some(ref mut state) = self.note_creation_state
+                        && state.step == NoteWizardStep::Folder
+                        && state.mode == NoteCreationMode::Note
+                    {
+                        let max = state.available_folders.len();
+                        if state.selected_folder_index < max {
+                            state.selected_folder_index += 1;
+                        }
+                    }
+                }
+                KeyCode::Char('j')
+                    if self
+                        .note_creation_state
+                        .as_ref()
+                        .is_some_and(|s| s.step == NoteWizardStep::Category) =>
+                {
+                    if let Some(ref mut state) = self.note_creation_state {
+                        let max = state.categories.len().saturating_sub(1);
+                        if state.selected_category_index < max {
+                            state.selected_category_index += 1;
+                        }
+                    }
+                }
+                KeyCode::Char('j')
+                    if self.note_creation_state.as_ref().is_some_and(|s| {
+                        s.step == NoteWizardStep::Folder && s.mode == NoteCreationMode::Note
+                    }) =>
+                {
+                    if let Some(ref mut state) = self.note_creation_state {
+                        let max = state.available_folders.len();
+                        if state.selected_folder_index < max {
+                            state.selected_folder_index += 1;
+                        }
                     }
                 }
                 KeyCode::Enter => {
                     self.handle_note_wizard_enter();
                 }
                 KeyCode::Backspace => {
-                    self.handle_input_backspace();
+                    if self.note_creation_state.as_ref().is_some_and(|s| {
+                        s.step == NoteWizardStep::Folder && s.mode == NoteCreationMode::FolderOnly
+                    }) {
+                        self.handle_input_backspace();
+                    }
                 }
                 KeyCode::Char(c) => {
-                    self.handle_input_char(c);
+                    if self.note_creation_state.as_ref().is_some_and(|s| {
+                        s.step == NoteWizardStep::Folder && s.mode == NoteCreationMode::FolderOnly
+                    }) {
+                        self.handle_input_char(c);
+                    }
                 }
                 KeyCode::Esc => {
                     self.note_creation_state = None;
@@ -1546,27 +1619,18 @@ impl App {
             if let Some(SidebarNodeData::Note(node)) = self.selected_note_node() {
                 match node {
                     NoteNode::Category { .. } => {
-                        // Category is root-level — collapse if expanded, otherwise no-op
-                        if self.notes_is_expanded(&note_path) {
-                            self.notes_collapse_path(&note_path);
-                            self.load_tree_view_data();
-                            self.select_notes_item_by_path(&note_path);
-                        }
+                        // Root-level categories have no parent to collapse into.
                     }
                     NoteNode::Folder { .. } => {
-                        // Collapse the folder and select the parent category
                         let parent = note_path[..note_path.len().saturating_sub(1)].to_vec();
-                        if self.notes_is_expanded(&note_path) {
-                            self.notes_collapse_path(&note_path);
-                        } else {
-                            self.notes_collapse_path(&parent);
-                        }
+                        self.notes_collapse_path(&note_path);
+                        self.notes_collapse_path(&parent);
                         self.load_tree_view_data();
                         self.select_notes_item_by_path(&parent);
                     }
                     NoteNode::Entry { .. } => {
-                        // Collapse parent (folder or category) and select it
                         let parent = note_path[..note_path.len().saturating_sub(1)].to_vec();
+                        self.notes_collapse_path(&note_path);
                         self.notes_collapse_path(&parent);
                         self.load_tree_view_data();
                         self.select_notes_item_by_path(&parent);
@@ -1584,10 +1648,10 @@ impl App {
                 JournalNavNode::Header(path) => {
                     let parent_path = path[..path.len().saturating_sub(1)].to_vec();
                     if parent_path.is_empty() {
-                        // Year selected: collapse history level (all years/months/entries).
+                        self.collapse_journal_item(&path);
                         self.collapse_journal_item(&[]);
                     } else {
-                        // Month selected: collapse year level (all months/entries for that year).
+                        self.collapse_journal_item(&path);
                         self.collapse_journal_item(&parent_path);
                     }
                     self.load_tree_view_data();
@@ -1623,7 +1687,7 @@ impl App {
             return;
         }
 
-        // For root-level items (programs), only collapse if they have children
+        // Root-level task-management items have no parent to collapse into.
         if selected_path.len() == 1 && !item.has_children {
             return;
         }
@@ -1639,11 +1703,8 @@ impl App {
             return;
         }
 
-        if item.has_children && self.navigation_state.is_expanded(&selected_path) {
-            self.collapse_path(&selected_path);
-        } else {
-            self.collapse_path(&parent);
-        }
+        self.collapse_path(&selected_path);
+        self.collapse_path(&parent);
         self.set_selected_tree_path(parent);
         self.load_tree_view_data();
     }
@@ -2857,7 +2918,7 @@ impl App {
         self.navigation_state.sidebar_items.clear();
         self.navigation_state
             .sidebar_items
-            .push(SidebarItem::new("Programs", SidebarSection::Programs).header());
+            .push(SidebarItem::new("Task Management", SidebarSection::Programs).header());
 
         if self.tree_data.programs.is_empty() {
             self.navigation_state.sidebar_items.push(
@@ -3106,6 +3167,7 @@ impl App {
             ViewType::InputNote => {
                 if let Some(ref mut state) = self.note_creation_state
                     && state.step == NoteWizardStep::Folder
+                    && state.mode == NoteCreationMode::FolderOnly
                 {
                     self.input_buffer.push(c);
                     state.folder_input.push(c);
@@ -3168,6 +3230,7 @@ impl App {
             ViewType::InputNote => {
                 if let Some(ref mut state) = self.note_creation_state
                     && state.step == NoteWizardStep::Folder
+                    && state.mode == NoteCreationMode::FolderOnly
                 {
                     self.input_buffer.pop();
                     state.folder_input.pop();
@@ -3497,6 +3560,8 @@ impl App {
             categories,
             selected_category_index: 0,
             folder_input: String::new(),
+            available_folders: Vec::new(),
+            selected_folder_index: 0,
         });
         self.input_buffer.clear();
         self.current_view = ViewType::InputNote;
@@ -3511,6 +3576,8 @@ impl App {
             categories,
             selected_category_index: 0,
             folder_input: String::new(),
+            available_folders: Vec::new(),
+            selected_folder_index: 0,
         });
         self.input_buffer.clear();
         self.current_view = ViewType::InputNote;
@@ -3520,6 +3587,18 @@ impl App {
         if let Some(ref mut state) = self.note_creation_state {
             // Advance to folder step
             state.step = NoteWizardStep::Folder;
+            state.selected_folder_index = 0;
+            state.folder_input.clear();
+            if state.mode == NoteCreationMode::Note {
+                let category = state
+                    .categories
+                    .get(state.selected_category_index)
+                    .cloned()
+                    .unwrap_or_default();
+                state.available_folders = self.notes_tree_state.folders_for_category(&category);
+            } else {
+                state.available_folders.clear();
+            }
             self.input_buffer.clear();
         }
     }
@@ -3528,7 +3607,19 @@ impl App {
         let mut created_folder_path: Option<Vec<String>> = None;
 
         if let Some(ref mut state) = self.note_creation_state {
-            let folder_name = self.input_buffer.trim().to_string();
+            let folder_name = if state.mode == NoteCreationMode::Note {
+                if state.selected_folder_index == 0 {
+                    String::new()
+                } else {
+                    state
+                        .available_folders
+                        .get(state.selected_folder_index.saturating_sub(1))
+                        .cloned()
+                        .unwrap_or_default()
+                }
+            } else {
+                self.input_buffer.trim().to_string()
+            };
             state.folder_input = folder_name.clone();
 
             if state.mode == NoteCreationMode::FolderOnly {

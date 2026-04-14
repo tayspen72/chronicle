@@ -345,8 +345,8 @@ pub fn build_sidebar_items(
 ) -> Vec<SidebarItem> {
     let mut items = Vec::new();
 
-    // Programs section header
-    items.push(SidebarItem::new("Programs", SidebarSection::Programs).header());
+    // Task management section header
+    items.push(SidebarItem::new("Task Management", SidebarSection::Programs).header());
 
     // Programs list - show empty state if no programs exist
     if programs.is_empty() {
@@ -561,10 +561,10 @@ mod tests {
 
         let items = build_sidebar_items(&programs, &[], &[], &[], None, None, None);
 
-        // Should have: Programs header, prog1, spacer, Planning header, 2 items, spacer, Journal header, 2 items
+        // Should have: Task Management header, prog1, spacer, Planning header, 2 items, spacer, Journal header, 2 items
         assert!(items.len() > 5);
         assert!(items[0].is_header);
-        assert_eq!(items[0].name, "Programs");
+        assert_eq!(items[0].name, "Task Management");
     }
 
     #[test]
@@ -573,10 +573,10 @@ mod tests {
 
         let items = build_sidebar_items(&programs, &[], &[], &[], None, None, None);
 
-        // Should have: Programs header, "+ Create Program...", spacer, Planning header, 2 items, spacer, Journal header, 2 items
+        // Should have: Task Management header, "+ Create Program...", spacer, Planning header, 2 items, spacer, Journal header, 2 items
         assert!(items.len() > 5);
         assert!(items[0].is_header);
-        assert_eq!(items[0].name, "Programs");
+        assert_eq!(items[0].name, "Task Management");
 
         // Second item should be the create action
         assert_eq!(items[1].name, "+ Create Program...");
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn test_first_and_last_selectable_in_section() {
         // Create a sidebar structure similar to build_sidebar_items:
-        // - Programs header (index 0)
+        // - Task Management header (index 0)
         // - Program1 (index 1)
         // - Program2 (index 2)
         // - Spacer (index 3)
@@ -599,7 +599,7 @@ mod tests {
         // - Today (index 9)
         // - History (index 10)
         let items = vec![
-            SidebarItem::new("Programs", SidebarSection::Programs).header(),
+            SidebarItem::new("Task Management", SidebarSection::Programs).header(),
             SidebarItem::new("Program1", SidebarSection::Programs),
             SidebarItem::new("Program2", SidebarSection::Programs),
             SidebarItem::new("", SidebarSection::Planning), // spacer

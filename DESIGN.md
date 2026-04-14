@@ -249,7 +249,13 @@ Selection is not on Alpha4 (Section headers are not select-able)
 
 ### Open Issues
 
-- None currently tracked.
+- **Command palette loses category grouping while typing**: When the user types after pressing `/`, the match list switches to a flat list with `"Category: Label"` display labels (e.g., `"Commands: New Task"`) instead of keeping commands grouped under their category headers. Categories should be preserved as section headers even while filtering — only the matching commands within each category should be shown.
+- **`CommandCategory::Commands` label is misleading**: The "Commands" section header groups creation actions (New Program, New Project, New Milestone, New Task, New Subtask). This category should be renamed to "Task Management" in both `CommandCategory::label()` and `grouped_commands()` ordering to match domain intent.
+- **Sidebar top section label "Programs" should be "Task Management"**: The root sidebar section that holds programs/projects/milestones/tasks is labelled "Programs". It should be renamed to "Task Management" to reflect its broader scope.
+- **New Note wizard ignores existing subfolders**: After selecting a PARA category, the wizard prompts for a free-text folder name but does not scan for existing subfolders. It should display a selectable list — `(none)` at the top, followed by existing subfolder names — so the user can pick a destination rather than type one. This follows the UX pattern of the rest of the creation wizard (selectable list, not free text).
+- **Main UI shows stray "Commands: /" label at top**: A `Commands: /` label appears in the main window header. It should be removed.
+- **Notes tree renders spurious `│` connector on single-subfolder entries**: Note entries inside a subfolder are prefixed with a vertical pipe (`│`) even when there is only one subfolder at that level (i.e., no sibling to connect to). The connector characters must follow the Tree Navigation Model rendering rules: `│` is only drawn when a prior sibling at the same depth is still expanded above the current item.
+- **Collapse does not cascade up to parent**: When the user selects a node and collapses it (Left / `h`), only the direct children are hidden — the node itself does not collapse into its parent. The intended behavior is a two-phase collapse: (1) the selected node's children fold into it, then (2) the node itself folds into its parent along with all siblings at the same level. After collapse, the selection must land on the parent of the node that was collapsed. This applies to all tree levels and all tree sections (Task Management, Journal, Notes). Example: if a milestone is expanded and selected, pressing Left should hide the tasks under it **and** collapse the milestone back into its parent project, leaving the project selected.
 
 ### Creation Wizard
 
@@ -464,7 +470,18 @@ Notes sidebar:
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
-2. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
+2. **Notebook Expansion**: The tool should expand notebook capability to allow for general notetaking. Specifically I want to encorporate a PARA notebook style, and research the potential for adding more.
+3. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
+
+### Bottom Panel and App Branding
+
+The status bar and app identity need a coordinated overhaul:
+
+**Bottom-left breadcrumb**: Show the current location with the top-level navigation category as the root segment, not just the raw tree path. Format: `Category > Level1 > Level2 > ...` where Category is one of: `Task Management`, `Journal`, `Planning`, `Notes`. Example: `Task Management > Acme Corp > Q2 Launch > Sprint 1`. The category name should be styled (bold or accent-colored) to anchor the user's context.
+
+**App name ("chronicle")**: Display `chronicle` in the **top pane header** — left-aligned or centered — styled with the theme's accent color. This is app identity, not navigation context, so it belongs in the header rather than the status bar. The bottom bar should stay focused purely on location.
+
+**Bottom middle / right**: Open for future use (e.g., mode indicator, clock, key hints).
 
 ### Theming
 

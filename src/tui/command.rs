@@ -43,7 +43,7 @@ pub enum CommandCategory {
 impl CommandCategory {
     pub fn label(self) -> &'static str {
         match self {
-            CommandCategory::Commands => "Commands",
+            CommandCategory::Commands => "Task Management",
             CommandCategory::Planning => "Planning",
             CommandCategory::Journal => "Journal",
             CommandCategory::Notes => "Notes",
@@ -287,8 +287,18 @@ pub fn get_command_list() -> Vec<CommandMatch> {
             Some(CommandAction::ShowTasksList),
         ),
         command_item("Journal", CommandCategory::Journal, ViewType::Journal, None),
-        command_item("Backlog", CommandCategory::Planning, ViewType::Backlog, None),
-        command_item("My Tasks", CommandCategory::Planning, ViewType::MyTasks, None),
+        command_item(
+            "Backlog",
+            CommandCategory::Planning,
+            ViewType::Backlog,
+            None,
+        ),
+        command_item(
+            "My Tasks",
+            CommandCategory::Planning,
+            ViewType::MyTasks,
+            None,
+        ),
         command_item(
             "Current Plan",
             CommandCategory::Planning,
@@ -447,14 +457,11 @@ pub fn filter_commands(
                 journal_commands
             }
         } else {
-            journal_commands
+            let filtered: Vec<CommandMatch> = journal_commands
                 .into_iter()
                 .filter(|cmd| cmd.label.to_lowercase().contains(remainder))
-                .map(|mut cmd| {
-                    cmd.display_label = format!("{}: {}", cmd.category.label(), cmd.label);
-                    cmd
-                })
-                .collect()
+                .collect();
+            grouped_commands(&filtered)
         }
     } else {
         let filtered: Vec<CommandMatch> = get_command_list()
@@ -508,13 +515,7 @@ pub fn filter_commands(
         if trimmed_input.is_empty() {
             grouped_commands(&filtered)
         } else {
-            filtered
-                .into_iter()
-                .map(|mut cmd| {
-                    cmd.display_label = format!("{}: {}", cmd.category.label(), cmd.label);
-                    cmd
-                })
-                .collect()
+            grouped_commands(&filtered)
         }
     }
 }
@@ -595,7 +596,11 @@ mod tests {
     #[test]
     fn test_filter_commands_journal_prefix() {
         let commands = filter_commands("journal", None, None, None, None, true);
-        assert!(commands.iter().all(|c| c.category == CommandCategory::Journal));
+        assert!(
+            commands
+                .iter()
+                .all(|c| c.category == CommandCategory::Journal)
+        );
     }
 
     #[test]
