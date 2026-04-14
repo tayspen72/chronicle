@@ -483,13 +483,7 @@ Notes sidebar:
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
-<<<<<<< HEAD
-2. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
-3. **Notebook Expansion**: The tool should expand notebook capability to allow for general notetaking. Specifically I want to encorporate a PARA notebook style, and research the potential for adding more.
-=======
-2. **Notebook Expansion**: The tool should expand notebook capability to allow for general notetaking. Specifically I want to encorporate a PARA notebook style, and research the potential for adding more.
-3. 3. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
->>>>>>> d20ab0a (Added future feature to improve error handling)
+2. **Error Handling**: The user should be notified of errors (e.g., editor launch failures, file naming conflicts/overwrites, duplicate task names).
 
 `Notebook Expansion` (former item #2) is now complete and tracked in Working Features + Changelog.
 
