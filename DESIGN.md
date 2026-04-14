@@ -239,23 +239,32 @@ Selection is not on Alpha4 (Section headers are not select-able)
 ### Working Features
 
 - Command palette (`/` opens, typing filters, Up/Down navigates, Enter executes)
+- Command palette keeps category headers while filtering (grouped results remain visible during search)
 - Tree navigation: arrow keys, expand/collapse, 4-level hierarchy
 - Navigator panel unified behavior: Programs and Journal History now follow the same Tree Navigation Model semantics for expand/collapse/selection and tree rendering
+- Task Management naming applied across sidebar + command categories (replaces ambiguous "Programs" command-category label)
 - Element creation: template-based wizard for Programs/Projects/Milestones/Tasks
 - Journal: today's journal, history browser with year/month tree expansion
+- Notes: PARA categories, category/folder tree navigation, New Note + Move Note flows
+- New Note destination step lists existing subfolders with `(none)` option (selection UI, not free-text)
 - External editor: launches configured editor, restores TUI
 - Planning sessions: weekly planning with task selection and preview
+- Theme system: selectable themes loaded from `themes/` with in-app Theme picker
 - Keyboard shortcuts: hjkl, Tab, Escape, Enter
 
 ### Open Issues
 
-- **Command palette loses category grouping while typing**: When the user types after pressing `/`, the match list switches to a flat list with `"Category: Label"` display labels (e.g., `"Commands: New Task"`) instead of keeping commands grouped under their category headers. Categories should be preserved as section headers even while filtering — only the matching commands within each category should be shown.
-- **`CommandCategory::Commands` label is misleading**: The "Commands" section header groups creation actions (New Program, New Project, New Milestone, New Task, New Subtask). This category should be renamed to "Task Management" in both `CommandCategory::label()` and `grouped_commands()` ordering to match domain intent.
-- **Sidebar top section label "Programs" should be "Task Management"**: The root sidebar section that holds programs/projects/milestones/tasks is labelled "Programs". It should be renamed to "Task Management" to reflect its broader scope.
-- **New Note wizard ignores existing subfolders**: After selecting a PARA category, the wizard prompts for a free-text folder name but does not scan for existing subfolders. It should display a selectable list — `(none)` at the top, followed by existing subfolder names — so the user can pick a destination rather than type one. This follows the UX pattern of the rest of the creation wizard (selectable list, not free text).
-- **Main UI shows stray "Commands: /" label at top**: A `Commands: /` label appears in the main window header. It should be removed.
-- **Notes tree renders spurious `│` connector on single-subfolder entries**: Note entries inside a subfolder are prefixed with a vertical pipe (`│`) even when there is only one subfolder at that level (i.e., no sibling to connect to). The connector characters must follow the Tree Navigation Model rendering rules: `│` is only drawn when a prior sibling at the same depth is still expanded above the current item.
-- **Collapse does not cascade up to parent**: When the user selects a node and collapses it (Left / `h`), only the direct children are hidden — the node itself does not collapse into its parent. The intended behavior is a two-phase collapse: (1) the selected node's children fold into it, then (2) the node itself folds into its parent along with all siblings at the same level. After collapse, the selection must land on the parent of the node that was collapsed. This applies to all tree levels and all tree sections (Task Management, Journal, Notes). Example: if a milestone is expanded and selected, pressing Left should hide the tasks under it **and** collapse the milestone back into its parent project, leaving the project selected.
+- None currently tracked in this document.
+
+### Recently Resolved (was previously in Open Issues)
+
+- Command palette filtering preserves section headers and grouped command presentation.
+- `CommandCategory::Commands` label changed to `Task Management`.
+- Sidebar top section label changed from "Programs" to "Task Management".
+- New Note flow now surfaces existing subfolders via selectable list (`(none)` + discovered folders).
+- Stray `Commands: /` header text removed from main UI (command input appears only in command bar/popup context).
+- Tree connector rendering follows continuation rules for Notes/Journal/Task trees (no spurious `│` on single-child branches).
+- Left-collapse behavior is two-phase across Task Management, Journal, and Notes: collapse selected subtree, collapse parent tier, then move selection to parent.
 
 ### Creation Wizard
 
@@ -385,7 +394,7 @@ Notes sidebar:
 
 - Category names are configurable via `notes.categories` in `config.toml` (defaults to PARA names).
 - Notes can be at depth 2 (directly in category) or depth 3 (inside a subfolder).
-- **New Note** command (`/new note`): wizard selects category → optionally enters folder name → template wizard fills title/description.
+- **New Note** command (`/new note`): wizard selects category → selects destination subfolder (`(none)` + discovered folders) → template wizard fills title/description.
 - **Move Note** command (`/move note`): filterable picker lists all categories and subfolders; selecting a destination moves the file on disk.
 - Cross-section collapse: navigating away from the Notes section collapses all Notes expansions.
 
@@ -420,6 +429,10 @@ Notes sidebar:
 
 | Date | Event |
 |------|-------|
+| 2026-04-13 | Feature status update: Bottom Panel and App Branding is implemented (top header shows `chronicle`; bottom bar breadcrumb is category-rooted and location-focused) |
+| 2026-04-13 | Validation: Full test suite green (`cargo test`) — 196 tests passing (156 unit + 9 command palette integration + 31 navigation integration) |
+| 2026-04-13 | Bug fixes verified resolved: command palette grouped filtering, Task Management naming, notes destination folder picker, command-bar label cleanup, notes connector rendering, and two-phase collapse across all trees |
+| 2026-04-13 | Feature status update: Notebook Expansion (Future Feature #2) is implemented via PARA notes system and note-management commands |
 | 2026-04-09 | Feature: Notes section with PARA methodology (Projects, Areas, Resources, Archive) — expand/collapse tree navigation consistent with Journal History |
 | 2026-04-09 | Feature: `notes.categories` config key for overriding default PARA folder names |
 | 2026-04-09 | Feature: New Note command — two-step wizard (category → folder) feeds into existing template wizard |
@@ -427,7 +440,7 @@ Notes sidebar:
 | 2026-04-09 | Feature: `NotesStorage` trait on `PathBuf` with `notes_dir()`, `scan_notes()`, `move_note()` |
 | 2026-04-09 | Refactor: `SidebarNodeData` enum added for type-safe sidebar item dispatch (Notes vs Journal vs Programs) |
 | 2026-04-09 | Refactor: `NoteNode` enum in cache.rs mirrors `JournalNode` for tree rendering |
-| 2026-04-09 | Integration tests: 190 total tests (31 navigation, 9 command palette) |
+| 2026-04-09 | Integration tests expanded (baseline that grew further by 2026-04-13) |
 | 2026-03-24 | Feature: Programs tree selection now renders a combined element view in the main window: YAML details table, markdown body content, and child status/count report |
 | 2026-03-24 | UX tweak: Empty child-report state now shows only "No <child> detected" without repeating selected element status |
 | 2026-03-24 | Feature: Binary now routes `init`, `jot`, `extract`, and `new-task` CLI commands through `src/commands`, removing the disconnected/dead-code path |
@@ -470,19 +483,12 @@ Notes sidebar:
 ### Planning Reports
 
 1. **Preview Plan report**: The preview screen shown when pressing `f` should use organized tables instead of plain text strings. Group tasks by Program/Project/Milestone hierarchy for readability.
-2. **Notebook Expansion**: The tool should expand notebook capability to allow for general notetaking. Specifically I want to encorporate a PARA notebook style, and research the potential for adding more.
-3. **Error Handling**: The user should be notified of errors. eg when launching the preferred editor, file naming conflicts/overwriting files, duplicate task names, etc.
+2. **Error Handling**: The user should be notified of errors (e.g., editor launch failures, file naming conflicts/overwrites, duplicate task names).
 
-### Bottom Panel and App Branding
+`Notebook Expansion` (former item #2) is now complete and tracked in Working Features + Changelog.
 
-The status bar and app identity need a coordinated overhaul:
+`Bottom Panel and App Branding` is now complete and tracked in Working Features + Changelog.
 
-**Bottom-left breadcrumb**: Show the current location with the top-level navigation category as the root segment, not just the raw tree path. Format: `Category > Level1 > Level2 > ...` where Category is one of: `Task Management`, `Journal`, `Planning`, `Notes`. Example: `Task Management > Acme Corp > Q2 Launch > Sprint 1`. The category name should be styled (bold or accent-colored) to anchor the user's context.
+### Theming Follow-ups
 
-**App name ("chronicle")**: Display `chronicle` in the **top pane header** — left-aligned or centered — styled with the theme's accent color. This is app identity, not navigation context, so it belongs in the header rather than the status bar. The bottom bar should stay focused purely on location.
-
-**Bottom middle / right**: Open for future use (e.g., mode indicator, clock, key hints).
-
-### Theming
-
-Support theme files (e.g., from Helix editor's `themes/` directory or Alacritty). Users should be able to select from a list of themes to customize the TUI color scheme. The `ayu_evolve` theme from Helix can be used as a reference or directly ported.
+Core theming support is implemented (theme files + in-app selection). Remaining work is expansion and compatibility hardening, such as broader theme-source imports and richer style coverage.

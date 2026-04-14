@@ -1,9 +1,12 @@
 use super::views;
-use crate::tui::{App, Mode, ViewType};
+use crate::tui::{
+    App, Mode, ViewType,
+    navigation::{SidebarItem, SidebarSection},
+};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
@@ -69,23 +72,14 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Command bar
+            Constraint::Length(1), // Top header
             Constraint::Min(0),    // Main content
             Constraint::Length(1), // Status bar
         ])
         .split(f.area());
 
-    // Command bar
-    let command_text = if matches!(app.mode, Mode::CommandPalette) {
-        app.command_palette.display_text()
-    } else {
-        String::new()
-    };
-
-    let command_bar = Paragraph::new(command_text)
-        .style(app.text_secondary())
-        .block(Block::default().borders(Borders::NONE));
-    f.render_widget(command_bar, chunks[0]);
+    // Top header
+    render_header_bar(f, app, chunks[0]);
 
     // Calculate dynamic sidebar width based on content
     let sidebar_width = calculate_sidebar_width(app);
@@ -117,6 +111,33 @@ pub fn render(f: &mut Frame, app: &App) {
 
     // Status bar
     render_status_bar(f, app, chunks[2]);
+}
+
+fn render_header_bar(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(12), // App branding
+            Constraint::Min(0),     // Command input (command mode only)
+        ])
+        .split(area);
+
+    let app_name = Paragraph::new("chronicle")
+        .style(app.content_title_style())
+        .block(Block::default().borders(Borders::NONE));
+    f.render_widget(app_name, chunks[0]);
+
+    let command_text = if matches!(app.mode, Mode::CommandPalette) {
+        app.command_palette.display_text()
+    } else {
+        String::new()
+    };
+
+    let command_bar = Paragraph::new(command_text)
+        .style(app.text_secondary())
+        .block(Block::default().borders(Borders::NONE))
+        .alignment(Alignment::Right);
+    f.render_widget(command_bar, chunks[1]);
 }
 
 fn calculate_sidebar_width(app: &App) -> u16 {
@@ -373,70 +394,84 @@ fn render_command_palette(f: &mut Frame, app: &App) {
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    // Build breadcrumb from current selection
-    let mut breadcrumb_parts = Vec::new();
+    let segments = selected_breadcrumb_segments(app);
 
-    if let Some(program) = &app.navigation_state.current_program {
-        breadcrumb_parts.push(program.clone());
-    }
-    if let Some(project) = &app.navigation_state.current_project {
-        breadcrumb_parts.push(project.clone());
-    }
-    if let Some(milestone) = &app.navigation_state.current_milestone {
-        breadcrumb_parts.push(milestone.clone());
-    }
-    if let Some(task) = &app.navigation_state.current_task {
-        breadcrumb_parts.push(task.clone());
+    if segments.is_empty() {
+        let placeholder = Paragraph::new("No selection")
+            .style(app.text_secondary())
+            .block(Block::default().borders(Borders::NONE));
+        f.render_widget(placeholder, area);
+        return;
     }
 
-    let breadcrumb = if breadcrumb_parts.is_empty() {
-        "No selection".to_string()
-    } else {
-        breadcrumb_parts.join(" > ")
-    };
+    let mut spans = Vec::new();
+    for (idx, segment) in segments.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" > ", app.text_secondary()));
+        }
+        let style = if idx == 0 {
+            app.content_title_style()
+        } else {
+            app.text_secondary()
+        };
+        spans.push(Span::styled(segment.clone(), style));
+    }
 
-    let mode_text = match app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::CommandPalette => "COMMAND",
-        Mode::Input => "INPUT",
-        Mode::TaskSelection => "SELECT",
-        Mode::ReviewSession => "REVIEW",
-        Mode::HierarchicalSelection => "ADD TASKS",
-        Mode::PlanningPreview => "PREVIEW",
-        Mode::TaskDetailWizard => "EDIT TASK",
-        Mode::InputTaskDetailField => "INPUT",
-        Mode::CurrentPlanNavigation => "PLAN NAV",
-        Mode::ThemeSelection => "THEME",
-    };
+    let breadcrumb =
+        Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::NONE));
+    f.render_widget(breadcrumb, area);
+}
 
-    let mode_color = app.status_color();
+fn selected_breadcrumb_segments(app: &App) -> Vec<String> {
+    let selected_item = app
+        .navigation_state
+        .sidebar_items
+        .get(app.navigation_state.selected_entry_index);
 
-    // Split the status bar into left (breadcrumb) and right (mode) sections
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(1),     // Breadcrumb - takes remaining space
-            Constraint::Length(10), // Mode indicator
-        ])
-        .split(area);
+    selected_item.map_or_else(Vec::new, breadcrumb_segments_for_item)
+}
 
-    // Render breadcrumb (left side)
-    let breadcrumb_widget = Paragraph::new(breadcrumb)
-        .style(app.text_secondary())
-        .block(Block::default().borders(Borders::NONE));
-    f.render_widget(breadcrumb_widget, chunks[0]);
+fn breadcrumb_segments_for_item(item: &SidebarItem) -> Vec<String> {
+    let mut segments = vec![sidebar_section_label(&item.section).to_string()];
 
-    // Render mode indicator (right side)
-    let mode_widget = Paragraph::new(mode_text)
-        .style(Style::default().fg(mode_color))
-        .block(Block::default().borders(Borders::NONE))
-        .alignment(ratatui::layout::Alignment::Right);
-    f.render_widget(mode_widget, chunks[1]);
+    match item.section {
+        SidebarSection::Programs | SidebarSection::Notes => {
+            if let Some(path) = &item.tree_path {
+                segments.extend(path.clone());
+            } else if !item.is_header && !item.name.is_empty() {
+                segments.push(item.name.clone());
+            }
+        }
+        SidebarSection::Journal => {
+            if let Some(path) = &item.journal_path {
+                segments.extend(path.clone());
+            } else if !item.is_header && !item.name.is_empty() {
+                segments.push(item.name.clone());
+            }
+        }
+        SidebarSection::Planning => {
+            if !item.is_header && !item.name.is_empty() {
+                segments.push(item.name.clone());
+            }
+        }
+    }
+
+    segments
+}
+
+fn sidebar_section_label(section: &SidebarSection) -> &'static str {
+    match section {
+        SidebarSection::Programs => "Task Management",
+        SidebarSection::Planning => "Planning",
+        SidebarSection::Journal => "Journal",
+        SidebarSection::Notes => "Notes",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::navigation::{SidebarItem, SidebarSection};
 
     #[test]
     fn test_bug1_last_child_missing_pipe() {
@@ -612,6 +647,45 @@ mod tests {
             "Last leaf should use └──. Got: {}",
             child2_prefix
         );
+    }
+
+    #[test]
+    fn breadcrumb_program_item_uses_task_management_root() {
+        let mut item = SidebarItem::new("Sprint 1", SidebarSection::Programs);
+        item.tree_path = Some(vec![
+            "Acme Corp".to_string(),
+            "Q2 Launch".to_string(),
+            "Sprint 1".to_string(),
+        ]);
+
+        let segments = breadcrumb_segments_for_item(&item);
+        assert_eq!(
+            segments,
+            vec!["Task Management", "Acme Corp", "Q2 Launch", "Sprint 1"]
+        );
+    }
+
+    #[test]
+    fn breadcrumb_planning_item_uses_planning_root() {
+        let item = SidebarItem::new("Current Plan", SidebarSection::Planning);
+        let segments = breadcrumb_segments_for_item(&item);
+        assert_eq!(segments, vec!["Planning", "Current Plan"]);
+    }
+
+    #[test]
+    fn breadcrumb_journal_history_item_uses_journal_path() {
+        let mut item = SidebarItem::new("March", SidebarSection::Journal);
+        item.journal_path = Some(vec!["2026".to_string(), "March".to_string()]);
+        let segments = breadcrumb_segments_for_item(&item);
+        assert_eq!(segments, vec!["Journal", "2026", "March"]);
+    }
+
+    #[test]
+    fn breadcrumb_note_item_uses_notes_root() {
+        let mut item = SidebarItem::new("Research", SidebarSection::Notes);
+        item.tree_path = Some(vec!["work".to_string(), "Research".to_string()]);
+        let segments = breadcrumb_segments_for_item(&item);
+        assert_eq!(segments, vec!["Notes", "work", "Research"]);
     }
 
     #[test]
