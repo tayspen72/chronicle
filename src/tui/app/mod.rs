@@ -10,4 +10,5 @@ pub mod commands;
 pub mod journal;
 pub mod notes;
 pub mod review;
+pub mod theme;
 pub mod theme_select;
